@@ -20,6 +20,7 @@ import streamlit as st
 
 import auth
 import data_loader
+import theme
 import transforms
 from views import cobertura, resumen, sub_rubro
 
@@ -31,6 +32,10 @@ st.set_page_config(
     page_title="Gestión de Vendedores GSU",
     layout="wide",
 )
+
+# Aplicar el theme visual (Dieter Rams / Vitsoe). Tiene que correr antes
+# del auth gate para que el formulario de login también herede los estilos.
+theme.apply_theme()
 
 # =====================================================================
 # AUTH GATE
@@ -216,20 +221,31 @@ def _render_health_section(label: str, health: dict) -> None:
             )
 
 
-st.subheader("Panel de salud de datos")
-col_sem, col_mes = st.columns(2)
-with col_sem:
-    _render_health_section("Semana", health_sem)
-with col_mes:
-    _render_health_section("Mes", health_mes)
+def _has_red_alerts(health: dict) -> bool:
+    """True si el panel de salud tendría semáforo rojo (errores estructurales)."""
+    return bool(health.get("vendedores_sin_cartera")) or bool(
+        health.get("clientes_duplicados")
+    )
+
+
+# Banner discreto SOLO si hay alertas en rojo (errores estructurales).
+# Las warnings amarillas viven calladitas en la pestaña Salud — no necesitan
+# llamar la atención porque no cambian el significado de los datos.
+if _has_red_alerts(health_sem) or _has_red_alerts(health_mes):
+    st.error(
+        "Hay alertas estructurales en los datos cargados. "
+        "Revisar la pestaña **Salud** antes de presentar las cifras."
+    )
 
 
 # =====================================================================
 # TABS DE VISTAS
 # =====================================================================
+# 4 tabs: las 3 vistas de datos + 1 dedicada al panel de salud.
+# El usuario empieza en Resumen por default; salud está a un click.
 
-tab_resumen, tab_sub_rubro, tab_cobertura = st.tabs(
-    ["Resumen", "Sub-rubro", "Cobertura"]
+tab_resumen, tab_sub_rubro, tab_cobertura, tab_salud = st.tabs(
+    ["Resumen", "Sub-rubro", "Cobertura", "Salud"]
 )
 
 with tab_resumen:
@@ -238,3 +254,14 @@ with tab_sub_rubro:
     sub_rubro.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
 with tab_cobertura:
     cobertura.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
+with tab_salud:
+    st.subheader("Panel de salud de datos")
+    st.caption(
+        "Diagnóstico de las planillas cargadas: filas filtradas, "
+        "alertas estructurales y trazabilidad de los filtros aplicados."
+    )
+    col_sem, col_mes = st.columns(2)
+    with col_sem:
+        _render_health_section("Semana", health_sem)
+    with col_mes:
+        _render_health_section("Mes", health_mes)
