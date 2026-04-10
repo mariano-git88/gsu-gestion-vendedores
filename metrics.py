@@ -264,6 +264,61 @@ def cobertura_por_sub_rubro(
     ).reset_index(drop=True)
 
 
+def clientes_sin_compra_sku(
+    df_fc: pd.DataFrame, df_clientes: pd.DataFrame, sku: str
+) -> pd.DataFrame:
+    """
+    Lista de clientes en cartera que NO recibieron una venta tipo FAC del
+    `sku` específico de su vendedor asignado en el período cubierto por
+    `df_fc`.
+
+    Es el complemento de `cobertura_por_sku`: si esa función dice "el
+    vendedor V cubre 60% de su cartera con el SKU X", esta función te da
+    el 40% restante — los clientes específicos a los que ese vendedor
+    todavía no les vendió el producto.
+
+    Match estricto (consistente con `cobertura_por_sku`): un cliente
+    cuenta como "comprador" SOLO si su vendedor asignado le vendió el
+    SKU. Si lo compró a otro vendedor, sigue apareciendo en esta lista
+    como "no comprador" (la oportunidad de venta para el vendedor
+    asignado sigue abierta).
+
+    NCF nunca cuentan para esta métrica.
+
+    Devuelve DataFrame con columnas:
+      vendedor, documento, razon_social
+
+    Ordenado por vendedor y razón social, para que sea cómodo de leer
+    en una reunión.
+    """
+    # Cartera única por (vendedor, documento), trayendo razón social
+    cartera = (
+        df_clientes[["vendedor", "documento", "razon_social"]]
+        .dropna(subset=["vendedor", "documento"])
+        .drop_duplicates(subset=["vendedor", "documento"])
+    )
+
+    # Compradores estrictos: pares (vendedor_op, documento) con al menos
+    # una FAC del SKU específico
+    df_fac_sku = df_fc[(df_fc["tipo"] == TIPO_FAC) & (df_fc["sku"] == sku)]
+    compradores = df_fac_sku[["vendedor", "documento"]].drop_duplicates()
+
+    # Anti-join: cartera menos compradores. Usamos un marker temporal
+    # para identificar las filas sin match.
+    merged = cartera.merge(
+        compradores.assign(__match=1),
+        on=["vendedor", "documento"],
+        how="left",
+    )
+    no_compradores = merged[merged["__match"].isna()].drop(columns="__match")
+
+    return (
+        no_compradores[["vendedor", "documento", "razon_social"]]
+        .sort_values(["vendedor", "razon_social"], na_position="last")
+        .reset_index(drop=True)
+    )
+
+
 def cobertura_por_sku(
     df_fc: pd.DataFrame, df_clientes: pd.DataFrame, sku: str
 ) -> pd.DataFrame:

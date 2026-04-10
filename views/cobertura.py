@@ -110,3 +110,40 @@ def render(
             use_container_width=True,
             hide_index=True,
         )
+
+    # ----- Bloque 4: clientes que no compraron este SKU en el mes -----
+    # Esta sección SIEMPRE usa df_mes (lo que va del mes), independiente
+    # del selector de Semana/Mes de arriba. Reutiliza el sku_sel del bloque
+    # anterior para evitar duplicar UI.
+    st.divider()
+    st.markdown("### Clientes que NO compraron este SKU en el mes")
+    st.caption(
+        "De la cartera asignada a cada vendedor, los clientes que NO "
+        "recibieron una venta tipo FAC del SKU seleccionado en lo que va "
+        "del mes. **Siempre sobre el mes**, independiente del selector "
+        "de período de arriba. El criterio es estricto: si el cliente le "
+        "compró el SKU a otro vendedor distinto al asignado, igual aparece."
+    )
+
+    # Edge case: el SKU seleccionado puede no existir en df_mes
+    # (por ejemplo, si arriba está seleccionada Semana y se eligió un
+    # SKU que solo facturó esta semana). Avisar antes de calcular.
+    if sku_sel not in set(df_mes["sku"].dropna().astype(str).unique()):
+        st.info(
+            f"El SKU `{sku_sel}` no aparece en lo que va del mes. "
+            "No se puede calcular la lista de no-compradores sobre el mes."
+        )
+    else:
+        no_compradores = metrics.clientes_sin_compra_sku(df_mes, df_clientes, sku_sel)
+        if no_compradores.empty:
+            st.success(
+                "Todos los clientes en cartera ya compraron este SKU "
+                "este mes (de su vendedor asignado)."
+            )
+        else:
+            st.dataframe(
+                no_compradores,
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(f"Total: {len(no_compradores)} clientes sin compra del SKU.")
