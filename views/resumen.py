@@ -132,6 +132,6 @@ def _render_caption_ncf_descartadas(health: dict) -> None:
         return
     monto = abs(float(health.get("monto_ncf_descartado", 0.0)))
     st.caption(
-        f"Descuentos comerciales aplicados en el período: "
-        f"${monto:,.2f} ({n} NCF sin SKU)"
+        f"Los siguientes descuentos comerciales no fueron descontados "
+        f"del monto indicado arriba: ${monto:,.2f} ({n} NCF sin SKU)"
     )
