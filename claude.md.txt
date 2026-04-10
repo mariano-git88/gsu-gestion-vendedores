@@ -247,6 +247,48 @@ Para cada vendedor, en DOS timeframes paralelos (semana | mes):
 > no por `documento` solo. Una venta cruzada (vendedor A le vende a un
 > cliente de B) no cuenta como cobertura para nadie. Ver entrada del
 > 2026-04-10 en `_learning/decisions.md`.
+
+### Análisis profundo (tab "Análisis")
+
+Tab dedicada con tres bloques de exploración estratégica para
+identificar oportunidades concretas de venta:
+
+1. **Penetración por sub-rubro** — matriz pivot vendedor × sub-rubro
+   con % de cobertura. Identifica huecos de cross-sell agregados.
+   Coloreado rojo (huecos) → amarillo → verde (bien cubierto).
+
+2. **Heatmap cliente × sub-rubro** — para un vendedor específico (con
+   selector + selector de top N, default 30), matriz con sus mejores
+   clientes en filas y los sub-rubros en columnas, con monto vendido
+   en cada celda. Las celdas en blanco son los huecos a explorar para
+   cada cliente. Escala monocromática de grises.
+
+3. **Pareto de clientes** — distribución 80/20. Identifica el "core
+   vital" (los pocos clientes que generan el 80% de la venta) y los
+   marca con un highlight crema sutil. Selector "(Todos los vendedores)"
+   o vendedor específico.
+
+Las tres operan sobre el período seleccionado (selector arriba de la
+vista, default Mes). Match estricto consistente con el resto.
+
+### Export de agenda personal por vendedor
+
+Bloque en la sidebar (después del procesamiento de datos) con un
+selector de vendedor y un botón **"Descargar agenda.xlsx"**. Genera
+un archivo Excel de 5 hojas para que el vendedor se lleve "su agenda"
+de la reunión:
+
+| Hoja | Contenido |
+|---|---|
+| Resumen | Performance del período + cobertura general + comparativa vs promedio del equipo |
+| Mi cartera | Listado completo: documento, razón social, monto mes/semana, ¿compró? |
+| Clientes dormidos | Solo los que no compraron este mes |
+| Penetración | Fila propia del vendedor de la matriz de penetración |
+| Top 80% | Los clientes que conforman el CORE 80% de su Pareto |
+
+Generación cacheada con `@st.cache_data`. Match estricto en todas las
+hojas. Ver `exports.py` y la entrada de `decisions.md` del 2026-04-10
+sobre el export.
 - % cobertura = con_venta / asignados
 - Cobertura desagregada por sub_rubro: de los clientes asignados al
   vendedor, cuántos recibieron al menos una venta (FAC) de al menos
@@ -257,12 +299,12 @@ Para cada vendedor, en DOS timeframes paralelos (semana | mes):
 
 ## Panel de salud de datos
 
-El panel vive en su propia tab dedicada (la 4ta, después de Resumen,
-Sub-rubro y Cobertura). El usuario tiene que hacer click para verlo,
-no aparece junto al dashboard principal. **Excepción**: si hay alertas
-estructurales en rojo (vendedores sin cartera o clientes duplicados),
-arriba de las tabs aparece un banner discreto avisando para que no se
-le pase información crítica al usuario.
+El panel vive en su propia tab dedicada (la **5ta**, después de Resumen,
+Sub-rubro, Cobertura y Análisis). El usuario tiene que hacer click para
+verlo, no aparece junto al dashboard principal. **Excepción**: si hay
+alertas estructurales en rojo (vendedores sin cartera o clientes
+duplicados), arriba de las tabs aparece un banner discreto avisando
+para que no se le pase información crítica al usuario.
 
 Contiene los siguientes contadores. Si todos están en cero → semáforo
 verde. Si hay warnings menores → amarillo. Si hay errores estructurales
@@ -301,13 +343,22 @@ Estructura de carpetas y archivos del proyecto:
 - `transforms.py` — exclusión OP, filtrado NCF, validación de moneda,
   joins, clasificación de SKU
 - `metrics.py` — cálculo de ventas y cobertura (con match estricto
-  por `(vendedor, documento)` — ver `_learning/decisions.md`)
+  por `(vendedor, documento)` — ver `_learning/decisions.md`).
+  Incluye también las funciones de análisis profundo: penetración
+  pivotada por sub-rubro, heatmap cliente×sub-rubro, Pareto de clientes
+- `exports.py` — generación del archivo .xlsx de agenda personal por
+  vendedor (5 hojas: Resumen / Mi cartera / Clientes dormidos /
+  Penetración / Top 80%). Función pública:
+  `exportar_agenda_vendedor()`. Funciones puras, no importa streamlit
 - `views/` — componentes del dashboard
   - `views/__init__.py`
   - `views/resumen.py` — vista principal por vendedor (totales semana y mes)
   - `views/sub_rubro.py` — desglose por sub-rubro con filtros
   - `views/cobertura.py` — cobertura general, por sub-rubro, por SKU,
     y lista de clientes que NO compraron un SKU específico en el mes
+  - `views/analisis.py` — análisis profundo: penetración por sub-rubro,
+    heatmap cliente×sub-rubro, Pareto de clientes. Incluye helpers
+    locales de styling sin matplotlib (ver "Principios de código" abajo)
 - `assets/` — recursos visuales (lowercase, importante para Linux)
   - `assets/logo.png` — logo de grupo Suprabond para la sidebar
 - `tests/` — placeholder de tests, sin contenido por ahora
@@ -323,14 +374,38 @@ Estructura de carpetas y archivos del proyecto:
 
 ### Principios de código
 
-- `data_loader.py`, `transforms.py` y `metrics.py` son funciones puras
-  (reciben DataFrames, devuelven DataFrames, sin side effects). No
-  importan streamlit.
+- `data_loader.py`, `transforms.py`, `metrics.py` y `exports.py` son
+  funciones puras (reciben DataFrames, devuelven DataFrames o BytesIO,
+  sin side effects). No importan streamlit.
 - Solo `app.py` y `views/` importan streamlit.
 - Cache agresivo con `@st.cache_data` sobre las funciones de transformación
-  para fluidez al cambiar filtros o pestañas.
+  y sobre la generación de la agenda exportable, para fluidez al cambiar
+  filtros, pestañas o vendedor seleccionado.
 - Validación estricta de schemas al cargar — error claro al usuario si
   falta algo, nunca fallar silenciosamente.
+
+### Lecciones técnicas a respetar (ver `_learning/errors.md`)
+
+- **NO usar `Styler.background_gradient()`, `.bar()` ni `.text_gradient()`**
+  de pandas. Esas funciones requieren `matplotlib` como dependencia oculta
+  que NO está en `requirements.txt` (y no tiene sentido agregarla solo
+  para gradientes). En su lugar, escribir helpers manuales con
+  interpolación lineal en RGB. Hay ejemplos en `views/analisis.py`
+  (`_color_for_pct` y `_make_grey_scale`).
+- **Usar `Styler.map()`** (NO `Styler.applymap()`). El segundo fue
+  removido en pandas 3.x y rompe en producción.
+- **El smoke test `streamlit run --headless` solo verifica que el app
+  arranque y sirva la pantalla de login.** Las vistas que viven dentro
+  de tabs no se renderizan hasta que un usuario navega a ellas, así
+  que `streamlit headless` NO detecta errores de runtime que ocurren
+  al renderizar el contenido de una tab. Para validar cambios en
+  views/, **commit + push + verificación inmediata en producción** es
+  más confiable que acumular cambios y validar al final.
+- **El entorno local NO es referencia de Streamlit Cloud.** Pueden
+  haber dependencias instaladas casualmente que en producción no
+  existen, y versiones distintas de pandas/streamlit con APIs
+  diferentes. Cuando usar una API ambigua de pandas, elegir siempre
+  el nombre más reciente (ver entradas del 2026-04-10 en errors.md).
 
 ---
 

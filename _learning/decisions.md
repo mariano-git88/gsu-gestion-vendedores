@@ -182,3 +182,131 @@ que solo aparece en la semana (no en el mes), la vista muestra un
 mensaje informativo en lugar de una lista vacía o todos los clientes.
 
 **Confirmado por:** Mariano, sesión 2026-04-10.
+
+---
+
+## 2026-04-10 — Tab "Análisis profundo" para visualizaciones estratégicas
+
+**Decisión:** se agrega una **5ta tab "Análisis"** entre Cobertura y
+Salud, con tres bloques de exploración estratégica:
+
+1. **Penetración por sub-rubro** — matriz pivot vendedor × sub_rubro
+   con % de cobertura, coloreada en una escala roja → amarilla → verde.
+2. **Heatmap cliente × sub-rubro** — para un vendedor específico, los
+   top N clientes en filas y los sub-rubros en columnas, con monto en
+   cada celda y escala de grises según el monto.
+3. **Pareto de clientes** — distribución 80/20 con marcador del CORE 80%.
+
+**Contexto:** Mariano pidió evolucionar el dashboard para que el Jefe
+de Ventas salga de la reunión semanal con **acciones concretas para
+vender más**, no solo con números para mirar. Las tres visualizaciones
+identifican oportunidades específicas: huecos de cross-sell (penetración
+y heatmap) y clientes a blindar (Pareto).
+
+**Por qué una tab nueva** (en lugar de extender las existentes):
+
+- Las tres son **exploración estratégica**, no del uso diario. Tener
+  una tab dedicada las hace fáciles de encontrar pero las separa del
+  flujo cotidiano (Resumen / Sub-rubro / Cobertura).
+- Permite agregar más visualizaciones de análisis profundo en el futuro
+  sin saturar las tabs habituales.
+
+**Decisiones de diseño dentro de la tab:**
+
+- **Selector de período común** a las 3 secciones (Mes / Semana, default
+  Mes). La penetración semanal tiende a ser baja para todos y aporta
+  poca señal, por eso default Mes.
+
+- **Heatmap por sub_rubro, no por SKU**: ~10–20 columnas vs cientos.
+  Da panorama estratégico legible. Si en el futuro se quiere ver SKU
+  específico, ya existe la sección "Cobertura por SKU" en la tab anterior.
+
+- **Heatmap top N = 30 clientes por default** (rango 5–100). Filtrar
+  por vendedor obligatorio. Sin esto, mostrar 986 clientes × N sub-rubros
+  es ilegible. 30 es un balance entre "ver lo importante" y "no saturar
+  la pantalla".
+
+- **Heatmap con escala de grises monocromática** (no colorida) para
+  encajar con el theme Dieter Rams.
+
+- **Penetración con escala rojo→amarillo→verde** suave (no saturada).
+  Aquí sí se justifica el color porque el rojo es semánticamente "alerta"
+  — los huecos de cross-sell son un llamado a la acción.
+
+- **Pareto incluye al menos el primer cliente** aunque ya supere el
+  80% por sí solo. Sin esa salvaguarda, vendedores con cartera muy
+  concentrada en pocos clientes podrían recibir un Pareto vacío.
+
+- **Pareto con selector "Todos los vendedores" o vendedor específico**.
+  En modo "Todos" aparece la columna `vendedor` para identificar quién
+  atiende cada cliente del top.
+
+- **Match estricto en las 3 funciones nuevas** (`penetracion_por_sub_rubro_pivot`,
+  `heatmap_cliente_sub_rubro`, `pareto_clientes`), consistente con el
+  resto de las funciones de cobertura — ver entrada del 2026-04-10
+  sobre "Match estricto en cobertura".
+
+**Confirmado por:** Mariano, sesión 2026-04-10.
+
+---
+
+## 2026-04-10 — Export de agenda personal por vendedor (Excel, 5 hojas)
+
+**Decisión:** se agrega un bloque **"Exportar agenda"** en la sidebar
+del app (debajo de los uploaders, después del procesamiento de datos)
+con un **selector de vendedor** y un **botón de descarga** que genera
+un archivo `.xlsx` con la agenda personal de ese vendedor.
+
+**Contexto:** complementa la tab "Análisis" para que el resultado de la
+reunión sea **tangible**. El vendedor sale con un Excel en mano que
+contiene todo lo que tiene que hacer en la semana — no solo "datos
+en pantalla que ya no recuerda al volver al auto".
+
+**Estructura del .xlsx (5 hojas):**
+
+| Hoja | Contenido |
+|---|---|
+| 1. Resumen | Performance del período (mes y semana) + cobertura general + comparativa vs promedio del equipo |
+| 2. Mi cartera | Listado completo: documento, razón social, monto mes, monto semana, unidades, ¿compró este mes? Ordenado: los que compraron arriba (por monto desc), los dormidos abajo |
+| 3. Clientes dormidos | Solo los que no compraron este mes, ordenados por razón social |
+| 4. Penetración | La fila propia del vendedor de la matriz de penetración por sub-rubro, ordenada descendente |
+| 5. Top 80% | Los clientes que conforman el CORE 80% del Pareto del vendedor |
+
+**Decisiones de implementación:**
+
+- **Excel, no PDF**. Razones:
+  - Implementación trivial con `openpyxl` (ya tenemos esa dependencia).
+  - Datos manipulables: el vendedor puede ordenar/filtrar a su gusto.
+  - PDF requeriría `reportlab` o `weasyprint`, formato fijo, mucho más
+    esfuerzo. Si en el futuro lo piden, lo agregamos como segundo botón
+    sin tocar el primero.
+
+- **Un solo selector + un solo botón** (no descarga masiva en ZIP).
+  Razón: simplicidad operativa. Si el Jefe necesita las agendas de
+  todo el equipo, las descarga una por una. Para 5–10 vendedores no
+  vale el esfuerzo de implementar el ZIP.
+
+- **El bloque vive DESPUÉS del procesamiento de datos** (no junto a los
+  uploaders), porque necesita `df_clientes`, `df_sem` y `df_mes` ya
+  cargados. Si el usuario todavía no subió las planillas, simplemente
+  no aparece — sin riesgo de "click sin datos".
+
+- **Cacheado con `@st.cache_data`** por (df_sem, df_mes, df_clientes,
+  vendedor). Si el usuario cambia de vendedor varias veces, solo
+  regenera para el vendedor que cambia.
+
+- **Match estricto en todas las hojas**, igual que el resto del dashboard.
+  Las ventas cruzadas no aparecen en la agenda de ningún vendedor.
+
+- **Stylo consistente con el theme Dieter Rams**: headers negros con
+  texto blanco, bordes finísimos grises, sin sombras, formato de moneda
+  `$#,##0`, porcentajes `0.0%`.
+
+- **Top 80% incluye al menos 1 cliente** (misma salvaguarda que en la
+  tab de Análisis).
+
+**Módulo nuevo:** `exports.py` (separado de `metrics.py` para no mezclar
+"cálculo de datos" con "generación de archivos"). Función pública:
+`exportar_agenda_vendedor(df_sem, df_mes, df_clientes, vendedor) -> BytesIO`.
+
+**Confirmado por:** Mariano, sesión 2026-04-10.
