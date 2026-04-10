@@ -157,8 +157,9 @@ def _seccion_penetracion(df: pd.DataFrame, df_clientes: pd.DataFrame) -> None:
         st.info("Sin datos de penetración para mostrar en este período.")
         return
 
-    # Color celda por celda con helper local (sin matplotlib)
-    styled = pivot.style.applymap(_color_for_pct).format("{:.0f}%")
+    # Color celda por celda con helper local (sin matplotlib).
+    # Usamos Styler.map (NO applymap, que fue removido en pandas 3.x).
+    styled = pivot.style.map(_color_for_pct).format("{:.0f}%")
 
     st.dataframe(styled, use_container_width=True)
 
@@ -224,7 +225,8 @@ def _seccion_heatmap(df: pd.DataFrame, df_clientes: pd.DataFrame) -> None:
         else 0.0
     )
     grey_color = _make_grey_scale(vmax)
-    styled = heat.style.applymap(
+    # Usamos Styler.map (NO applymap, removido en pandas 3.x)
+    styled = heat.style.map(
         grey_color, subset=sub_rubro_cols
     ).format("{:,.0f}", subset=sub_rubro_cols)
 

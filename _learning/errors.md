@@ -124,3 +124,59 @@ puede romper en deploy si solo se prueba en un entorno donde esas
 dependencias ya están casualmente instaladas. **Pinear explícitamente
 las dependencias** en requirements.txt y **probar en un entorno limpio**
 (idealmente un Docker o un venv recién creado) elimina el riesgo.
+
+---
+
+## 2026-04-10 — Styler.applymap removido en pandas 3.x (segundo round del mismo bug)
+
+**Qué pasó:** después de arreglar el problema de matplotlib (entrada
+anterior) reemplazando `background_gradient` por styling manual, usé
+`Styler.applymap(...)` para aplicar las funciones de color celda por
+celda. Funcionaba sintácticamente y mi entorno local no protestó. Pero
+al desplegar a Streamlit Cloud (pandas 3.x), la tab "Análisis" volvió a
+romper con `AttributeError: 'Styler' object has no attribute 'applymap'`.
+
+**Causa:** `Styler.applymap` fue **renombrado** a `Styler.map` en
+pandas 2.1 (donde quedó como deprecated alias). En **pandas 3.x lo
+eliminaron del todo**. Streamlit Cloud está corriendo Python 3.14 +
+pandas 3.x, mientras que mi entorno local tiene pandas 2.x donde
+`applymap` todavía existe (con DeprecationWarning silencioso).
+
+**Cómo lo arreglé:** reemplacé `pivot.style.applymap(...)` y
+`heat.style.applymap(...)` por `pivot.style.map(...)` y
+`heat.style.map(...)`. Cambio puramente cosmético, misma funcionalidad,
+soportado en pandas 2.1+.
+
+**Lección operativa adicional:**
+
+1. **Cuando dudo entre dos nombres de API en pandas, elegir el más
+   reciente**. Pandas tiene un montón de pares "viejo nombre / nuevo
+   nombre" donde el viejo está deprecated y va a desaparecer:
+   - `Styler.applymap` → `Styler.map` (desde 2.1)
+   - `df.append()` → `pd.concat()` (removido en 2.0)
+   - `df.iteritems()` → `df.items()` (removido en 2.0)
+   - `df.ix[]` → `df.loc[]` o `df.iloc[]` (removido hace años)
+
+2. **Mi entorno local NO es referencia confiable** para validar que el
+   código va a funcionar en producción. Tengo un mix de versiones que
+   no necesariamente coincide con Streamlit Cloud. **La única validación
+   real es probar en producción** (o en un entorno Docker que replique
+   exactamente el de Streamlit Cloud).
+
+3. **El smoke test "streamlit headless + HTTP 200" sigue siendo
+   insuficiente** para detectar este tipo de bugs. Solo valida import +
+   primera pantalla, no el código que vive dentro de las tabs. Para
+   cambios en views/, el único test confiable es ejecutar la función
+   `render()` directamente con datos sintéticos y verificar que NO
+   levanta excepciones — pero eso requiere una sesión de Streamlit
+   activa, lo cual es complicado fuera del runtime real.
+
+4. **Patrón recomendado** para futuros cambios visuales: **commit + push
+   + verificación inmediata en producción**. No esperar a "validar todo
+   junto" porque cada bug nuevo solo aparece cuando lo provocás. Acumular
+   cambios sin probar los multiplica.
+
+**Aplicación general:** APIs deprecated en librerías populares casi
+siempre **se eliminan eventualmente**. Si una librería te dice "esto
+está deprecated, usá la otra", tomalo en serio: **migrá ahora**, no
+cuando la versión nueva rompa tu deploy.
