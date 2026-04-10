@@ -357,3 +357,206 @@ def cobertura_por_sku(
         axis=1,
     )
     return result.sort_values("cobertura_pct", ascending=False).reset_index(drop=True)
+
+
+# =====================================================================
+# ANÁLISIS PROFUNDO (vista "Análisis")
+# =====================================================================
+
+def penetracion_por_sub_rubro_pivot(
+    df_fc: pd.DataFrame, df_clientes: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Devuelve la matriz de penetración por sub-rubro: vendedores en filas,
+    sub-rubros en columnas, % de clientes cubiertos en cada celda.
+
+    Es una versión pivotada de `cobertura_por_sub_rubro` pensada para
+    mostrarse como tabla con styling de heatmap (rojo→verde según el %).
+    Solo incluye sub-rubros que aparecen en el período (no rellena con
+    columnas vacías).
+
+    Match estricto, NCF no cuentan — hereda todas las reglas de
+    `cobertura_por_sub_rubro`.
+
+    Devuelve:
+        DataFrame con index=vendedor, columns=sub_rubro, valores=%.
+        Si no hay datos, devuelve DataFrame vacío.
+    """
+    cob_sr = cobertura_por_sub_rubro(df_fc, df_clientes)
+    if cob_sr.empty:
+        return pd.DataFrame()
+
+    pivot = cob_sr.pivot(
+        index="vendedor",
+        columns="sub_rubro",
+        values="cobertura_pct",
+    ).fillna(0.0)
+
+    # Ordenar columnas: las de mayor cobertura promedio primero (más
+    # útil para el ojo cuando hay muchos sub-rubros).
+    pivot = pivot[pivot.mean().sort_values(ascending=False).index]
+
+    return pivot
+
+
+def heatmap_cliente_sub_rubro(
+    df_fc: pd.DataFrame,
+    df_clientes: pd.DataFrame,
+    vendedor: str,
+    top_n: int = 30,
+) -> pd.DataFrame:
+    """
+    Heatmap cliente × sub-rubro para un vendedor específico.
+
+    Para los TOP N clientes del vendedor (por monto comprado en el
+    período), devuelve una matriz con sub-rubros en columnas y monto
+    vendido en cada celda. Permite ver de un vistazo qué sub-rubros
+    "le compra cada cliente" y dónde están los huecos para hacer
+    cross-sell.
+
+    Match estricto: solo cuenta filas con `tipo == FAC` Y donde
+    `(vendedor_op, documento)` matchea con la cartera del vendedor.
+    Las ventas a clientes de otros vendedores no aparecen.
+
+    Args:
+        vendedor: el email del vendedor cuya cartera se va a explorar.
+        top_n: cuántos clientes mostrar (los de mayor monto del período).
+
+    Devuelve un DataFrame con columnas:
+        razon_social, documento, [sub_rubro_1, sub_rubro_2, ...]
+
+    Cada celda de sub_rubro es el monto vendido al cliente en ese
+    sub_rubro durante el período. Las celdas vacías (sin compra) son 0.
+
+    Si el vendedor no tiene clientes con compras → DataFrame vacío.
+    """
+    # Cartera del vendedor (solo documentos, sin razon_social para evitar
+    # conflicto de nombres en el merge — la traemos aparte vía dict)
+    cartera_v = (
+        df_clientes[df_clientes["vendedor"] == vendedor]
+        .dropna(subset=["documento"])
+        .drop_duplicates(subset="documento")
+    )
+    if cartera_v.empty:
+        return pd.DataFrame()
+
+    docs_cartera = set(cartera_v["documento"])
+    rs_map = cartera_v.set_index("documento")["razon_social"].to_dict()
+
+    # FAC del vendedor a clientes en su cartera
+    df_fac = df_fc[
+        (df_fc["vendedor"] == vendedor)
+        & (df_fc["tipo"] == TIPO_FAC)
+        & (df_fc["documento"].isin(docs_cartera))
+    ]
+    if df_fac.empty:
+        return pd.DataFrame()
+
+    # Sumar monto por (cliente, sub_rubro)
+    grouped = df_fac.groupby(
+        ["documento", "sub_rubro"], as_index=False
+    )["monto"].sum()
+
+    # Pivot a matriz cliente × sub_rubro
+    pivot = (
+        grouped.pivot(index="documento", columns="sub_rubro", values="monto")
+        .fillna(0)
+    )
+
+    # Top N clientes por monto total
+    pivot["__total"] = pivot.sum(axis=1)
+    top = pivot.sort_values("__total", ascending=False).head(top_n).drop(columns="__total")
+
+    # Reordenar columnas: las de mayor monto total primero
+    if len(top) > 0:
+        col_order = top.sum().sort_values(ascending=False).index
+        top = top[col_order]
+
+    # Agregar razon_social como primera columna
+    top = top.reset_index()
+    top.insert(0, "razon_social", top["documento"].map(rs_map))
+
+    return top
+
+
+def pareto_clientes(
+    df_fc: pd.DataFrame,
+    df_clientes: pd.DataFrame,
+    vendedor: str | None = None,
+) -> pd.DataFrame:
+    """
+    Análisis de Pareto de clientes.
+
+    Ordena los clientes por monto descendente y calcula el porcentaje
+    individual y acumulado. Permite identificar el "top vital" — los
+    pocos clientes que generan la mayor parte de la venta.
+
+    Args:
+        vendedor: si es None, calcula el Pareto global (todos los
+            vendedores juntos). Si es un email específico, calcula
+            solo sobre la cartera de ese vendedor.
+
+    Match estricto, NCF no cuentan.
+
+    Devuelve un DataFrame con columnas:
+        - vendedor (solo si vendedor=None, para identificar quién atiende cada cliente)
+        - documento
+        - razon_social
+        - monto
+        - pct_individual
+        - pct_acumulado
+
+    Si no hay datos → DataFrame vacío.
+    """
+    df_fac = df_fc[df_fc["tipo"] == TIPO_FAC]
+    cartera_idx = (
+        df_clientes.dropna(subset=["vendedor", "documento"])
+        .drop_duplicates(subset=["vendedor", "documento"])
+    )
+    rs_map = (
+        cartera_idx.drop_duplicates(subset="documento")
+        .set_index("documento")["razon_social"]
+        .to_dict()
+    )
+
+    if vendedor is not None:
+        cartera_idx = cartera_idx[cartera_idx["vendedor"] == vendedor]
+        df_fac = df_fac[df_fac["vendedor"] == vendedor]
+
+    cartera_keys = cartera_idx[["vendedor", "documento"]]
+    fac_en_cartera = df_fac.merge(
+        cartera_keys, on=["vendedor", "documento"], how="inner"
+    )
+
+    if fac_en_cartera.empty:
+        return pd.DataFrame()
+
+    # Sumar por cliente
+    if vendedor is None:
+        grouped = (
+            fac_en_cartera.groupby(["vendedor", "documento"], as_index=False)["monto"]
+            .sum()
+        )
+    else:
+        grouped = (
+            fac_en_cartera.groupby(["documento"], as_index=False)["monto"].sum()
+        )
+
+    # Razón social
+    grouped["razon_social"] = grouped["documento"].map(rs_map)
+
+    # Ordenar por monto descendente y calcular pct
+    grouped = grouped.sort_values("monto", ascending=False).reset_index(drop=True)
+    total = float(grouped["monto"].sum())
+    if total == 0:
+        return pd.DataFrame()
+
+    grouped["pct_individual"] = (grouped["monto"] / total * 100).round(2)
+    grouped["pct_acumulado"] = grouped["pct_individual"].cumsum().round(2)
+
+    # Reordenar columnas
+    if vendedor is None:
+        cols = ["vendedor", "documento", "razon_social", "monto", "pct_individual", "pct_acumulado"]
+    else:
+        cols = ["documento", "razon_social", "monto", "pct_individual", "pct_acumulado"]
+    return grouped[cols]

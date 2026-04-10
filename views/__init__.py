@@ -1,5 +1,5 @@
 """views — componentes del dashboard de Gestión de Vendedores GSU."""
 
-from . import cobertura, resumen, sub_rubro
+from . import analisis, cobertura, resumen, sub_rubro
 
-__all__ = ["resumen", "sub_rubro", "cobertura"]
+__all__ = ["resumen", "sub_rubro", "cobertura", "analisis"]

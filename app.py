@@ -20,9 +20,10 @@ import streamlit as st
 
 import auth
 import data_loader
+import exports
 import theme
 import transforms
-from views import cobertura, resumen, sub_rubro
+from views import analisis, cobertura, resumen, sub_rubro
 
 # =====================================================================
 # CONFIG
@@ -85,6 +86,18 @@ def _prepare_cached(df_fc, df_cli, df_prod, df_comb):
     return transforms.prepare_facturacion(df_fc, df_cli, df_prod, df_comb)
 
 
+@st.cache_data(show_spinner="Generando agenda...")
+def _agenda_bytes_cached(df_sem, df_mes, df_clientes, vendedor: str) -> bytes:
+    """
+    Genera la agenda personal de un vendedor y devuelve los bytes del xlsx.
+    Cacheado por (df_sem, df_mes, df_clientes, vendedor): si nada de eso
+    cambia, no regenera.
+    """
+    return exports.exportar_agenda_vendedor(
+        df_sem, df_mes, df_clientes, vendedor
+    ).getvalue()
+
+
 # =====================================================================
 # SIDEBAR — file uploaders
 # =====================================================================
@@ -144,6 +157,36 @@ try:
 except Exception as e:
     st.error(f"**Error procesando datos:** {e}")
     st.stop()
+
+
+# =====================================================================
+# SIDEBAR — bloque de exportar agenda (necesita los datos ya cargados)
+# =====================================================================
+
+with st.sidebar:
+    st.header("Exportar agenda")
+    _vendedores_export = sorted(
+        df_clientes["vendedor"].dropna().astype(str).unique().tolist()
+    )
+    if _vendedores_export:
+        _v_export = st.selectbox(
+            "Vendedor",
+            options=_vendedores_export,
+            key="export_vendedor_sel",
+        )
+        _agenda_bytes = _agenda_bytes_cached(
+            df_sem, df_mes, df_clientes, _v_export
+        )
+        _nombre_archivo = f"agenda_{_v_export.split('@')[0].lower()}.xlsx"
+        st.download_button(
+            label="Descargar agenda.xlsx",
+            data=_agenda_bytes,
+            file_name=_nombre_archivo,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+    else:
+        st.caption("Sin vendedores con cartera para exportar.")
 
 
 # =====================================================================
@@ -241,12 +284,16 @@ if _has_red_alerts(health_sem) or _has_red_alerts(health_mes):
 # =====================================================================
 # TABS DE VISTAS
 # =====================================================================
-# 4 tabs: las 3 vistas de datos + 1 dedicada al panel de salud.
-# El usuario empieza en Resumen por default; salud está a un click.
+# 5 tabs: las 3 vistas de datos diarias + Análisis profundo + Salud.
+# El usuario empieza en Resumen por default; los demás están a un click.
 
-tab_resumen, tab_sub_rubro, tab_cobertura, tab_salud = st.tabs(
-    ["Resumen", "Sub-rubro", "Cobertura", "Salud"]
-)
+(
+    tab_resumen,
+    tab_sub_rubro,
+    tab_cobertura,
+    tab_analisis,
+    tab_salud,
+) = st.tabs(["Resumen", "Sub-rubro", "Cobertura", "Análisis", "Salud"])
 
 with tab_resumen:
     resumen.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
@@ -254,6 +301,8 @@ with tab_sub_rubro:
     sub_rubro.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
 with tab_cobertura:
     cobertura.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
+with tab_analisis:
+    analisis.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
 with tab_salud:
     st.subheader("Panel de salud de datos")
     st.caption(
