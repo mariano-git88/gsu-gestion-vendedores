@@ -136,6 +136,31 @@ nombres internos, nunca con los nombres originales del ERP.
 
 ## Reglas de filtrado y transformación (CRÍTICAS)
 
+### Exclusión de vendedores operativos
+Las filas de facturación cuyo `vendedor` sea uno de los siguientes
+NO se contabilizan en NINGUNA métrica del dashboard:
+
+- `OPJESICA@SUPRABOND.COM.UY`
+- `OPVALERIA@SUPRABOND.COM.UY`
+
+Son cuentas operativas/administrativas, no representantes comerciales.
+Sus operaciones aparecen en la facturación de Contabilium pero no
+deben contar para venta, cobertura ni ningún cálculo de performance.
+
+Implementación:
+- Es el PRIMER paso del orquestador `prepare_facturacion()`, antes
+  incluso del filtrado de NCF.
+- El check de "vendedores sin cartera" opera sobre el DataFrame ya
+  post-exclusión, así estos dos no aparecen flagueados como huérfanos.
+- Las filas excluidas se reportan en el panel de salud como info
+  (no warning) para trazabilidad.
+- Match exacto por string (case-sensitive). Si el ERP cambia la
+  capitalización o el dominio, actualizar la lista en `transforms.py`
+  (constante `VENDEDORES_OP_EXCLUIDOS`).
+
+Ver `_learning/decisions.md`, entrada 2026-04-10, para el contexto
+completo y las alternativas descartadas.
+
 ### Filtrado de notas de crédito
 Regla: se conservan las NCF que representan devoluciones de producto,
 se descartan las NCF que son descuentos comerciales.

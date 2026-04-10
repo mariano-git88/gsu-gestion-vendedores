@@ -40,6 +40,15 @@ ORIGEN_PRODUCTO = "producto"
 ORIGEN_COMBO = "combo"
 ORIGEN_SIN_ASIGNAR = "sin_asignar"
 
+# Vendedores operativos / administrativos que NO cuentan para ninguna
+# métrica del dashboard (decisión 2026-04-10, ver _learning/decisions.md).
+# Match exacto por string. Si el ERP cambia la capitalización o el dominio,
+# actualizar esta lista.
+VENDEDORES_OP_EXCLUIDOS = frozenset({
+    "OPJESICA@SUPRABOND.COM.UY",
+    "OPVALERIA@SUPRABOND.COM.UY",
+})
+
 
 # =====================================================================
 # Helpers
@@ -56,6 +65,36 @@ def _is_blank(val) -> bool:
     if isinstance(val, str) and val.strip() == "":
         return True
     return False
+
+
+# =====================================================================
+# 0. Exclusión de vendedores operativos (OPJESICA, OPVALERIA)
+# =====================================================================
+
+def exclude_op_vendedores(df_fc: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Excluye filas cuyo `vendedor` está en la lista de vendedores operativos
+    que no se contabilizan en el dashboard.
+
+    OPJESICA y OPVALERIA son cuentas operativas/administrativas, no
+    representantes comerciales. Sus operaciones aparecen en facturación
+    pero no deben contar para venta, cobertura ni ninguna métrica de
+    performance del equipo comercial.
+
+    Es el primer paso del pipeline (`prepare_facturacion`), antes incluso
+    del filtrado de NCF, así el resto del pipeline no procesa filas que
+    igual van a descartarse.
+
+    Match exacto por string (case-sensitive). Ver `VENDEDORES_OP_EXCLUIDOS`
+    arriba en este módulo.
+
+    Devuelve `(df_conservadas, df_excluidas)`. La segunda es para reportar
+    en el panel de salud cuántas líneas se excluyeron y de qué cuentas.
+    """
+    mask = df_fc["vendedor"].isin(VENDEDORES_OP_EXCLUIDOS)
+    df_excl = df_fc[mask].copy().reset_index(drop=True)
+    df_keep = df_fc[~mask].copy().reset_index(drop=True)
+    return df_keep, df_excl
 
 
 # =====================================================================
@@ -308,6 +347,9 @@ def prepare_facturacion(
     """
     health = {
         "filas_iniciales": len(df_fc_raw),
+        # OP excluidos (vendedores operativos)
+        "filas_op_excluidas": 0,
+        "vendedores_op_excluidos": [],
         # NCF
         "ncf_descartadas_descuento": 0,
         # Moneda
@@ -328,8 +370,21 @@ def prepare_facturacion(
     # Pre-check: clientes duplicados (no aborta, pero reporta)
     health["clientes_duplicados"] = check_clientes_duplicados(df_clientes)
 
+    # 0. Excluir vendedores operativos (OPJESICA, OPVALERIA).
+    # Es el primer step, antes de cualquier filtrado de negocio, para que el
+    # resto del pipeline no procese estas filas. Ver decisions.md 2026-04-10.
+    df, df_excluidas_op = exclude_op_vendedores(df_fc_raw)
+    health["filas_op_excluidas"] = len(df_excluidas_op)
+    health["vendedores_op_excluidos"] = sorted(
+        df_excluidas_op["vendedor"].dropna().astype(str).unique().tolist()
+    )
+    # Snapshot del df post-OP-exclude para usar en el cross-tabla check más
+    # abajo (queremos detectar vendedores sin cartera SOBRE las filas que
+    # sí cuentan, no incluyendo OPJESICA/OPVALERIA).
+    df_post_op = df.copy()
+
     # 1. NCF
-    df, ncf_descartadas = filter_notas_credito(df_fc_raw)
+    df, ncf_descartadas = filter_notas_credito(df)
     health["ncf_descartadas_descuento"] = len(ncf_descartadas)
 
     # 2. Moneda
@@ -353,10 +408,14 @@ def prepare_facturacion(
         df.loc[sin_asignar_mask, "sku"].dropna().astype(str).unique().tolist()
     )
 
-    # 5. Cross-tabla: vendedores sin cartera
-    # Se evalúa contra el df ORIGINAL (no el filtrado) para no perder señal:
-    # un vendedor cuyas ventas son todas NCF descuento igual debería aparecer.
-    health["vendedores_sin_cartera"] = check_vendedores_sin_cartera(df_fc_raw, df_clientes)
+    # 5. Cross-tabla: vendedores sin cartera.
+    # Se evalúa contra `df_post_op` (post-OP-exclude pero pre-NCF-filter)
+    # por dos razones combinadas:
+    #   - Excluir OPJESICA/OPVALERIA: no queremos verlos flagueados como
+    #     huérfanos porque por definición no tienen cartera (decisión 2026-04-10).
+    #   - Pre-NCF-filter: si un vendedor solo factura NCF descuento, igual
+    #     queremos detectar que existe y no tiene cartera asignada.
+    health["vendedores_sin_cartera"] = check_vendedores_sin_cartera(df_post_op, df_clientes)
 
     health["filas_finales"] = len(df)
     return df, health

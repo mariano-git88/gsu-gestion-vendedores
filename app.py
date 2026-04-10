@@ -171,8 +171,17 @@ def _render_health_section(label: str, health: dict) -> None:
         f"Salud {label} — [{color_label}] · {health['filas_finales']} filas finales",
         expanded=(color != "verde"),
     ):
+        # Aviso informativo de exclusión OP (decisión 2026-04-10)
+        if health.get("filas_op_excluidas", 0) > 0:
+            st.info(
+                f"**{health['filas_op_excluidas']} filas excluidas** por vendedor "
+                f"operativo (no cuentan para ninguna métrica): "
+                + ", ".join(health.get("vendedores_op_excluidos", []))
+            )
+
         col1, col2, col3 = st.columns(3)
         col1.metric("Filas iniciales", health["filas_iniciales"])
+        col1.metric("OP excluidos (filas)", health.get("filas_op_excluidas", 0))
         col1.metric("NCF descuentos descartados", health["ncf_descartadas_descuento"])
         col2.metric("Filas no UYU (excluidas)", health["filas_no_uyu"])
         col2.metric("Documento faltante", health["filas_doc_faltante"])
