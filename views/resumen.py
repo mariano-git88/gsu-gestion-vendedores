@@ -113,13 +113,17 @@ def render(
 
 def _render_caption_ncf_descartadas(health: dict) -> None:
     """
-    Pinta una caption debajo de un metric con el monto de las NCF de
-    descuentos comerciales que se descartaron en el filtrado.
+    Pinta una caption debajo de un metric con el monto total de descuentos
+    comerciales aplicados en el período (NCF tipo descuento, sin SKU).
 
-    Estas NCF NO se descuentan del total mostrado (regla de negocio:
-    sin sku → no se contabiliza), pero el usuario que cuadra contra Excel
-    necesita verlas explícitas para entender la diferencia. Se muestra el
-    valor absoluto con un label que aclara el sentido.
+    Importante: estos descuentos SÍ se aplicaron al cliente en la
+    facturación, pero NO están restados del total mostrado en el dashboard
+    (regla de negocio: NCF sin sku no se contabilizan). Mostrar el monto
+    explícito permite al usuario cuadrar contra el cálculo manual de
+    Excel, donde sí se restan.
+
+    Se muestra el valor absoluto (los descuentos vienen como números
+    negativos en la planilla; el label habla de monto otorgado).
 
     Si no hay NCF descartadas, no se renderiza nada.
     """
@@ -128,6 +132,6 @@ def _render_caption_ncf_descartadas(health: dict) -> None:
         return
     monto = abs(float(health.get("monto_ncf_descartado", 0.0)))
     st.caption(
-        f"Descuentos comerciales no descontados del total: "
-        f"${monto:,.0f} ({n} NCF sin SKU)"
+        f"Descuentos comerciales aplicados en el período: "
+        f"${monto:,.2f} ({n} NCF sin SKU)"
     )
