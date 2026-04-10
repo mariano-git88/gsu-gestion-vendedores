@@ -1,0 +1,69 @@
+# ===========================================
+# Gestión de Vendedores GSU — .gitignore
+# ===========================================
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+ENV/
+
+# ----- Tooling / IDE -----
+.vscode/
+.idea/
+*.swp
+*.swo
+.ipynb_checkpoints/
+
+# ----- Sistema operativo -----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ----- Streamlit secrets — NUNCA commitear -----
+# La plantilla pública (.example) sí va al repo; el archivo real no.
+.streamlit/secrets.toml
+
+# ----- DATOS SENSIBLES — NUNCA commitear -----
+# Las planillas reales de GSU/Contabilium no viven en git bajo ninguna
+# circunstancia (regla "Qué NO hacer" del CLAUDE.md).
+*.xlsx
+*.xls
+*.csv
+*.tsv
+*.parquet
+
+# Carpetas comunes donde se sueltan archivos de input/output durante uso local
+data/
+inputs/
+outputs/
+uploads/
+exports/
+
+# ----- Memoria del proyecto: ¿commitear o no? -----
+# Decisión: SÍ se commitean _learning/decisions.md y _learning/errors.md
+# (son documentación de criterios, valiosa para el repo). NO se commitea
+# _session-log.md (es ruido para el repo, vive solo localmente).
+_session-log.md
+
+# ----- Logs y temporales -----
+*.log
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ----- Secrets adicionales que puedan aparecer -----
+.env
+.env.local
+*.pem
+*.key

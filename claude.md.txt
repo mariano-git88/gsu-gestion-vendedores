@@ -1,0 +1,321 @@
+# CLAUDE.md — Dashboard Gestión de Vendedores (GSU)
+
+## Qué es este proyecto
+Web app en Streamlit para las reuniones semanales del Jefe de Ventas de GSU con su equipo comercial. Muestra métricas de venta por vendedor: semana corriente, mes acumulado, y cobertura de clientes sobre cartera
+asignada.
+
+## Mi rol
+Soy el owner técnico. Construyo y mantengo la app. El usuario final en la reunión es el Jefe de Ventas de GSU.
+
+## Contexto operativo
+- Uso: una vez por semana, en la reunión comercial de GSU.
+- Modelo de datos: upload manual de las 5 planillas al abrir la app.
+  No hay persistencia entre sesiones — se sube, se analiza, se cierra.
+- Quién opera la app: el Jefe de Ventas (o Mariano) en la reunión.
+
+---
+
+## Stack técnico
+- Python 3.11+
+- Streamlit (UI y deploy)
+- pandas + openpyxl (lectura de xlsx)
+- Deploy: Streamlit Community Cloud desde repo privado de GitHub
+- Auth: contraseña única compartida, en `.streamlit/secrets.toml` (local) y en los Secrets de Streamlit Cloud (producción)
+
+---
+
+## Protocolo de sesión (LEER SIEMPRE AL ARRANCAR)
+
+1. Leer `_learning/errors.md`.
+2. Leer `_learning/decisions.md`.
+3. Leer las últimas 3 entradas de `_session-log.md`.
+4. Preguntar en qué parte del proyecto vamos a trabajar (data_loader, transforms, vistas, auth, deploy) antes de empezar a escribir código.
+5. Para cualquier cambio que afecte el esquema de datos o las reglas de
+   clasificación, proponer la entrada a `decisions.md` antes de implementar.
+
+Al cerrar sesión: append a `_session-log.md` con lo hecho, decisiones
+tomadas, y qué queda pendiente.
+
+---
+
+## Fuentes de datos (5 planillas, subidas en cada sesión)
+
+Todas vienen de Contabilium con muchas columnas de ruido.
+Solo las columnas listadas abajo son relevantes — el resto se ignora al cargar.
+
+### 1. `fc_semanal.xlsx` — Facturación de la última semana
+- Hoja: `Comprobantes`
+- Columnas relevantes:
+  - `Documento` (RUT del cliente — LLAVE DE JOIN)
+  - `Razon Social` (se ignora, se usa la de clientes.xlsx para display)
+  - `Vendedor` (email, ej: ARTURO@SUPRABOND.COM.UY)
+  - `Fecha`
+  - `Tipo` (FAC o NCF — ver reglas de filtrado abajo)
+  - `Moneda` (debe ser UYU)
+  - `Codigo` (SKU del producto/combo)
+  - `Producto` (nombre del producto, para display)
+  - `Cantidad` (unidades — puede ser negativa en NCF)
+  - `Subo Total Bonif` (monto neto con bonificación, SIN IVA — ESTA
+    es la columna de monto que se usa para TODAS las métricas)
+
+### 2. `fc_mensual.xlsx` — Facturación del mes en curso
+Misma hoja (`Comprobantes`) y misma estructura que fc_semanal.xlsx.
+
+### 3. `clientes.xlsx` — Cartera asignada a cada vendedor
+- Hoja: `Clientes`
+- Columnas relevantes:
+  - `Documento` (RUT — LLAVE CANÓNICA)
+  - `Razon Social` (fuente de verdad para display en la UI)
+  - `Vendedor Asignado` (email, a quién está asignado el cliente)
+
+Es el universo contra el cual se calcula cobertura. ~986 clientes.
+
+### 4. `productos.xlsx` — Maestro de productos
+- Hoja: `Productos`
+- Columnas relevantes:
+  - `SKU` (llave — matchea contra `Codigo` de facturación)
+  - `Nombre`
+  - `Sub Rubro` (código corto, ej: 'A', 'BA', 'PM')
+  - `Rubro` (categoría superior, opcional para la UI)
+
+### 5. `combos.xlsx` — Maestro de combos
+- Hoja: `Combos`
+- IMPORTANTE: este archivo NO es una tabla SKU→nombre. Es una lista de materiales: cada fila es un item que compone un combo. Un mismo combo aparece en múltiples filas.
+- Columnas relevantes:
+  - `SKU Combo` (el SKU del combo, ej: 'COM CDB')
+  - `Nombre` (nombre del combo, ej: 'COMBO DE CANDADOS CON EXHIBIDOR')
+- El resto de columnas (Codigo, Item, Cantidad) describen el contenido
+  del combo y se ignoran — no nos interesa la descomposición.
+- Para usar como tabla de lookup: deduplicar por `SKU Combo` y quedarse solo con las columnas SKU Combo y Nombre.
+
+---
+
+## Reglas de carga y tipos de dato (CRÍTICAS)
+
+### Documento siempre como string
+La columna `Documento` debe leerse SIEMPRE como string, nunca como número.
+En cada llamada a `pd.read_excel`, usar `dtype={'Documento': str}`. Esto
+previene fallas de join cuando una planilla interpreta el documento como
+int y otra como str. No aplicar ningún formateo (no quitar puntos, ni
+ceros a la izquierda).
+
+### Lectura con hoja explícita
+Cada planilla tiene una hoja con nombre específico (`Comprobantes`,
+`Clientes`, `Productos`, `Combos`). Al cargar, especificar
+`sheet_name=...` explícitamente. No depender del orden ni de "la
+primera hoja".
+
+### Validación de columnas al cargar
+Para cada planilla, validar al cargar que existan TODAS las columnas
+listadas en la sección "Fuentes de datos" arriba. Si alguna falta,
+levantar un error claro al usuario indicando qué columna espera la
+app y qué columnas encontró. No continuar con columnas faltantes.
+
+### Rename a nombres internos
+Después de validar, renombrar las columnas a nombres internos limpios
+(snake_case sin espacios) antes de pasar a `transforms.py`. Mapping:
+
+- `Documento` → `documento`
+- `Razon Social` → `razon_social`
+- `Vendedor` / `Vendedor Asignado` → `vendedor`
+- `Codigo` → `sku` (en facturación)
+- `SKU` → `sku` (en productos)
+- `SKU Combo` → `sku` (en combos, después de deduplicar)
+- `Cantidad` → `unidades`
+- `Subo Total Bonif` → `monto`
+- `Sub Rubro` → `sub_rubro`
+- `Nombre` → `nombre`
+- `Tipo` → `tipo`
+- `Moneda` → `moneda`
+- `Fecha` → `fecha`
+
+El resto del código (transforms, metrics, views) trabaja solo con
+nombres internos, nunca con los nombres originales del ERP.
+
+---
+
+## Reglas de filtrado y transformación (CRÍTICAS)
+
+### Filtrado de notas de crédito
+Regla: se conservan las NCF que representan devoluciones de producto,
+se descartan las NCF que son descuentos comerciales.
+
+Implementación:
+1. Conservar todas las filas con `tipo == 'FAC'`.
+2. Conservar las filas con `tipo == 'NCF'` SOLO si `sku` no está vacío
+   (no es NaN, no es string vacío). Estas son devoluciones reales —
+   tienen un producto asociado, cantidad negativa, monto negativo.
+3. Descartar las filas con `tipo == 'NCF'` y `sku` vacío. Estas son
+   descuentos comerciales ("10% DTO. COMERCIAL") sin producto asociado.
+
+Las NCF que se conservan netean con las FAC al sumar por SKU o
+sub-rubro, lo cual es el comportamiento deseado.
+
+### Validación de moneda
+Toda fila debe tener `moneda == 'UYU'`. Si aparece cualquier otra
+moneda (USD u otra), levantar un warning en el panel de salud y
+EXCLUIR esas filas del cálculo. No intentar conversión automática.
+
+### Join cliente — facturación
+Todo join entre facturación (semanal o mensual) y clientes se hace
+EXCLUSIVAMENTE por `documento`. Nunca por razón social.
+
+- Tipo: left join de facturación contra clientes.
+- Si una fila de facturación tiene `documento` que no matchea en
+  clientes → se marca como "CLIENTE NO ENCONTRADO" y se reporta en
+  el panel de salud. No se descarta.
+- Si una fila tiene `documento` vacío → se marca como "DOCUMENTO
+  FALTANTE" y se reporta.
+
+### Razón social canónica
+La `razon_social` mostrada en la UI debe venir de `clientes.xlsx`.
+La razón social que viene en facturación se descarta tras el join.
+
+### Clasificación de SKU
+Cada fila de facturación (después del filtrado de NCF) debe
+clasificarse siguiendo este orden:
+
+1. Buscar el `sku` en productos. Si matchea → tomar su `sub_rubro`
+   y `nombre`.
+2. Si no matchea, buscar en la tabla de combos (ya deduplicada por
+   `sku`). Si matchea → asignar `sub_rubro = 'COMBO'` y tomar el
+   `nombre` del combo.
+3. Si no matchea en ninguno → asignar `sub_rubro = 'SIN ASIGNAR'`
+   y reportar el SKU en el panel de salud.
+
+El orden importa: productos primero, combos después.
+
+---
+
+## Métricas del dashboard
+
+Para cada vendedor, en DOS timeframes paralelos (semana | mes):
+
+### Ventas
+- Monto total (suma de `monto`, en UYU)
+- Unidades totales (suma de `unidades`)
+- Desglose de monto por `sub_rubro`
+- Desglose de unidades por `sub_rubro`
+- Posibilidad de filtrar por SKU específico
+- Posibilidad de filtrar por combo específico (SKUs con sub_rubro = 'COMBO')
+
+### Cobertura de clientes
+- Clientes asignados al vendedor (count de `documento` distintos en
+  clientes.xlsx donde `vendedor_asignado == vendedor`).
+- Clientes con al menos una venta POSITIVA en el período. Definición:
+  count de `documento` distintos en facturación donde:
+  - `vendedor == <vendedor actual>`
+  - existe al menos una fila con `tipo == 'FAC'` (NCF no cuenta para
+    cobertura, incluso si hay devoluciones de producto)
+- % cobertura = con_venta / asignados
+- Cobertura desagregada por sub_rubro: de los clientes asignados al
+  vendedor, cuántos recibieron al menos una venta (FAC) de al menos
+  un producto de cada sub_rubro.
+- Cobertura por SKU específico (filtrable).
+
+---
+
+## Panel de salud de datos (mostrar siempre al cargar)
+
+Después de cargar las 5 planillas, antes del dashboard, mostrar un panel
+con los siguientes contadores. Si todos están en cero → semáforo verde.
+Si hay warnings menores → amarillo. Si hay errores estructurales → rojo.
+
+Contadores:
+- Filas cargadas por planilla.
+- Filas con `documento` faltante en facturación (warning).
+- Filas con `documento` que no matchea en clientes (warning si menos
+  del 5% del total, error si 5% o más).
+- Filas con `moneda != 'UYU'` (warning, fueron excluidas).
+- SKUs que cayeron en 'SIN ASIGNAR' — listado completo (warning).
+- NCF descartadas por ser descuentos comerciales (info, no warning).
+- Vendedores en facturación que no aparecen en clientes.xlsx (error).
+
+---
+
+## Arquitectura del código
+
+Estructura de carpetas y archivos del proyecto:
+
+- `CLAUDE.md` — este archivo
+- `README.md` — instrucciones de uso, generado en sesión 1
+- `requirements.txt` — dependencias, generado en sesión 1
+- `.gitignore`
+- `.streamlit/secrets.toml` — local, NO commitear
+- `app.py` — entry point Streamlit, routing de vistas
+- `auth.py` — login con contraseña única
+- `data_loader.py` — carga y validación de las 5 planillas
+- `transforms.py` — filtrado, joins, clasificación de SKU
+- `metrics.py` — cálculo de ventas y cobertura
+- `views/` — componentes del dashboard
+  - `views/__init__.py`
+  - `views/resumen.py` — vista principal por vendedor
+  - `views/sub_rubro.py` — desglose por sub-rubro
+  - `views/cobertura.py` — métricas de cobertura
+- `tests/` — tests y fixtures
+  - `tests/fixtures/` — mini-set de prueba con datos reales o anonimizados
+  - `tests/test_transforms.py` — tests de filtrado, joins, clasificación
+- `_learning/` — institutional memory
+  - `_learning/errors.md` — errores pasados a no repetir
+  - `_learning/decisions.md` — decisiones de diseño, append-only
+- `_session-log.md` — bitácora de sesiones, append-only
+
+### Principios de código
+
+- `data_loader.py`, `transforms.py` y `metrics.py` son funciones puras
+  (reciben DataFrames, devuelven DataFrames, sin side effects). No
+  importan streamlit.
+- Solo `app.py` y `views/` importan streamlit.
+- Cache agresivo con `@st.cache_data` sobre las funciones de transformación
+  para fluidez al cambiar filtros o pestañas.
+- Validación estricta de schemas al cargar — error claro al usuario si
+  falta algo, nunca fallar silenciosamente.
+
+---
+
+## Autenticación
+
+- Contraseña única compartida leída de `st.secrets["app_password"]`.
+- Si la password ingresada coincide → `st.session_state["authenticated"] = True`
+  y se renderiza el resto de la app.
+- No hay usuarios individuales, no hay recuperación. Cambio de password
+  = editar secrets en Streamlit Cloud y redesplegar.
+
+---
+
+## Deploy
+
+- Repo privado en GitHub.
+- Conectado a Streamlit Community Cloud.
+- Push a `main` → redeploy automático.
+- Secrets (password) configurados en el dashboard de Streamlit Cloud,
+  NO en el repo.
+
+---
+
+## Qué NO hacer
+
+- No commitear datos reales de ventas al repo. Las planillas de GSU
+  no viven en git bajo ninguna circunstancia.
+- No commitear `.streamlit/secrets.toml`. Agregarlo a `.gitignore`.
+- No persistir archivos subidos en disco. Procesar en memoria con
+  `pd.read_excel(uploaded_file)` y descartar al cerrar la sesión.
+- No usar `Razon Social` como llave de join bajo ninguna circunstancia.
+- No asumir que los nombres de columnas del ERP son estables entre
+  semanas. Siempre validar.
+- No intentar convertir USD a UYU automáticamente. Excluir y avisar.
+- No contar NCF para la métrica de cobertura de clientes.
+- No calcular monto con otra columna que no sea `Subo Total Bonif`.
+
+---
+
+## Personalidad
+
+Pragmático. Esto es un dashboard para una reunión comercial de 60
+minutos: las métricas tienen que cargar rápido y ser legibles de un
+vistazo. Preferir simplicidad sobre sofisticación. Antes de agregar
+un gráfico, filtro o pestaña nueva, preguntar si es necesario.
+
+Cuando aparezca una decisión de diseño no trivial (qué librería de
+charting usar, cómo estructurar una vista, cómo manejar un caso borde),
+parar y discutirla antes de implementar. No improvisar en silencio.
