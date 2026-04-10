@@ -232,6 +232,21 @@ Para cada vendedor, en DOS timeframes paralelos (semana | mes):
   - `vendedor == <vendedor actual>`
   - existe al menos una fila con `tipo == 'FAC'` (NCF no cuenta para
     cobertura, incluso si hay devoluciones de producto)
+- Cobertura general (por vendedor, sin desagregar)
+- Cobertura desagregada por sub-rubro
+- Cobertura para un SKU específico (selector)
+- **Lista de clientes que NO compraron un SKU específico en el mes**
+  (selector reutiliza el de cobertura por SKU). Siempre sobre `df_mes`,
+  no afectada por el selector de Semana/Mes. Match estricto: si el
+  cliente le compró el SKU a otro vendedor distinto al asignado, igual
+  aparece (la oportunidad sigue abierta para el asignado).
+  Ver `_learning/decisions.md` para el criterio completo.
+
+> **Match estricto en todas las métricas de cobertura**: el matching
+> entre facturación y cartera se hace por la tupla `(vendedor, documento)`,
+> no por `documento` solo. Una venta cruzada (vendedor A le vende a un
+> cliente de B) no cuenta como cobertura para nadie. Ver entrada del
+> 2026-04-10 en `_learning/decisions.md`.
 - % cobertura = con_venta / asignados
 - Cobertura desagregada por sub_rubro: de los clientes asignados al
   vendedor, cuántos recibieron al menos una venta (FAC) de al menos
@@ -240,11 +255,18 @@ Para cada vendedor, en DOS timeframes paralelos (semana | mes):
 
 ---
 
-## Panel de salud de datos (mostrar siempre al cargar)
+## Panel de salud de datos
 
-Después de cargar las 5 planillas, antes del dashboard, mostrar un panel
-con los siguientes contadores. Si todos están en cero → semáforo verde.
-Si hay warnings menores → amarillo. Si hay errores estructurales → rojo.
+El panel vive en su propia tab dedicada (la 4ta, después de Resumen,
+Sub-rubro y Cobertura). El usuario tiene que hacer click para verlo,
+no aparece junto al dashboard principal. **Excepción**: si hay alertas
+estructurales en rojo (vendedores sin cartera o clientes duplicados),
+arriba de las tabs aparece un banner discreto avisando para que no se
+le pase información crítica al usuario.
+
+Contiene los siguientes contadores. Si todos están en cero → semáforo
+verde. Si hay warnings menores → amarillo. Si hay errores estructurales
+→ rojo.
 
 Contadores:
 - Filas cargadas por planilla.
@@ -267,23 +289,37 @@ Estructura de carpetas y archivos del proyecto:
 - `requirements.txt` — dependencias, generado en sesión 1
 - `.gitignore`
 - `.streamlit/secrets.toml` — local, NO commitear
-- `app.py` — entry point Streamlit, routing de vistas
+- `.streamlit/secrets.toml.example` — plantilla pública (sí va al repo)
+- `app.py` — entry point Streamlit: auth gate, file uploaders en sidebar,
+  routing de tabs (Resumen / Sub-rubro / Cobertura / Salud), banner de
+  alertas estructurales si las hay
 - `auth.py` — login con contraseña única
+- `theme.py` — tema visual estilo Dieter Rams / Vitsoe (CSS custom +
+  carga del logo en sidebar). Llamar `apply_theme()` después de
+  `st.set_page_config()` y antes del auth gate
 - `data_loader.py` — carga y validación de las 5 planillas
-- `transforms.py` — filtrado, joins, clasificación de SKU
-- `metrics.py` — cálculo de ventas y cobertura
+- `transforms.py` — exclusión OP, filtrado NCF, validación de moneda,
+  joins, clasificación de SKU
+- `metrics.py` — cálculo de ventas y cobertura (con match estricto
+  por `(vendedor, documento)` — ver `_learning/decisions.md`)
 - `views/` — componentes del dashboard
   - `views/__init__.py`
-  - `views/resumen.py` — vista principal por vendedor
-  - `views/sub_rubro.py` — desglose por sub-rubro
-  - `views/cobertura.py` — métricas de cobertura
-- `tests/` — tests y fixtures
-  - `tests/fixtures/` — mini-set de prueba con datos reales o anonimizados
-  - `tests/test_transforms.py` — tests de filtrado, joins, clasificación
+  - `views/resumen.py` — vista principal por vendedor (totales semana y mes)
+  - `views/sub_rubro.py` — desglose por sub-rubro con filtros
+  - `views/cobertura.py` — cobertura general, por sub-rubro, por SKU,
+    y lista de clientes que NO compraron un SKU específico en el mes
+- `assets/` — recursos visuales (lowercase, importante para Linux)
+  - `assets/logo.png` — logo de grupo Suprabond para la sidebar
+- `tests/` — placeholder de tests, sin contenido por ahora
+  - `tests/fixtures/` — vacío. En la sesión inicial decidimos NO crear
+    un mini-set de prueba con datos reales/anonimizados. Los tests
+    programáticos viven solo durante el desarrollo, en memoria,
+    sin archivos persistidos.
 - `_learning/` — institutional memory
   - `_learning/errors.md` — errores pasados a no repetir
   - `_learning/decisions.md` — decisiones de diseño, append-only
-- `_session-log.md` — bitácora de sesiones, append-only
+- `_session-log.md` — bitácora de sesiones, append-only (gitignored,
+  vive solo localmente)
 
 ### Principios de código
 
