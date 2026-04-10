@@ -14,12 +14,23 @@ Decisiones:
   - Whitespace generoso.
   - Hide Streamlit chrome (menú hamburger, footer, toolbar) para que el
     app se sienta como producto, no como demo de Streamlit.
+  - Logo de grupo Suprabond arriba en la sidebar (vía `st.logo()`).
 
 Llamar `apply_theme()` UNA vez al principio de app.py, justo después de
 `st.set_page_config()`.
 """
 
+from pathlib import Path
+
 import streamlit as st
+
+# Path absoluto al logo. Usar Path(__file__).parent para que funcione
+# tanto local como en Streamlit Cloud, sin depender del cwd.
+# IMPORTANTE: el directorio en disco es `assets` (lowercase), no `Assets`.
+# Linux es case-sensitive, así que el case tiene que coincidir exacto con
+# lo que git tiene tracked, sino falla en Streamlit Cloud aunque funcione
+# en WSL/Windows (que son case-insensitive).
+LOGO_PATH = Path(__file__).parent / "assets" / "logo.png"
 
 # ----- Paleta -----
 INK = "#1A1A1A"           # casi negro, texto principal
@@ -74,6 +85,14 @@ h3 {{
 
 p, div, span, li {{
     line-height: 1.6;
+}}
+
+/* ----- Logo en la sidebar (st.logo) ----- */
+[data-testid="stLogo"] img,
+[data-testid="stSidebarHeader"] img {{
+    max-height: 56px !important;
+    width: auto !important;
+    margin: 0.25rem 0 0.5rem 0 !important;
 }}
 
 /* ----- Sidebar: limpio, casi blanco ----- */
@@ -334,10 +353,16 @@ def apply_theme() -> None:
     Aplica el theme visual al app de Streamlit.
 
     Llamar UNA SOLA vez al principio de app.py, después de
-    `st.set_page_config()` y antes de cualquier otro elemento. Inyecta
-    CSS custom que estiliza todos los componentes nativos de Streamlit
-    según los principios de Dieter Rams / Vitsoe.
+    `st.set_page_config()` y antes de cualquier otro elemento. Hace dos
+    cosas:
 
-    No tiene side effects más allá de la inyección de CSS.
+      1. Inyecta CSS custom que estiliza todos los componentes nativos
+         de Streamlit según los principios de Dieter Rams / Vitsoe.
+      2. Si existe `Assets/logo.png`, lo registra con `st.logo()` para
+         que aparezca arriba a la izquierda en la sidebar.
+
+    Si el archivo del logo no existe, sigue funcionando sin él (no rompe).
     """
+    if LOGO_PATH.exists():
+        st.logo(str(LOGO_PATH))
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
