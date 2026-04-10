@@ -29,6 +29,75 @@ import streamlit as st
 import metrics
 
 
+# =====================================================================
+# Helpers de color (sin matplotlib)
+# =====================================================================
+# IMPORTANTE: NO usar `Styler.background_gradient()`. Esa función requiere
+# matplotlib como dependencia oculta, y si matplotlib no está instalado
+# en el entorno de deploy (Streamlit Cloud), TODA la vista rompe en
+# runtime. Para evitarlo, calculamos los colores manualmente con dos
+# helpers locales que solo usan stdlib + pandas.
+# Ver _learning/errors.md, entrada 2026-04-10 sobre este incidente.
+
+def _color_for_pct(value) -> str:
+    """
+    Devuelve el CSS de background para un valor 0-100 (porcentaje).
+    Escala rojo claro → amarillo claro → verde claro, suave para que
+    encaje con el theme Dieter Rams.
+
+    NaN o no numéricos → sin color (string vacío).
+    """
+    if pd.isna(value):
+        return ""
+    try:
+        pct = max(0.0, min(100.0, float(value))) / 100.0
+    except (ValueError, TypeError):
+        return ""
+
+    if pct <= 0.5:
+        # Rojo claro (0%) → Amarillo claro (50%)
+        t = pct * 2
+        r = int(248 + (250 - 248) * t)
+        g = int(184 + (240 - 184) * t)
+        b = int(184 + (176 - 184) * t)
+    else:
+        # Amarillo claro (50%) → Verde claro (100%)
+        t = (pct - 0.5) * 2
+        r = int(250 + (191 - 250) * t)
+        g = int(240 + (229 - 240) * t)
+        b = int(176 + (191 - 176) * t)
+
+    return f"background-color: rgb({r}, {g}, {b}); color: #1A1A1A"
+
+
+def _make_grey_scale(vmax: float):
+    """
+    Devuelve una función que mapea valores 0..vmax a un fondo de gris.
+    Las celdas con 0 o NaN no llevan color. La escala va de gris muy
+    claro (valor bajo) a gris oscuro (valor alto), con texto blanco
+    cuando el fondo se vuelve muy oscuro.
+    """
+    def _color(value) -> str:
+        if pd.isna(value):
+            return ""
+        try:
+            v = float(value)
+        except (ValueError, TypeError):
+            return ""
+        if v <= 0:
+            return ""
+        ratio = min(1.0, v / vmax) if vmax > 0 else 0.0
+        # Gris: 245 (casi blanco) → 80 (gris oscuro)
+        intensity = int(245 - (245 - 80) * ratio)
+        text_color = "#1A1A1A" if intensity > 140 else "#FFFFFF"
+        return (
+            f"background-color: rgb({intensity}, {intensity}, {intensity}); "
+            f"color: {text_color}"
+        )
+
+    return _color
+
+
 def render(
     df_sem: pd.DataFrame,
     df_mes: pd.DataFrame,
@@ -88,13 +157,8 @@ def _seccion_penetracion(df: pd.DataFrame, df_clientes: pd.DataFrame) -> None:
         st.info("Sin datos de penetración para mostrar en este período.")
         return
 
-    # Heatmap rojo → amarillo → verde, con escala 0-100%
-    styled = pivot.style.background_gradient(
-        cmap="RdYlGn",
-        vmin=0,
-        vmax=100,
-        axis=None,
-    ).format("{:.0f}%")
+    # Color celda por celda con helper local (sin matplotlib)
+    styled = pivot.style.applymap(_color_for_pct).format("{:.0f}%")
 
     st.dataframe(styled, use_container_width=True)
 
@@ -151,10 +215,17 @@ def _seccion_heatmap(df: pd.DataFrame, df_clientes: pd.DataFrame) -> None:
     no_numeric_cols = {"razon_social", "documento"}
     sub_rubro_cols = [c for c in heat.columns if c not in no_numeric_cols]
 
-    # Heatmap monocromático en grises (encaja con el theme Dieter Rams)
-    styled = heat.style.background_gradient(
-        cmap="Greys",
-        subset=sub_rubro_cols,
+    # Heatmap monocromático en grises (helper local, sin matplotlib).
+    # vmax es el monto máximo en cualquier celda del subset, así la
+    # escala usa todo el rango disponible para esta tabla.
+    vmax = (
+        float(heat[sub_rubro_cols].to_numpy().max())
+        if sub_rubro_cols and not heat[sub_rubro_cols].empty
+        else 0.0
+    )
+    grey_color = _make_grey_scale(vmax)
+    styled = heat.style.applymap(
+        grey_color, subset=sub_rubro_cols
     ).format("{:,.0f}", subset=sub_rubro_cols)
 
     st.dataframe(styled, use_container_width=True, hide_index=True)
