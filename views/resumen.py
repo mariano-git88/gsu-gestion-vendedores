@@ -19,6 +19,8 @@ def render(
     df_sem: pd.DataFrame,
     df_mes: pd.DataFrame,
     df_clientes: pd.DataFrame,
+    health_sem: dict | None = None,
+    health_mes: dict | None = None,
 ) -> None:
     """
     Renderiza la vista de resumen.
@@ -27,7 +29,15 @@ def render(
         df_sem: facturación semanal (post `transforms.prepare_facturacion`).
         df_mes: facturación mensual (post `transforms.prepare_facturacion`).
         df_clientes: maestro de clientes (post `data_loader.load_clientes`).
+        health_sem: dict de salud devuelto por prepare_facturacion para
+            la planilla semanal. Si se pasa, se muestra debajo del total
+            el monto de NCF descuentos no descontadas (transparencia para
+            cuadrar contra Excel).
+        health_mes: idem para la planilla mensual.
     """
+    health_sem = health_sem or {}
+    health_mes = health_mes or {}
+
     st.subheader("Resumen del período")
 
     # ----- Big numbers: total semana vs mes -----
@@ -35,9 +45,11 @@ def render(
     with col_sem:
         total_sem = float(df_sem["monto"].sum()) if not df_sem.empty else 0.0
         st.metric("Total semana (UYU)", f"{total_sem:,.0f}")
+        _render_caption_ncf_descartadas(health_sem)
     with col_mes:
         total_mes = float(df_mes["monto"].sum()) if not df_mes.empty else 0.0
         st.metric("Total mes (UYU)", f"{total_mes:,.0f}")
+        _render_caption_ncf_descartadas(health_mes)
 
     st.divider()
 
@@ -97,3 +109,25 @@ def render(
             use_container_width=True,
             hide_index=True,
         )
+
+
+def _render_caption_ncf_descartadas(health: dict) -> None:
+    """
+    Pinta una caption debajo de un metric con el monto de las NCF de
+    descuentos comerciales que se descartaron en el filtrado.
+
+    Estas NCF NO se descuentan del total mostrado (regla de negocio:
+    sin sku → no se contabiliza), pero el usuario que cuadra contra Excel
+    necesita verlas explícitas para entender la diferencia. Se muestra el
+    valor absoluto con un label que aclara el sentido.
+
+    Si no hay NCF descartadas, no se renderiza nada.
+    """
+    n = health.get("ncf_descartadas_descuento", 0)
+    if n <= 0:
+        return
+    monto = abs(float(health.get("monto_ncf_descartado", 0.0)))
+    st.caption(
+        f"Descuentos comerciales no descontados del total: "
+        f"${monto:,.0f} ({n} NCF sin SKU)"
+    )

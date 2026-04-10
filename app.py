@@ -233,8 +233,8 @@ tab_resumen, tab_sub_rubro, tab_cobertura = st.tabs(
 )
 
 with tab_resumen:
-    resumen.render(df_sem, df_mes, df_clientes)
+    resumen.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
 with tab_sub_rubro:
-    sub_rubro.render(df_sem, df_mes, df_clientes)
+    sub_rubro.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
 with tab_cobertura:
-    cobertura.render(df_sem, df_mes, df_clientes)
+    cobertura.render(df_sem, df_mes, df_clientes, health_sem, health_mes)

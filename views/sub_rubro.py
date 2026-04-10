@@ -16,6 +16,8 @@ def render(
     df_sem: pd.DataFrame,
     df_mes: pd.DataFrame,
     df_clientes: pd.DataFrame,
+    health_sem: dict | None = None,
+    health_mes: dict | None = None,
 ) -> None:
     """
     Args:
@@ -23,7 +25,11 @@ def render(
         df_mes: facturación mensual preparada.
         df_clientes: maestro de clientes (no se usa directamente acá,
             pero se recibe por consistencia con las otras vistas).
+        health_sem, health_mes: dicts de salud de cada timeframe. Se
+            reciben por consistencia de firma con resumen.py — esta vista
+            no los usa actualmente.
     """
+    del health_sem, health_mes  # actualmente no se usan acá
     st.subheader("Desglose por sub-rubro")
 
     # ----- Selector de timeframe -----

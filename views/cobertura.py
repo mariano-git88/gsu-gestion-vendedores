@@ -23,7 +23,17 @@ def render(
     df_sem: pd.DataFrame,
     df_mes: pd.DataFrame,
     df_clientes: pd.DataFrame,
+    health_sem: dict | None = None,
+    health_mes: dict | None = None,
 ) -> None:
+    """
+    Args:
+        df_sem, df_mes, df_clientes: ver views/resumen.py.
+        health_sem, health_mes: por consistencia de firma con resumen.py.
+            Esta vista no los usa actualmente.
+    """
+    del health_sem, health_mes  # actualmente no se usan acá
+
     st.subheader("Cobertura de clientes")
 
     # ----- Selector de timeframe -----

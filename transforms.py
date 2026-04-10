@@ -352,6 +352,12 @@ def prepare_facturacion(
         "vendedores_op_excluidos": [],
         # NCF
         "ncf_descartadas_descuento": 0,
+        # Monto sumado por las NCF de descuentos comerciales que se
+        # descartaron. Es el "delta de transparencia" entre el total
+        # mostrado en el dashboard y la suma cruda de la planilla. Se
+        # mantiene como número original (signo natural; los descuentos
+        # son negativos).
+        "monto_ncf_descartado": 0.0,
         # Moneda
         "filas_no_uyu": 0,
         "monedas_no_uyu": [],
@@ -386,6 +392,9 @@ def prepare_facturacion(
     # 1. NCF
     df, ncf_descartadas = filter_notas_credito(df)
     health["ncf_descartadas_descuento"] = len(ncf_descartadas)
+    health["monto_ncf_descartado"] = (
+        float(ncf_descartadas["monto"].sum()) if not ncf_descartadas.empty else 0.0
+    )
 
     # 2. Moneda
     df, df_no_uyu = validate_moneda(df)
