@@ -83,23 +83,3 @@ def render(
         use_container_width=True,
         hide_index=True,
     )
-
-    # ----- Pivot vendedor × sub_rubro -----
-    st.markdown("### Pivot vendedor × sub-rubro (monto)")
-    st.caption(
-        "Cada celda es la suma de monto del vendedor para ese sub-rubro "
-        "en el período (con NCF neteadas)."
-    )
-    try:
-        pivot = (
-            desglose.pivot(index="vendedor", columns="sub_rubro", values="monto")
-            .fillna(0)
-            .astype(int)
-        )
-        st.dataframe(
-            pivot.style.format("{:,}"),
-            use_container_width=True,
-        )
-    except Exception as e:
-        # Por si algún caso edge rompe el pivot, no fallar la vista entera
-        st.warning(f"No se pudo generar el pivot: {e}")
