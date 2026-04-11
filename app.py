@@ -23,6 +23,7 @@ import data_loader
 import exports
 import theme
 import transforms
+import tutorial
 from views import analisis, cobertura, resumen, sub_rubro
 
 # =====================================================================
@@ -47,11 +48,29 @@ if not auth.check_password():
 
 auth.logout_button()
 
-st.title("Dashboard de Gestión de Vendedores")
-st.caption(
-    "Reunión semanal del Jefe de Ventas — GSU. "
-    "Cargá las 5 planillas en la barra lateral para empezar."
-)
+# ----- Tutorial modal -----
+# El decorator @st.dialog convierte la función en un modal que se abre
+# al ser llamada. Definido acá una sola vez para que el botón del header
+# pueda invocarlo. El contenido vive en tutorial.py.
+@st.dialog("Tutorial — Cómo usar el dashboard", width="large")
+def _show_tutorial_dialog():
+    tutorial.render()
+
+
+# ----- Header con botón Tutorial alineado a la derecha -----
+# Layout en 2 columnas: el título a la izquierda (5/6 del ancho) y el
+# botón a la derecha (1/6). vertical_alignment="center" centra el botón
+# verticalmente respecto al título grande.
+_col_title, _col_btn = st.columns([5, 1], vertical_alignment="center")
+with _col_title:
+    st.title("Dashboard de Gestión de Vendedores")
+    st.caption(
+        "Reunión semanal del Jefe de Ventas — GSU. "
+        "Cargá las 5 planillas en la barra lateral para empezar."
+    )
+with _col_btn:
+    if st.button("Tutorial", use_container_width=True, key="btn_tutorial"):
+        _show_tutorial_dialog()
 
 # =====================================================================
 # CACHED LOADERS
