@@ -37,13 +37,25 @@ def render(
     st.subheader("Cobertura de clientes")
 
     # ----- Selector de timeframe -----
+    # "Trimestre" aparece sólo si el modo API sincronizó un trimestre
+    # (session_state.df_tri). En Modo Manual el trimestre no existe.
+    df_tri = st.session_state.get("df_tri")
+    opciones = ["Semana", "Mes"]
+    if df_tri is not None and not df_tri.empty:
+        opciones.append("Trimestre")
+
     timeframe = st.radio(
         "Período",
-        options=["Semana", "Mes"],
+        options=opciones,
         horizontal=True,
         key="cobertura_tf",
     )
-    df = df_sem if timeframe == "Semana" else df_mes
+    if timeframe == "Semana":
+        df = df_sem
+    elif timeframe == "Mes":
+        df = df_mes
+    else:
+        df = df_tri
 
     if df.empty:
         st.info("No hay datos para el período seleccionado.")

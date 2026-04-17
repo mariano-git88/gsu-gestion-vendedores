@@ -35,6 +35,10 @@ STATUS_CLIENTE_NO_ENCONTRADO = "CLIENTE NO ENCONTRADO"
 SUB_RUBRO_COMBO = "COMBO"
 SUB_RUBRO_SIN_ASIGNAR = "SIN ASIGNAR"
 
+# Familia asignada cuando un SKU no matchea en el maestro de familias
+# (archivo sku_familia_subgrupo.xlsx).
+FAMILIA_SIN_ASIGNAR = "SIN FAMILIA"
+
 # Origen de la clasificación (para auditoría y panel de salud)
 ORIGEN_PRODUCTO = "producto"
 ORIGEN_COMBO = "combo"
@@ -291,6 +295,49 @@ def classify_skus(
 
 
 # =====================================================================
+# 4b. Enriquecimiento por Familia (convivencia con sub_rubro)
+# =====================================================================
+
+def enrich_familia(
+    df_fc: pd.DataFrame,
+    df_familia: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Agrega la columna `familia` al DataFrame de facturación cruzando
+    por `sku` contra el maestro de familias
+    (`sku_familia_subgrupo.xlsx`).
+
+    Convive con `sub_rubro` (decisión 2026-04-17): ambos niveles de
+    clasificación viven en paralelo como columnas del DF de facturación.
+    El `sub_rubro` sigue viniendo del maestro de productos; `familia`
+    es una agrupación más amplia mantenida como maestro estático en
+    `assets/`.
+
+    Los SKUs que no matchean en el maestro de familias quedan con
+    `familia = 'SIN FAMILIA'` (análogo semántico a `'SIN ASIGNAR'`
+    para sub_rubro).
+
+    Asume que `df_familia` tiene columnas `sku`, `familia` y está
+    deduplicado por `sku` (eso lo garantiza `data_loader.load_familia`).
+    """
+    if df_familia is None or df_familia.empty:
+        # Sin maestro de familias → todos los SKUs caen en SIN FAMILIA.
+        df = df_fc.copy()
+        df["familia"] = FAMILIA_SIN_ASIGNAR
+        return df
+
+    familia_lookup = df_familia.set_index("sku")["familia"]
+    df = df_fc.copy()
+    df["familia"] = df["sku"].map(familia_lookup).fillna(FAMILIA_SIN_ASIGNAR)
+    # Normalizar tipo: cualquier NaN residual → string, para que el
+    # groupby en las views no rompa con valores mezclados.
+    df["familia"] = df["familia"].astype(str).str.strip().replace(
+        "", FAMILIA_SIN_ASIGNAR
+    )
+    return df
+
+
+# =====================================================================
 # 5. Validación cross-tabla: vendedores sin cartera
 # =====================================================================
 
@@ -323,6 +370,7 @@ def prepare_facturacion(
     df_clientes: pd.DataFrame,
     df_productos: pd.DataFrame,
     df_combos: pd.DataFrame,
+    df_familia: pd.DataFrame | None = None,
 ) -> Tuple[pd.DataFrame, dict]:
     """
     Aplica el pipeline completo a una planilla de facturación cargada.
@@ -332,6 +380,7 @@ def prepare_facturacion(
       2. Validar moneda — separa UYU del resto, descarta no-UYU.
       3. Join contra clientes — marca status, reemplaza razón social.
       4. Clasificar SKUs — agrega sub_rubro, nombre, origen.
+      4b. Enriquecer con `familia` (si se pasó el maestro).
       5. Calcular validaciones cross-tabla.
 
     Devuelve `(df_final, health)` donde:
@@ -367,6 +416,8 @@ def prepare_facturacion(
         "clientes_duplicados": [],
         # SKU
         "skus_sin_asignar": [],
+        # Familia (clasificación paralela, convive con sub_rubro)
+        "skus_sin_familia": [],
         # Cross-tabla
         "vendedores_sin_cartera": [],
         # Final
@@ -415,6 +466,15 @@ def prepare_facturacion(
     sin_asignar_mask = df["origen_clasificacion"] == ORIGEN_SIN_ASIGNAR
     health["skus_sin_asignar"] = sorted(
         df.loc[sin_asignar_mask, "sku"].dropna().astype(str).unique().tolist()
+    )
+
+    # 4b. Enriquecimiento por Familia (opcional — solo si se pasó maestro).
+    # No convive con origen_clasificacion porque familia es una
+    # clasificación paralela, no una alternativa al sub_rubro.
+    df = enrich_familia(df, df_familia)
+    health["skus_sin_familia"] = sorted(
+        df.loc[df["familia"] == FAMILIA_SIN_ASIGNAR, "sku"]
+        .dropna().astype(str).unique().tolist()
     )
 
     # 5. Cross-tabla: vendedores sin cartera.

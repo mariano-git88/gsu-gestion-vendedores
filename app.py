@@ -20,6 +20,7 @@ Coexistencia API / Manual: ver entrada 2026-04-17 en decisions.md.
 import io
 from calendar import monthrange
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -82,14 +83,16 @@ with _col_btn:
 
 st.session_state.setdefault("fuente_activa", None)
 st.session_state.setdefault("api_last_sync", None)
-st.session_state.setdefault("api_rango", None)  # (fecha_desde_mes, ..., hasta_sem)
+st.session_state.setdefault("api_rango", None)  # tupla de 6 dates (mes/sem/tri)
 st.session_state.setdefault("api_errors_mes", [])
 st.session_state.setdefault("api_errors_sem", [])
+st.session_state.setdefault("api_errors_tri", [])
 
 # DataFrames cacheados en session (sobreviven reruns pero no logouts).
 for _key in (
     "df_fc_sem_raw",
     "df_fc_mes_raw",
+    "df_fc_tri_raw",
     "df_clientes",
     "df_productos",
     "df_combos",
@@ -188,10 +191,30 @@ def _api_sync_fc(fecha_desde: str, fecha_hasta: str):
     return df, errors
 
 
-# Cache del pipeline prepare_facturacion (sigue como estaba).
+# Maestro de familia: archivo estático en `assets/` (independiente de
+# la fuente activa API/Manual). Se carga una vez por proceso.
+_FAMILIA_PATH = Path(__file__).parent / "assets" / "sku_familia_subgrupo.xlsx"
+
+
+@st.cache_resource(show_spinner="Cargando maestro de familias...")
+def _load_familia_master():
+    """Carga el maestro SKU → Familia desde assets/. Caso único, no cambia
+    por input del usuario; `cache_resource` lo tiene en el proceso."""
+    if not _FAMILIA_PATH.exists():
+        # Si falta el archivo, devolvemos None y `enrich_familia` va a
+        # marcar todos los SKUs como "SIN FAMILIA".
+        return None
+    return data_loader.load_familia(_FAMILIA_PATH)
+
+
+# Cache del pipeline prepare_facturacion.
+# Agregamos df_familia como input hasheable para que el cache invalide
+# si en algún momento cambia el maestro (poco frecuente pero posible).
 @st.cache_data(show_spinner="Procesando datos...")
-def _prepare_cached(df_fc, df_cli, df_prod, df_comb):
-    return transforms.prepare_facturacion(df_fc, df_cli, df_prod, df_comb)
+def _prepare_cached(df_fc, df_cli, df_prod, df_comb, df_fam):
+    return transforms.prepare_facturacion(
+        df_fc, df_cli, df_prod, df_comb, df_familia=df_fam
+    )
 
 
 @st.cache_data(show_spinner="Generando agenda...")
@@ -239,6 +262,40 @@ def _semana_default() -> tuple[date, date]:
     return lunes, hoy
 
 
+def _trimestre_actual(today: date) -> tuple[int, int]:
+    """Devuelve (año, numero_de_trimestre) del trimestre calendario.
+
+    Q1=ene-mar, Q2=abr-jun, Q3=jul-sep, Q4=oct-dic.
+    """
+    return today.year, (today.month - 1) // 3 + 1
+
+
+def _rango_trimestre(year: int, q: int) -> tuple[date, date]:
+    """Primer y último día del trimestre `q` del año `year`."""
+    mes_desde = (q - 1) * 3 + 1
+    mes_hasta = q * 3
+    ultimo = monthrange(year, mes_hasta)[1]
+    return date(year, mes_desde, 1), date(year, mes_hasta, ultimo)
+
+
+def _opciones_trimestres_recientes(n: int = 6) -> list[tuple[int, int]]:
+    """Lista de (year, trimestre) recientes, actual primero."""
+    hoy = date.today()
+    y, q = _trimestre_actual(hoy)
+    out: list[tuple[int, int]] = []
+    for _ in range(n):
+        out.append((y, q))
+        q -= 1
+        if q == 0:
+            q = 4
+            y -= 1
+    return out
+
+
+def _label_trimestre(y: int, q: int) -> str:
+    return f"Q{q} {y}"
+
+
 # =====================================================================
 # SIDEBAR — Sección primaria: API Contabilium
 # =====================================================================
@@ -268,6 +325,21 @@ with st.sidebar:
         "Semana hasta", value=_sem_default[1], key="api_sem_hasta"
     )
 
+    # -- Selector de trimestre (para vista Cobertura) --
+    _opc_tri = _opciones_trimestres_recientes(8)
+    _idx_tri = st.selectbox(
+        "Trimestre (para Cobertura)",
+        options=range(len(_opc_tri)),
+        format_func=lambda i: _label_trimestre(*_opc_tri[i]),
+        index=0,
+        key="api_tri_idx",
+    )
+    _y_tri, _q_tri = _opc_tri[_idx_tri]
+    _fd_tri, _fh_tri = _rango_trimestre(_y_tri, _q_tri)
+    st.caption(
+        f"Rango Q{_q_tri}: {_fd_tri.isoformat()} → {_fh_tri.isoformat()}"
+    )
+
     if st.button(
         "Sincronizar",
         type="primary",
@@ -277,12 +349,15 @@ with st.sidebar:
         try:
             # 1) Maestros (clientes, productos, combos) — cache 1h.
             df_cli, df_prod, df_comb, _ = _api_sync_maestros()
-            # 2) Facturación mensual y semanal — cache 1h por rango.
+            # 2) Facturación mensual, semanal y trimestral — cache 1h por rango.
             df_fc_mes, errors_mes = _api_sync_fc(
                 _fd_mes.isoformat(), _fh_mes.isoformat()
             )
             df_fc_sem, errors_sem = _api_sync_fc(
                 _fd_sem.isoformat(), _fh_sem.isoformat()
+            )
+            df_fc_tri, errors_tri = _api_sync_fc(
+                _fd_tri.isoformat(), _fh_tri.isoformat()
             )
             # 3) Guardar en session y activar fuente API.
             st.session_state.df_clientes = df_cli
@@ -290,12 +365,18 @@ with st.sidebar:
             st.session_state.df_combos = df_comb
             st.session_state.df_fc_mes_raw = df_fc_mes
             st.session_state.df_fc_sem_raw = df_fc_sem
+            st.session_state.df_fc_tri_raw = df_fc_tri
             st.session_state.fuente_activa = "api"
             st.session_state.api_last_sync = datetime.now()
-            st.session_state.api_rango = (_fd_mes, _fh_mes, _fd_sem, _fh_sem)
+            st.session_state.api_rango = (
+                _fd_mes, _fh_mes, _fd_sem, _fh_sem, _fd_tri, _fh_tri,
+            )
             st.session_state.api_errors_mes = errors_mes
             st.session_state.api_errors_sem = errors_sem
-            _total_errors = len(errors_mes) + len(errors_sem)
+            st.session_state.api_errors_tri = errors_tri
+            _total_errors = (
+                len(errors_mes) + len(errors_sem) + len(errors_tri)
+            )
             if _total_errors:
                 st.warning(
                     f"Sincronizado con {_total_errors} comprobante(s) omitidos "
@@ -304,7 +385,8 @@ with st.sidebar:
             else:
                 st.success(
                     f"Sincronizado: {len(df_fc_mes)} filas del mes, "
-                    f"{len(df_fc_sem)} filas de la semana."
+                    f"{len(df_fc_sem)} de la semana, "
+                    f"{len(df_fc_tri)} del trimestre."
                 )
         except api_loader.AuthError as e:
             st.error(
@@ -390,6 +472,9 @@ with st.sidebar:
                 df_comb_m = _load_combos_xlsx(f_combos.getvalue())
                 st.session_state.df_fc_sem_raw = df_fc_sem_m
                 st.session_state.df_fc_mes_raw = df_fc_mes_m
+                # El modo manual no soporta trimestre (no hay xlsx de
+                # 3 meses) — limpiamos cualquier residuo del modo API.
+                st.session_state.df_fc_tri_raw = None
                 st.session_state.df_clientes = df_cli_m
                 st.session_state.df_productos = df_prod_m
                 st.session_state.df_combos = df_comb_m
@@ -397,6 +482,7 @@ with st.sidebar:
                 # El modo manual no tiene N+1, no hay errores de fetch.
                 st.session_state.api_errors_mes = []
                 st.session_state.api_errors_sem = []
+                st.session_state.api_errors_tri = []
                 st.success("Planillas procesadas correctamente.")
             except (
                 data_loader.MissingColumnsError,
@@ -430,16 +516,35 @@ df_combos = st.session_state.df_combos
 # PROCESAMIENTO (pipeline transforms.prepare_facturacion)
 # =====================================================================
 
+df_familia = _load_familia_master()
+
 try:
     df_sem, health_sem = _prepare_cached(
-        df_fc_sem_raw, df_clientes, df_productos, df_combos
+        df_fc_sem_raw, df_clientes, df_productos, df_combos, df_familia
     )
     df_mes, health_mes = _prepare_cached(
-        df_fc_mes_raw, df_clientes, df_productos, df_combos
+        df_fc_mes_raw, df_clientes, df_productos, df_combos, df_familia
     )
 except Exception as e:  # noqa: BLE001
     st.error(f"**Error procesando datos:** {e}")
     st.stop()
+
+# Trimestre: solo si fue pulleado (modo API). El modo Manual no lo soporta.
+_df_fc_tri_raw = st.session_state.get("df_fc_tri_raw")
+if _df_fc_tri_raw is not None and not _df_fc_tri_raw.empty:
+    try:
+        df_tri, health_tri = _prepare_cached(
+            _df_fc_tri_raw, df_clientes, df_productos, df_combos, df_familia
+        )
+        st.session_state.df_tri = df_tri
+        st.session_state.health_tri = health_tri
+    except Exception as e:  # noqa: BLE001
+        st.warning(f"No se pudo procesar el trimestre: {e}")
+        st.session_state.df_tri = None
+        st.session_state.health_tri = None
+else:
+    st.session_state.df_tri = None
+    st.session_state.health_tri = None
 
 
 # =====================================================================
@@ -449,8 +554,15 @@ except Exception as e:  # noqa: BLE001
 with st.sidebar:
     st.divider()
     st.header("Exportar agenda")
+    # Del dropdown excluimos:
+    #   - vendedor vacío (clientes sin IdUsuarioAdicional en Contabilium)
+    #   - IDs sin mapping ("ID_<n>") — clientes huérfanos de ex-vendedores
+    #     o de usuarios que nunca facturaron en el rango sincronizado.
+    # Ninguno de los dos representa un vendedor válido para una agenda.
     _vendedores_export = sorted(
-        df_clientes["vendedor"].dropna().astype(str).unique().tolist()
+        v
+        for v in df_clientes["vendedor"].dropna().astype(str).unique().tolist()
+        if v and not v.startswith("ID_")
     )
     if _vendedores_export:
         _v_export = st.selectbox(
@@ -585,12 +697,13 @@ with tab_salud:
     # Encabezado con fuente activa + timestamp (para trazabilidad).
     if st.session_state.fuente_activa == "api":
         _rango = st.session_state.api_rango
-        if _rango:
-            _fd_m, _fh_m, _fd_s, _fh_s = _rango
+        if _rango and len(_rango) == 6:
+            _fd_m, _fh_m, _fd_s, _fh_s, _fd_t, _fh_t = _rango
             st.caption(
                 f"Fuente: **API Contabilium** · "
                 f"mes {_fd_m.isoformat()} → {_fh_m.isoformat()} · "
                 f"semana {_fd_s.isoformat()} → {_fh_s.isoformat()} · "
+                f"trimestre {_fd_t.isoformat()} → {_fh_t.isoformat()} · "
                 f"sync {st.session_state.api_last_sync:%Y-%m-%d %H:%M}"
             )
         else:
@@ -601,28 +714,29 @@ with tab_salud:
     # -- Errores del N+1 de load_fc_api, si los hay --
     _errs_mes = st.session_state.get("api_errors_mes", []) or []
     _errs_sem = st.session_state.get("api_errors_sem", []) or []
-    if _errs_mes or _errs_sem:
+    _errs_tri = st.session_state.get("api_errors_tri", []) or []
+    if _errs_mes or _errs_sem or _errs_tri:
         st.warning(
             f"**Comprobantes omitidos del sync**: {len(_errs_mes)} del mes, "
-            f"{len(_errs_sem)} de la semana. Son comprobantes cuyo detalle "
-            f"(GetById) falló tras los retries automáticos. Los montos totales "
-            f"están subvaluados por esos comprobantes — si la cifra es "
-            f"significativa, re-sincronizá con el botón 'Resync forzado' de "
-            f"la sidebar."
+            f"{len(_errs_sem)} de la semana, {len(_errs_tri)} del trimestre. "
+            f"Son comprobantes cuyo detalle (GetById) falló tras los retries "
+            f"automáticos. Los montos totales están subvaluados por esos "
+            f"comprobantes — si la cifra es significativa, re-sincronizá "
+            f"con el botón 'Resync forzado' de la sidebar."
         )
-        with st.expander(f"Ver IDs omitidos ({len(_errs_mes) + len(_errs_sem)})"):
-            if _errs_mes:
-                st.markdown("**Mes:**")
-                for _id, _msg in _errs_mes[:50]:
-                    st.text(f"  {_id}: {_msg[:200]}")
-                if len(_errs_mes) > 50:
-                    st.caption(f"(+{len(_errs_mes) - 50} más)")
-            if _errs_sem:
-                st.markdown("**Semana:**")
-                for _id, _msg in _errs_sem[:50]:
-                    st.text(f"  {_id}: {_msg[:200]}")
-                if len(_errs_sem) > 50:
-                    st.caption(f"(+{len(_errs_sem) - 50} más)")
+        _total_errs = len(_errs_mes) + len(_errs_sem) + len(_errs_tri)
+        with st.expander(f"Ver IDs omitidos ({_total_errs})"):
+            for _label, _errs in [
+                ("Mes", _errs_mes),
+                ("Semana", _errs_sem),
+                ("Trimestre", _errs_tri),
+            ]:
+                if _errs:
+                    st.markdown(f"**{_label}:**")
+                    for _id, _msg in _errs[:50]:
+                        st.text(f"  {_id}: {_msg[:200]}")
+                    if len(_errs) > 50:
+                        st.caption(f"(+{len(_errs) - 50} más)")
 
     col_sem, col_mes = st.columns(2)
     with col_sem:

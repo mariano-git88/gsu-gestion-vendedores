@@ -46,7 +46,26 @@ def render(
         return
 
     # ----- Filtros opcionales -----
-    col_sr, col_sku = st.columns(2)
+    tiene_familia = "familia" in df.columns
+    if tiene_familia:
+        col_fam, col_sr, col_sku = st.columns(3)
+    else:
+        col_sr, col_sku = st.columns(2)
+        col_fam = None
+
+    if col_fam is not None:
+        with col_fam:
+            familias = sorted(
+                df["familia"].dropna().astype(str).unique().tolist()
+            )
+            familia_filter = st.selectbox(
+                "Filtrar por familia",
+                options=["(todas)"] + familias,
+                key="familia_filter",
+            )
+    else:
+        familia_filter = "(todas)"
+
     with col_sr:
         sub_rubros = sorted(
             df["sub_rubro"].dropna().astype(str).unique().tolist()
@@ -65,6 +84,8 @@ def render(
         )
 
     df_filtered = df.copy()
+    if familia_filter != "(todas)":
+        df_filtered = df_filtered[df_filtered["familia"] == familia_filter]
     if sub_rubro_filter != "(todos)":
         df_filtered = df_filtered[df_filtered["sub_rubro"] == sub_rubro_filter]
     if sku_filter != "(todos)":

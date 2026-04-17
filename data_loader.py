@@ -32,6 +32,7 @@ SHEET_FC = "Comprobantes"
 SHEET_CLIENTES = "Clientes"
 SHEET_PRODUCTOS = "Productos"
 SHEET_COMBOS = "Combos"
+SHEET_FAMILIA = "SKU Familia Sub-grupo"
 
 # Columnas que TIENEN que existir en la planilla original (nombres del ERP).
 # Si falta alguna, el loader levanta error y aborta.
@@ -62,6 +63,10 @@ REQUIRED_COMBOS = [
     "SKU Combo",
     "Nombre",
 ]
+REQUIRED_FAMILIA = [
+    "Producto_Id",
+    "Familia_Id",
+]
 
 # Mapping ERP → nombre interno snake_case. Después del rename, todo el
 # resto del código (transforms, metrics, views) trabaja con estos nombres.
@@ -91,6 +96,10 @@ RENAME_PRODUCTOS = {
 RENAME_COMBOS = {
     "SKU Combo": "sku",
     "Nombre": "nombre",
+}
+RENAME_FAMILIA = {
+    "Producto_Id": "sku",
+    "Familia_Id": "familia",
 }
 
 
@@ -251,5 +260,42 @@ def load_combos(file_or_path) -> pd.DataFrame:
         required=REQUIRED_COMBOS,
         rename=RENAME_COMBOS,
     )
+    df = df.drop_duplicates(subset="sku", keep="first").reset_index(drop=True)
+    return df
+
+
+def load_familia(file_or_path) -> pd.DataFrame:
+    """
+    Carga el maestro de clasificación Familia por SKU.
+
+    Archivo: `sku_familia_subgrupo.xlsx`, hoja `SKU Familia Sub-grupo`.
+    Es un maestro **estático** que vive en `assets/` del proyecto
+    (mismo lugar que el logo), no se sube por uploader — la clasificación
+    la mantiene Mariano manualmente y se commitea al repo.
+
+    A diferencia del `sub_rubro` (que viene del maestro de productos y
+    vive a nivel ítem de facturación), la `Familia` es una agrupación
+    más amplia. Decisión de convivencia: ambos niveles viven en paralelo
+    como columnas del DataFrame de facturación.
+
+    Del archivo solo leemos `Producto_Id` → `sku` y `Familia_Id` →
+    `familia`. La columna `Sub-Grupo` del archivo se descarta (el
+    sub_rubro vigente sigue viniendo del maestro de productos — ver
+    decisión 2026-04-17).
+
+    Devuelve DataFrame con columnas:
+      sku, familia
+
+    Deduplicado por `sku` (si un SKU aparece repetido, se conserva la
+    primera ocurrencia — son datos maestros sin ambigüedad esperada).
+    """
+    df = _read_and_validate(
+        file_or_path,
+        sheet_name=SHEET_FAMILIA,
+        required=REQUIRED_FAMILIA,
+        rename=RENAME_FAMILIA,
+    )
+    df["sku"] = df["sku"].astype(str).str.strip()
+    df["familia"] = df["familia"].astype(str).str.strip()
     df = df.drop_duplicates(subset="sku", keep="first").reset_index(drop=True)
     return df

@@ -42,6 +42,11 @@ desktop.ini
 *.tsv
 *.parquet
 
+# Excepción: maestro estático SKU→Familia en assets/. No tiene datos
+# de venta, solo códigos de clasificación que el código necesita para
+# enriquecer la facturación con la columna `familia`.
+!assets/sku_familia_subgrupo.xlsx
+
 # Carpetas comunes donde se sueltan archivos de input/output durante uso local
 data/
 inputs/

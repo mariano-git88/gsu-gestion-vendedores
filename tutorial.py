@@ -9,10 +9,11 @@ abrir el dashboard por primera vez y entender, sin que nadie le
 explique nada en vivo:
 
   1. Qué es la app y para qué sirve.
-  2. Cómo arrancar (las 5 planillas que hay que cargar).
-  3. Qué muestra cada tab y cada tabla específica.
-  4. Cómo exportar la agenda personal de un vendedor.
-  5. Cómo cerrar sesión.
+  2. Cómo sincronizar datos (modo primario: API de Contabilium).
+  3. Cuándo usar el Modo Manual Secundario (fallback con xlsx).
+  4. Qué muestra cada tab y cada tabla específica.
+  5. Cómo exportar la agenda personal de un vendedor.
+  6. Cómo cerrar sesión.
 
 El contenido vive solo en este módulo. Si hay que actualizarlo, se
 edita acá sin tocar app.py ni el resto del código.
@@ -29,140 +30,77 @@ def render() -> None:
         """
         ### ¿Qué es esta aplicación?
 
-        Es el **dashboard semanal del Jefe de Ventas de GSU**. Cruza las
-        planillas exportadas de Contabilium y muestra cómo viene la
+        Es el **dashboard semanal del Jefe de Ventas de GSU**. Lee los
+        datos de facturación, clientes y productos directamente desde
+        **Contabilium** (vía su API oficial) y muestra cómo viene la
         performance de cada vendedor y su cartera de clientes durante
-        la semana y el mes en curso.
+        la semana, el mes y el trimestre en curso.
 
         Está pensado para usarse en la **reunión comercial semanal**:
-        el Jefe de Ventas y el equipo abren el dashboard juntos y discuten
-        sobre los datos en tiempo real.
+        el Jefe de Ventas y el equipo abren el dashboard juntos y
+        discuten sobre los datos en tiempo real.
         """
     )
 
     st.divider()
 
-    # ----- Cómo empezar -----
+    # ----- Cómo empezar (modo API) -----
     st.markdown(
         """
-        ### Cómo empezar (3 pasos)
+        ### Cómo empezar — Modo primario (API de Contabilium)
 
-        1. En la **barra lateral** (a la izquierda), cargá las **5 planillas
-           `.xlsx`** exportadas de Contabilium.
-        2. Esperá unos segundos a que el dashboard procese los datos.
-           Vas a ver indicadores de carga.
-        3. Navegá entre las **5 tabs** de arriba (Resumen / Sub-rubro /
-           Cobertura / Análisis / Salud) para ver las distintas vistas.
+        1. En la **barra lateral** (columna gris a la izquierda) vas a
+           ver la sección **"Sincronizar desde Contabilium"**.
+        2. Elegí el **mes** que querés analizar (por default está el
+           mes actual).
+        3. Elegí el rango de fechas de la **semana** a revisar (por
+           default, lunes de esta semana hasta hoy).
+        4. Elegí el **trimestre** (por default el trimestre calendario
+           actual — se usa principalmente en la tab Cobertura).
+        5. Tocá el botón **Sincronizar**. Tarda ~1-3 minutos la primera
+           vez: trae los maestros de clientes y productos + toda la
+           facturación del mes, la semana y el trimestre.
+        6. Cuando termine, aparece un mensaje "Sincronizado" y el
+           dashboard se llena con los datos. A partir de ahí podés
+           navegar entre las 5 tabs.
 
-        > Si todavía no cargaste las 5 planillas, el dashboard te muestra
-        > un mensaje de "Cargá las 5 planillas para empezar" y no
-        > muestra nada más. Es normal — es para evitar errores.
+        > **Resync forzado**: si acabás de emitir una factura y querés
+        > verla reflejada YA (sin esperar que venza la caché de 1 hora),
+        > tocá el botón **"Resync forzado (bypass caché)"** que aparece
+        > debajo del timestamp del último sync.
         """
     )
 
     st.divider()
 
-    # ----- Las 5 planillas (resumen) -----
+    # ----- Modo Manual Secundario -----
     st.markdown(
         """
-        ### Las 5 planillas que tenés que cargar
+        ### Modo Manual Secundario (fallback)
 
-        Las 5 son **obligatorias** y vienen de Contabilium. Tienen que
-        tener exactamente estos nombres y estas hojas adentro:
+        Si la API de Contabilium está **caída**, o si querés analizar
+        una planilla puntual que no está en el sistema, hay un camino
+        alternativo:
 
-        | # | Archivo | Hoja interna | Qué contiene |
-        |---|---|---|---|
-        | 1 | `fc_semanal.xlsx` | `Comprobantes` | Facturación de la última semana |
-        | 2 | `fc_mensual.xlsx` | `Comprobantes` | Facturación del mes en curso |
-        | 3 | `clientes.xlsx` | `Clientes` | Cartera asignada a cada vendedor |
-        | 4 | `productos.xlsx` | `Productos` | Maestro de productos (SKU + sub-rubro) |
-        | 5 | `combos.xlsx` | `Combos` | Maestro de combos (SKU compuesto) |
+        1. En la sidebar, al final de la sección API, vas a ver un
+           **expander colapsado** titulado **"Modo Manual Secundario"**.
+           Hacé click en él para abrirlo.
+        2. Adentro aparecen los **5 file uploaders** de siempre:
+           `fc_semanal.xlsx`, `fc_mensual.xlsx`, `clientes.xlsx`,
+           `productos.xlsx` y `combos.xlsx`.
+        3. Arrastrá los 5 archivos (o clickealos para elegirlos).
+        4. Tocá el botón **"Procesar planillas"**. El botón está
+           deshabilitado hasta que los 5 estén cargados.
+        5. A partir de ahí, el dashboard muestra los datos de esas
+           planillas, exactamente como antes.
 
-        Si alguna planilla tiene un nombre distinto o una hoja con otro
-        nombre, el dashboard te va a avisar con un error claro indicando
-        qué falta. **No procesa nada si falta o está mal una columna** —
-        es a propósito, para que las cifras nunca sean dudosas.
-        """
-    )
+        > **Importante**: en Modo Manual **no hay vista de trimestre**
+        > (porque los xlsx cubren solo semana + mes). Si necesitás
+        > análisis trimestral, usá el Modo API.
 
-    st.divider()
-
-    # ----- Cómo obtener cada planilla -----
-    st.markdown(
-        """
-        ### Cómo obtener cada planilla desde Contabilium
-
-        > **IMPORTANTE — regla común a las 5 planillas**: cuando
-        > descargues cada archivo desde Contabilium, **tenés que
-        > renombrarlo manualmente** al nombre exacto que se indica abajo
-        > (`fc_semanal.xlsx`, `fc_mensual.xlsx`, `clientes.xlsx`,
-        > `productos.xlsx`, `combos.xlsx`). Si el archivo no se llama
-        > exactamente así, el dashboard lo va a rechazar con un error.
-
-        #### 1) `fc_semanal.xlsx` — facturación semanal
-
-        1. Entrá a la sección **Facturación** en Contabilium.
-        2. Filtrá por las fechas de la última semana (desde el lunes
-           anterior hasta el domingo).
-        3. Seleccioná la opción **"Detallada"**.
-        4. Hacé click en **Descargar**.
-        5. **Renombrá el archivo descargado a `fc_semanal.xlsx`**.
-
-        > **Nota sobre la cantidad de días**: aunque se llame "semanal",
-        > en realidad podés filtrar por la cantidad de días que quieras
-        > (3 días, 10 días, lo que sea). El dashboard va a mostrar
-        > exactamente los datos correspondientes a los días que filtraste
-        > en Contabilium. La columna "Total semana" en el Resumen es
-        > literalmente "el rango que vos cargaste como semanal".
-
-        #### 2) `fc_mensual.xlsx` — facturación mensual
-
-        1. Entrá a la sección **Facturación** en Contabilium.
-        2. Filtrá por las fechas del **mes en curso** (desde el día 1
-           hasta hoy).
-        3. Seleccioná la opción **"Detallada"**.
-        4. Hacé click en **Descargar**.
-        5. **Renombrá el archivo descargado a `fc_mensual.xlsx`**.
-
-        > **Decisión importante — mes en curso vs últimos 30 días**:
-        > tenés que elegir un criterio y mantenerlo:
-        >
-        > - **Mes en curso**: filtrás desde el día 1 del mes hasta hoy.
-        >   Es la opción más natural para una reunión semanal alineada
-        >   con el calendario contable.
-        > - **Últimos 30 días**: filtrás una ventana móvil de 30 días
-        >   hacia atrás, sin importar en qué mes caigan.
-        >
-        > **Atención al caveat de "Semana mayor que Mes"**: si elegís
-        > "mes en curso" y la semana analizada en `fc_semanal.xlsx`
-        > cruza dos meses (por ejemplo, los últimos días del mes anterior
-        > más los primeros del mes en curso), puede pasar que las cifras
-        > de **"Total semana" sean mayores a las de "Total mes"** —
-        > simplemente porque el mes recién está empezando y el rango
-        > semanal incluye días del mes anterior que no entraron al
-        > rango mensual. **Eso no es un bug del dashboard**; es la
-        > consecuencia de cómo definiste los rangos en Contabilium.
-
-        #### 3) `clientes.xlsx` — cartera de clientes
-
-        1. Entrá a la sección **Clientes** en Contabilium.
-        2. Hacé click en el botón **Exportar**.
-        3. Descargá la planilla.
-        4. **Renombrá el archivo descargado a `clientes.xlsx`**.
-
-        #### 4) `productos.xlsx` — maestro de productos
-
-        1. Entrá a la sección **Productos y servicios** en Contabilium.
-        2. Al lado del botón **Exportar**, hacé click en **"Simple"**.
-        3. Hacé click en el botón **Descargar**.
-        4. **Renombrá el archivo descargado a `productos.xlsx`**.
-
-        #### 5) `combos.xlsx` — maestro de combos
-
-        1. Entrá a la sección **Productos y servicios** en Contabilium.
-        2. Al lado del botón **Exportar**, hacé click en **"Detalle combos"**.
-        3. Hacé click en el botón **Descargar**.
-        4. **Renombrá el archivo descargado a `combos.xlsx`**.
+        > **Cómo obtener cada xlsx**: al final de este tutorial hay una
+        > sección detallada con los pasos desde Contabilium para cada
+        > archivo.
         """
     )
 
@@ -173,15 +111,18 @@ def render() -> None:
         """
         ### La barra lateral (sidebar)
 
-        Es la columna gris claro a la izquierda. Tiene 3 bloques:
+        De arriba abajo tiene estos bloques:
 
-        1. **Planillas del período** — los 5 file uploaders donde
-           arrastrás cada planilla.
-        2. **Exportar agenda** — aparece automáticamente cuando ya cargaste
-           las 5 planillas. Te permite descargar la agenda personal de
-           cualquier vendedor (más detalle abajo).
-        3. **Cerrar sesión** — todo abajo del todo. Te saca del dashboard.
-           La próxima vez que entres, tenés que volver a poner la contraseña.
+        1. **Sincronizar desde Contabilium** (primario): selectores
+           de mes / semana / trimestre + botón Sincronizar + botón
+           Resync forzado.
+        2. **Modo Manual Secundario** (expander colapsado): los 5
+           file uploaders de siempre, como fallback.
+        3. **Exportar agenda** (aparece cuando ya hay datos): permite
+           descargar la agenda personal de cualquier vendedor
+           (más detalle abajo).
+        4. **Cerrar sesión**: todo abajo. La próxima vez que entres
+           tenés que volver a poner la contraseña.
         """
     )
 
@@ -211,15 +152,9 @@ def render() -> None:
         - **Total semana (UYU)** y **Total mes (UYU)** — los dos números
           grandes arriba. Es el monto total facturado por todo el
           equipo en cada período.
-          - **Importante**: estos totales **no descuentan los descuentos
-            comerciales** (NCF sin SKU). Si hay descuentos, los vas a ver
-            mencionados como una línea aparte debajo del total. Eso es
-            para que puedas cuadrar contra Excel manualmente.
-
-        - **Tabla "Ventas por vendedor"** — para cada vendedor, su monto
-          y unidades de la semana y del mes lado a lado. Ordenada por
-          monto del mes descendente.
-
+        - **Tabla "Ventas por vendedor"** — para cada vendedor, su
+          monto y unidades de la semana y del mes lado a lado.
+          Ordenada por monto del mes descendente.
         - **Tabla "Cobertura general por vendedor (mes)"** — para cada
           vendedor, cuántos clientes asignados tiene en cartera y a
           cuántos les vendió al menos algo este mes. La columna
@@ -238,14 +173,22 @@ def render() -> None:
         Tiene:
 
         - Un **selector de período** arriba (Semana o Mes).
-        - **Dos filtros opcionales**: filtrar por sub-rubro específico
-          o por SKU específico.
-        - **Tabla "Ventas por (vendedor, sub-rubro)"** — el monto y las
-          unidades vendidas por cada combinación de vendedor y sub-rubro.
-          Es el desglose más fino del mix de productos.
+        - **Tres filtros opcionales lado a lado**:
+          - **Familia** — agrupación más amplia del producto
+            (ej. "ACC", "AFX"). Es una clasificación mantenida por
+            Mariano como maestro estático, independiente del
+            sub-rubro.
+          - **Sub-rubro** — código corto histórico ("A", "BA", "PM",
+            etc.) que viene del maestro de productos de Contabilium.
+          - **SKU específico** — para aislar un producto puntual.
+        - Los 3 filtros son **acumulativos**: elegí los que quieras y
+          la tabla se filtra por todos a la vez.
+        - **Tabla "Ventas por (vendedor, sub-rubro)"** — el monto y
+          las unidades vendidas por cada combinación.
 
         Útil para responder preguntas tipo: "¿qué tan bien le está
-        yendo a Mario con el sub-rubro Pinturas este mes?".
+        yendo a Mario con el sub-rubro Pinturas este mes?" o "¿cuánto
+        vendimos de la familia AFX en el mes?".
         """
     )
 
@@ -255,7 +198,17 @@ def render() -> None:
         #### Tab 3 — **Cobertura**
 
         Las métricas de "qué tan bien estás atendiendo a tu cartera".
-        Tiene **4 bloques** uno debajo del otro:
+
+        Tiene un **selector de período** arriba con 3 opciones:
+
+        - **Semana** — típico para la reunión semanal.
+        - **Mes** — foto del mes en curso.
+        - **Trimestre** (sólo disponible en Modo API) — visión del
+          trimestre calendario. Útil para QBR (Quarterly Business
+          Review) y para detectar clientes que llevan ≥1 mes sin
+          comprar.
+
+        Y **4 bloques** de datos uno debajo del otro:
 
         1. **Cobertura general por vendedor** — cuántos clientes
            asignados recibieron al menos una venta tipo factura en el
@@ -276,7 +229,7 @@ def render() -> None:
            Te muestra la razón social y el vendedor de cada uno, para
            que puedas asignar visitas.
            - **Siempre sobre el mes** (no afectada por el selector
-             Semana/Mes).
+             Semana/Mes/Trimestre).
            - **Match estricto**: si el cliente le compró el SKU a otro
              vendedor distinto al asignado, igual aparece — porque la
              oportunidad de venta para el vendedor asignado sigue
@@ -312,9 +265,6 @@ def render() -> None:
            (el "core 80%") y cuáles son el resto. Las filas del core
            se resaltan con un fondo crema. Estos son los clientes que
            tenés que **blindar antes de salir a buscar nuevos**.
-           - Tiene 3 métricas arriba: total clientes, cuántos están
-             en el core 80%, y cuánto monto representa el core 80%
-             del total.
         """
     )
 
@@ -327,7 +277,18 @@ def render() -> None:
         recurrís cuando algo te llama la atención y querés entender
         si los datos están limpios.
 
-        Tiene un panel para la semana y otro para el mes, cada uno
+        Arriba te muestra:
+
+        - La **fuente activa** (API Contabilium o Manual Secundario).
+        - Los **rangos exactos** que se sincronizaron (mes + semana +
+          trimestre en modo API).
+        - El **timestamp** del último sync exitoso.
+        - Si el sync tuvo **errores de fetch** en algún comprobante
+          individual (N+1 fallido), aparece un warning con la lista
+          de IDs omitidos — útil para evaluar si los montos están
+          subvaluados.
+
+        Abajo, un panel para la semana y otro para el mes, cada uno
         con un **semáforo**:
 
         - **Verde** — todo OK, sin alertas.
@@ -336,17 +297,11 @@ def render() -> None:
           documento). Los datos siguen siendo confiables, solo te
           enteramos para que sepas.
         - **Rojo** — errores estructurales serios. Aparece arriba de
-          todo el dashboard un **banner discreto** diciendo "Hay
-          alertas estructurales en los datos. Revisar la pestaña Salud".
+          todo el dashboard un **banner discreto**.
           Casos rojos típicos:
-          - **Vendedores con ventas pero sin cartera asignada** en
-            `clientes.xlsx`. Esto suele indicar que el maestro de
-            clientes está desactualizado.
-          - **Documentos duplicados** en `clientes.xlsx`.
-
-        Cada panel también te muestra cuántas filas tenía cada planilla
-        originalmente y cuántas quedaron después de aplicar los
-        filtros. Es trazabilidad pura.
+          - Vendedores con ventas pero sin cartera asignada en el
+            maestro de clientes.
+          - Documentos duplicados en clientes.
         """
     )
 
@@ -357,11 +312,13 @@ def render() -> None:
         """
         ### Exportar agenda personal por vendedor
 
-        En la **barra lateral**, debajo de los 5 file uploaders, vas a
-        encontrar (una vez cargadas las planillas) un bloque
+        En la **barra lateral**, debajo del resto de los bloques, vas
+        a encontrar (una vez que los datos estén cargados) un bloque
         **"Exportar agenda"** con:
 
-        - Un **selector de vendedor**.
+        - Un **selector de vendedor** (sólo aparecen vendedores con
+          cartera asignada; los IDs sin email mapeado y los vendedores
+          vacíos se filtran automáticamente).
         - Un botón **"Descargar agenda.xlsx"**.
 
         Al hacer click, descargás un archivo Excel con **5 hojas** para
@@ -371,13 +328,9 @@ def render() -> None:
         |---|---|
         | **Resumen** | Performance del período + cobertura + comparativa vs el promedio del equipo |
         | **Mi cartera** | Listado completo de sus clientes con monto del mes y la semana, unidades, y si compró este mes |
-        | **Clientes dormidos** | Solo los clientes que no compraron este mes (los que tiene que ir a visitar) |
+        | **Clientes dormidos** | Solo los clientes que no compraron este mes |
         | **Penetración** | El % de su cartera por sub-rubro (sus huecos de cross-sell) |
         | **Top 80%** | Los pocos clientes que generan el 80% de su venta — los que tiene que blindar |
-
-        Idea: el Jefe de Ventas selecciona cada vendedor, descarga su
-        agenda, y se la pasa al vendedor para que la lleve consigo durante
-        la semana.
         """
     )
 
@@ -399,6 +352,56 @@ def render() -> None:
 
     st.divider()
 
+    # ----- Cómo obtener cada planilla (solo Modo Manual) -----
+    st.markdown(
+        """
+        ### Anexo — Cómo obtener cada xlsx (sólo Modo Manual Secundario)
+
+        Esta sección es solo para cuando estás usando el **Modo Manual
+        Secundario** (la API caída). En uso normal no necesitás
+        descargar nada — el modo API lo hace todo automáticamente.
+
+        > **Regla común**: al descargar cada archivo de Contabilium,
+        > **tenés que renombrarlo manualmente** al nombre exacto que se
+        > indica abajo. Si el archivo no se llama exactamente así, el
+        > dashboard lo va a rechazar con un error.
+
+        #### 1) `fc_semanal.xlsx` — facturación semanal
+
+        1. Entrá a **Facturación** en Contabilium.
+        2. Filtrá por las fechas de la última semana.
+        3. Opción **"Detallada"** → **Descargar**.
+        4. Renombrá el archivo a `fc_semanal.xlsx`.
+
+        #### 2) `fc_mensual.xlsx` — facturación mensual
+
+        1. Entrá a **Facturación**.
+        2. Filtrá por el **mes en curso** (día 1 hasta hoy).
+        3. Opción **"Detallada"** → **Descargar**.
+        4. Renombrá el archivo a `fc_mensual.xlsx`.
+
+        #### 3) `clientes.xlsx` — cartera de clientes
+
+        1. Entrá a **Clientes**.
+        2. Botón **Exportar** → **Descargar**.
+        3. Renombrá a `clientes.xlsx`.
+
+        #### 4) `productos.xlsx` — maestro de productos
+
+        1. Entrá a **Productos y servicios**.
+        2. Exportar → **"Simple"** → **Descargar**.
+        3. Renombrá a `productos.xlsx`.
+
+        #### 5) `combos.xlsx` — maestro de combos
+
+        1. Entrá a **Productos y servicios**.
+        2. Exportar → **"Detalle combos"** → **Descargar**.
+        3. Renombrá a `combos.xlsx`.
+        """
+    )
+
+    st.divider()
+
     # ----- Cierre -----
     st.markdown(
         """
@@ -410,6 +413,7 @@ def render() -> None:
         - Qué tab estabas mirando
         - Qué hiciste antes de que apareciera el error
         - El mensaje exacto que te apareció (si hay)
+        - Si estás en Modo API o Modo Manual
 
         Cualquier reporte detallado ayuda a corregirlo rápido.
         """
