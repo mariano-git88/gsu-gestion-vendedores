@@ -136,6 +136,42 @@ distingue origen.
   hay credenciales locales en `secrets.toml`, valida auth +
   paginación + los 3 loaders de maestros + `load_fc_api` sobre
   marzo 2026.
+- **Rangos sincronizados:** el botón "Sincronizar" de la sidebar
+  pullea **3 rangos temporales** en serie:
+  - **Mes**: selector de mes (default = mes actual).
+  - **Semana**: rango arbitrario (default = lunes de esta semana → hoy).
+  - **Trimestre**: trimestre calendario (default = Q actual). Se usa
+    principalmente en la tab Cobertura. En Modo Manual Secundario no
+    se sincroniza trimestre — esa opción solo aparece bajo modo API.
+  - Cada rango cachea independientemente con `@st.cache_data(ttl=3600)`.
+- **Botón "Resync forzado"**: debajo del sincronizar normal. Limpia
+  los caches de `_api_sync_maestros` y `_api_sync_fc` para forzar
+  un pull fresco (bypass del TTL de 1h). Útil cuando se acaba de
+  emitir una factura y se quiere ver reflejada al instante.
+
+### Maestro estático — Familia (`assets/sku_familia_subgrupo.xlsx`)
+
+Clasificación adicional por SKU que **convive con `sub_rubro`**. No
+viene de Contabilium — es un maestro que Mariano mantiene manualmente
+y se commitea al repo como parte del código (ver excepción en
+`.gitignore` para este archivo puntual).
+
+- **Hoja:** `SKU Familia Sub-grupo`.
+- **Columnas usadas:** `Producto_Id` → `sku`, `Familia_Id` → `familia`.
+- **Columna ignorada:** `Sub-Grupo` (el `sub_rubro` vigente sigue
+  viniendo del maestro de productos; ver decisión 2026-04-17 sobre
+  convivencia).
+- **Loader:** `data_loader.load_familia(path)`.
+- **Integración:** `transforms.enrich_familia(df_fc, df_familia)` se
+  aplica como paso 4b del pipeline en `prepare_facturacion`, agregando
+  una columna `familia` al DataFrame final. SKUs sin match caen en
+  `FAMILIA_SIN_ASIGNAR = "SIN FAMILIA"`.
+- **Dónde aparece en la UI:** solo como filtro adicional en la tab
+  **Sub-rubro** (lado a lado con los filtros de sub-rubro y SKU).
+  Las demás tabs no se tocaron.
+- **Carga en `app.py`:** con `@st.cache_resource` desde
+  `Path(__file__).parent / "assets" / "sku_familia_subgrupo.xlsx"`.
+  Compartido entre modo API y Modo Manual.
 
 ### Modo Manual Secundario — 5 planillas xlsx (`data_loader.py`)
 
@@ -329,6 +365,13 @@ Para cada vendedor, en DOS timeframes paralelos (semana | mes):
 - Posibilidad de filtrar por combo específico (SKUs con sub_rubro = 'COMBO')
 
 ### Cobertura de clientes
+
+> **Selector de período en la tab Cobertura**: tres opciones —
+> **Semana**, **Mes** y **Trimestre**. La opción Trimestre aparece
+> solo si se sincronizó desde API (el Modo Manual Secundario no trae
+> trimestre). Las métricas de cobertura se calculan sobre el período
+> seleccionado.
+
 - Clientes asignados al vendedor (count de `documento` distintos en
   clientes.xlsx donde `vendedor_asignado == vendedor`).
 - Clientes con al menos una venta POSITIVA en el período. Definición:
@@ -481,8 +524,12 @@ Estructura de carpetas y archivos del proyecto:
   - `views/analisis.py` — análisis profundo: penetración por sub-rubro,
     heatmap cliente×sub-rubro, Pareto de clientes. Incluye helpers
     locales de styling sin matplotlib (ver "Principios de código" abajo)
-- `assets/` — recursos visuales (lowercase, importante para Linux)
+- `assets/` — recursos visuales + maestros estáticos (lowercase,
+  importante para Linux)
   - `assets/logo.png` — logo de grupo Suprabond para la sidebar
+  - `assets/sku_familia_subgrupo.xlsx` — maestro SKU → Familia. No
+    es data sensible (solo códigos de clasificación); commiteado al
+    repo con excepción explícita en `.gitignore`
 - `tests/` — placeholder de tests, sin contenido por ahora
   - `tests/fixtures/` — vacío. En la sesión inicial decidimos NO crear
     un mini-set de prueba con datos reales/anonimizados. Los tests

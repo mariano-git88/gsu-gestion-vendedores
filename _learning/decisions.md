@@ -537,3 +537,182 @@ es 24h y el sync dura ~1 min, la probabilidad real es ~cero, pero
 es cheap insurance.
 
 **Confirmado por:** Mariano, sesión 2026-04-17.
+
+---
+
+## 2026-04-17 — Clasificación `Familia` como nivel paralelo a `sub_rubro`
+
+**Decisión:** se incorpora una clasificación adicional `Familia` por
+SKU que **convive en paralelo** con el `sub_rubro` existente. Ambos
+niveles viven como columnas del DataFrame de facturación y se usan
+en paralelo, sin reemplazarse entre sí.
+
+**Origen del dato:**
+
+El maestro viene de un archivo externo que Mariano mantiene:
+`assets/sku_familia_subgrupo.xlsx`, hoja `SKU Familia Sub-grupo`.
+Columnas relevantes: `Producto_Id` (SKU), `Familia_Id` (código corto
+de la familia, ej. "ACC", "AFX", "BULIT"). La columna `Sub-Grupo`
+del archivo **se descarta al cargar** — no la usamos porque el
+`sub_rubro` vigente viene del maestro de productos de Contabilium
+(decisión previa, mapping dinámico).
+
+**Implementación:**
+
+- `data_loader.load_familia(path)` lee solo `sku` + `familia`,
+  dedupea por SKU.
+- `transforms.enrich_familia(df_fc, df_familia)` hace left-join por
+  SKU sobre la facturación ya clasificada. SKUs sin match caen en
+  `FAMILIA_SIN_ASIGNAR = "SIN FAMILIA"` (análogo semántico a `SIN ASIGNAR`
+  para sub_rubro).
+- `transforms.prepare_facturacion` recibe `df_familia=None` como
+  parámetro opcional (retrocompatibilidad) y llama a `enrich_familia`
+  como paso 4b del pipeline (después de `classify_skus`).
+- `app.py` carga el archivo con `@st.cache_resource` desde
+  `assets/sku_familia_subgrupo.xlsx` (compartido entre modo API y
+  Modo Manual Secundario — no depende de la fuente).
+- El dict `health` ahora incluye `skus_sin_familia` (lista de SKUs
+  sin match en el maestro de familias, para trazabilidad).
+
+**Por qué convivencia y no reemplazo:**
+
+- `sub_rubro` es la clasificación que ya usa el dashboard en múltiples
+  lugares (tab Cobertura, tab Análisis, exports de agenda, heatmaps,
+  Pareto). Reemplazarla arriesga romper todas esas vistas.
+- `Familia` es una agrupación más amplia (~15 familias vs ~30
+  sub-rubros). Ver ambos en paralelo permite preguntas distintas:
+  "¿cuánto vendí de la familia AFX?" vs "¿cuánto del sub-rubro H?".
+- El archivo maestro de Mariano tiene una columna `Sub-Grupo` que
+  SÍ parece similar al sub_rubro actual, pero mientras no haya
+  necesidad explícita, no introducimos una segunda fuente de verdad
+  para el mismo concepto.
+
+**Alternativas descartadas:**
+
+- **Reemplazar `sub_rubro` con `Sub-Grupo` del nuevo archivo**:
+  descartado por el riesgo de romper todas las vistas que ya usan
+  sub_rubro. Si en el futuro se valida que son equivalentes al
+  100%, se puede migrar — pero no es urgente.
+- **Commitear el archivo en `data/` o en otra carpeta**: descartado.
+  `assets/` ya existía y es donde vive `logo.png`. Mantener los
+  maestros estáticos del proyecto todos juntos simplifica.
+- **Descargar la Familia desde un endpoint de Contabilium**: no
+  existe endpoint conocido para eso. Mariano la mantiene en Excel.
+
+**Dónde aparece el filtro en la UI:**
+
+Solo en la tab **Sub-rubro**, como un tercer selectbox lado a lado
+con los de sub-rubro y SKU. Los 3 filtros son acumulativos. El
+resto de las tabs no se tocaron.
+
+**Confirmado por:** Mariano, sesión 2026-04-17 (post-deploy).
+
+---
+
+## 2026-04-17 — Vista Trimestral en Cobertura (calendario actual por default)
+
+**Decisión:** se agrega un tercer rango temporal **"Trimestre"** al
+pipeline de la app, disponible en la tab **Cobertura**. El rango por
+default es el **trimestre calendario actual** (Q1=ene-mar, Q2=abr-jun,
+Q3=jul-sep, Q4=oct-dic). El selector de trimestre en la sidebar
+ofrece los últimos 8 trimestres y el usuario puede elegir cualquiera.
+
+**Solo disponible en Modo API:**
+
+El Modo Manual Secundario no soporta trimestre. Los xlsx de
+facturación actuales cubren semana + mes, y no tiene sentido pedirle
+a Mariano que descargue manualmente otro xlsx de 3 meses solo para
+una vista adicional.
+
+Cuando el usuario está en Modo Manual, `st.session_state.df_tri` es
+`None` y la opción "Trimestre" directamente **no aparece** en el
+selector de período de `views/cobertura.py`.
+
+**Dónde se invoca el pull:**
+
+El botón "Sincronizar" del modo API ahora pullea **3 rangos** (mes +
+semana + trimestre) en serie. El sync pasa de ~1 min a ~2-3 min
+total. Alternativa descartada: botón separado para el trimestre. La
+simplicidad ("un solo botón para todo") gana sobre la latencia
+marginal.
+
+**Por qué calendario y no últimos 3 meses rolling:**
+
+- Alineación con reportes contables y QBRs ("rendimiento del Q2 2026"
+  vs "últimos 90 días").
+- Estabilidad del rango: el Q2 siempre es abr-jun, independientemente
+  de qué día del mes se esté viendo el dashboard.
+- Mariano confirmó explícitamente el calendario actual como default.
+
+**Cache:**
+
+Cada pull (mes, semana, trimestre) usa `@st.cache_data(ttl=3600)`
+con `(fecha_desde, fecha_hasta)` como key. Si en la próxima sesión
+el rango del trimestre no cambió (mismo Q del mismo año), reusa el
+cache — no re-pullea 900+ comprobantes. El botón "Resync forzado"
+limpia los 3 caches a la vez.
+
+**Alternativas descartadas:**
+
+- **Trimestre rolling (últimos 3 meses hacia atrás)**: no se alinea
+  con QBRs ni con el lenguaje contable. Descartado.
+- **Calcular trimestre por composición de meses ya pulleados**: solo
+  funcionaría si el usuario ya tiene cache de los 3 meses
+  individuales, lo cual casi nunca es el caso. Mejor un pull único.
+- **Agregar trimestre también a las tabs Resumen, Sub-rubro y Análisis**:
+  descartado por ahora. Mariano pidió solo Cobertura. Si aparece
+  demanda, se replica el mismo patrón (trivial con `st.session_state.df_tri`).
+
+**Confirmado por:** Mariano, sesión 2026-04-17 (post-deploy).
+
+---
+
+## 2026-04-17 — Filtrado del dropdown "Exportar agenda"
+
+**Decisión:** el selectbox del bloque "Exportar agenda" en la sidebar
+excluye dos clases de valores que son técnicamente vendedores en el
+DataFrame pero no representan personas a las que tenga sentido
+generar una agenda:
+
+- **String vacío `""`**: clientes del maestro con
+  `IdUsuarioAdicional = 0` o `null` — sin vendedor asignado en
+  Contabilium. En marzo 2026 son 33 clientes (~3% de la cartera).
+- **Prefijo `"ID_"`**: clientes asignados a un `IdUsuarioAdicional`
+  que no aparece en el dict `VENDEDORES` (ej. `"ID_239"`). Son IDs
+  que no facturaron en el rango usado para derivar el mapping
+  (probablemente ex-vendedores o usuarios inactivos).
+
+**Implementación:**
+
+En `app.py`, el list-comp que arma `_vendedores_export` filtra ambos
+casos:
+
+```python
+_vendedores_export = sorted(
+    v
+    for v in df_clientes["vendedor"].dropna().astype(str).unique().tolist()
+    if v and not v.startswith("ID_")
+)
+```
+
+**Por qué filtrar en la UI y no en el loader:**
+
+Los clientes sin vendedor o con ID huérfano **sí tienen que existir**
+en el DataFrame `df_clientes` — aparecen en otros cálculos (ej.
+total de clientes en el maestro, joins de facturación por documento).
+Filtrarlos en el loader los eliminaría del resto del pipeline, lo
+cual no es correcto.
+
+La solución es filtrar **solo el dropdown de exportación de agenda**
+(donde carece de sentido mostrarlos), dejando el DataFrame base
+intacto.
+
+**Tareas operativas futuras (no bloqueantes):**
+
+- Identificar quién es `IdUsuarioAdicional = 239` (1 cliente asignado:
+  "ANDREA DELGADO") y reasignarlo en Contabilium o agregarlo al dict
+  `VENDEDORES` si resulta ser un vendedor válido.
+- Asignar los 33 clientes sin vendedor a quien corresponda en el
+  maestro de Contabilium.
+
+**Confirmado por:** Mariano, sesión 2026-04-17 (post-deploy).

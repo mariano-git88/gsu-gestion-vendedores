@@ -180,3 +180,110 @@ soportado en pandas 2.1+.
 siempre **se eliminan eventualmente**. Si una librería te dice "esto
 está deprecated, usá la otra", tomalo en serio: **migrá ahora**, no
 cuando la versión nueva rompa tu deploy.
+
+---
+
+## 2026-04-17 — Firma inconsistente entre loaders API
+
+**Qué pasó:** durante Tanda B (loaders API), implementé
+`load_productos_api` y `load_combos_api` con un parámetro opcional
+`conceptos_items: list[dict] | None = None` para permitir reutilizar
+el pull de `/api/conceptos/search` cuando ambos se llaman en
+sucesión. Pero `load_clientes_api` se quedó con la firma original,
+**sin el parámetro equivalente** `clientes_items`.
+
+Al escribir `_api_sync_maestros` en `app.py` (Tanda E), le pasé
+`clientes_items=clientes_items` a `load_clientes_api` — porque
+mentalmente ya había asumido simetría con los otros loaders. Al
+correr `streamlit run app.py` y tocar "Sincronizar", crasheó con:
+
+```
+TypeError: load_clientes_api() got an unexpected keyword argument
+'clientes_items'
+```
+
+**Cómo lo detectamos:** Mariano lo reportó desde el navegador apenas
+tocó el botón Sincronizar en la primera prueba local. El stack
+trace apuntaba directo a la línea ofensora, muy fácil de diagnosticar.
+
+**Cómo lo arreglé:** agregué el parámetro `clientes_items` a
+`load_clientes_api` para que la firma quede simétrica con los otros
+dos loaders. El cambio preservó retrocompatibilidad (default `None`,
+hace el pull interno si no se pasa) y eliminó el error sin tocar el
+caller.
+
+**Lecciones operativas:**
+
+1. **Cuando un patrón de API (firma, parámetros opcionales,
+   convenciones) aparece en dos o más funciones relacionadas, aplicarlo
+   a TODAS las funciones hermanas al mismo tiempo.** El "fácil ahorro"
+   de no aplicarlo a la que parece que no lo necesita hoy se paga
+   cuando mañana sí lo necesita, y el usuario del módulo asume simetría
+   que no existe.
+
+2. **Los tests programáticos `if __name__ == "__main__"` del
+   api_loader no detectaron este bug** porque el self-test llamaba a
+   `load_clientes_api` sin el parámetro. Solo el caller de `app.py`
+   lo pasaba. Para futuros cambios de firmas, conviene invocar las
+   funciones en el self-test con todas las combinaciones de parámetros
+   que el app real usa.
+
+3. **La validación local con `streamlit run` es barata y detecta
+   estos errores al instante.** Justifica la molestia de configurar el
+   venv + secrets cuando los cambios tocan lógica de carga.
+
+**Aplicación general:** si sos el autor de una familia de funciones
+(ej. `load_X_api` para varias entidades), tomate 30 segundos extra
+para revisar que las firmas sean simétricas antes de declarar "hecho".
+
+---
+
+## 2026-04-17 — Comparar vs xlsx del mes equivocado: teoría errónea sobre "GSU es subset de Suprabond"
+
+**Qué pasó:** durante Tanda C.3 corrí por primera vez
+`comparar_api_vs_xlsx.py` para validar que `load_fc_api` producía los
+mismos números que `data_loader.load_fc()` sobre el xlsx de marzo
+2026. Los resultados mostraron diferencias **enormes**:
+
+```
+Filas:       xlsx=957    api=3158    diff=+2201
+Monto total: xlsx=1.4M   api=3.9M    diff=+180%
+```
+
+Mi hipótesis inmediata: "la cuenta de Contabilium contiene TODO el
+Grupo Suprabond Uruguay, y GSU es solo una unidad de negocio dentro
+del grupo. El xlsx ya viene prefiltrado por GSU, la API nos devuelve
+todo". Argumenté con evidencia circunstancial (documentos únicos
+171 vs 444, observaciones que mencionan "GRUPO SUPRABOND URUGUAY",
+etc.) y le pedí a Mariano que identificara cómo distinguir GSU del
+resto (PuntoVenta específico, Inventario, tags, etc.).
+
+**Qué era en realidad:** el xlsx `fc_mensual.xlsx` que Mariano tenía
+en la carpeta de exploración era de **un mes anterior** (abril
+parcial), no de marzo 2026 cerrado. Mariano lo reemplazó por el
+correcto y la comparación siguiente cuadró al centavo:
+`FAC, NCF, TIK` idénticos, monto total con diff de $0.00.
+
+**Cómo lo detectamos:** Mariano supo inmediatamente al leer mi
+hipótesis: "Actualizo el archivo. Probá de nuevo". Tras el update,
+los números cuadraron y la "teoría del subset" se cayó sola.
+
+**Lección operativa:**
+
+Antes de construir teorías elaboradas sobre discrepancias de datos,
+**verificar con el dueño de los datos que la entrada sea la que
+yo creo que es**. Una pregunta simple y directa
+("¿este archivo es el mes correcto?") ahorra media hora de
+especulación que después se demuestra equivocada.
+
+En particular, cuando los números difieren por un factor redondo
+(~3x es sospechoso para una diferencia de mes, porque el mes tiene
+~30 días y la ventana del rango puede solaparse distinto), **esa es
+la señal #1 de que la entrada no es la esperada**, no de un bug
+estructural.
+
+**Aplicación general:** "la entrada está mal" es siempre la primera
+hipótesis a testear en un debug de datos, y cuesta casi nada
+falsearla/confirmarla (una pregunta al operador o un
+`print(df.head())`). Construir teorías de arquitectura antes de
+verificar la entrada desperdicia tiempo y desvía la conversación.
