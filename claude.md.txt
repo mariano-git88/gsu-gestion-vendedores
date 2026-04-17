@@ -9,8 +9,16 @@ Soy el owner técnico. Construyo y mantengo la app. El usuario final en la reuni
 
 ## Contexto operativo
 - Uso: una vez por semana, en la reunión comercial de GSU.
-- Modelo de datos: upload manual de las 5 planillas al abrir la app.
-  No hay persistencia entre sesiones — se sube, se analiza, se cierra.
+- Modelo de datos: **dos fuentes posibles**, coexistentes en la sidebar.
+  - **Modo primario:** pull automático desde la API REST de Contabilium
+    (`https://rest.contabilium.com.uy`). El usuario elige mes y rango de
+    la semana y toca "Sincronizar".
+  - **Modo Manual Secundario (fallback):** upload de las 5 planillas xlsx,
+    igual que antes. Vive en un expander colapsado debajo del modo API.
+  - Ver entrada 2026-04-17 en `_learning/decisions.md` para el racional
+    de la coexistencia.
+- No hay persistencia entre sesiones: todo se procesa en memoria y se
+  descarta al cerrar el navegador.
 - Quién opera la app: el Jefe de Ventas (o Mariano) en la reunión.
 
 ---
@@ -19,8 +27,15 @@ Soy el owner técnico. Construyo y mantengo la app. El usuario final en la reuni
 - Python 3.11+
 - Streamlit (UI y deploy)
 - pandas + openpyxl (lectura de xlsx)
+- requests (cliente HTTP para la API de Contabilium)
 - Deploy: Streamlit Community Cloud desde repo privado de GitHub
-- Auth: contraseña única compartida, en `.streamlit/secrets.toml` (local) y en los Secrets de Streamlit Cloud (producción)
+- Auth del dashboard: contraseña única compartida, en
+  `.streamlit/secrets.toml` (local) y en los Secrets de Streamlit Cloud
+  (producción)
+- Auth de la API de Contabilium: OAuth2 `client_credentials` con
+  `client_id` (email admin) + `client_secret` (API Key). Valores en
+  `.streamlit/secrets.toml` bajo `contabilium_client_id` y
+  `contabilium_client_secret`.
 
 ---
 
@@ -29,19 +44,108 @@ Soy el owner técnico. Construyo y mantengo la app. El usuario final en la reuni
 1. Leer `_learning/errors.md`.
 2. Leer `_learning/decisions.md`.
 3. Leer las últimas 3 entradas de `_session-log.md`.
-4. Preguntar en qué parte del proyecto vamos a trabajar (data_loader, transforms, vistas, auth, deploy) antes de empezar a escribir código.
-5. Para cualquier cambio que afecte el esquema de datos o las reglas de
-   clasificación, proponer la entrada a `decisions.md` antes de implementar.
+4. Si el trabajo involucra la integración API: echarle un vistazo a
+   `api_loader.py` (constantes, fórmulas) y a `vendedores.py` /
+   `subrubros.py` (mappings vigentes).
+5. Preguntar en qué parte del proyecto vamos a trabajar (api_loader,
+   data_loader, transforms, vistas, auth, deploy) antes de empezar a
+   escribir código.
+6. Para cualquier cambio que afecte el esquema de datos o las reglas
+   de clasificación, proponer la entrada a `decisions.md` antes de
+   implementar.
 
 Al cerrar sesión: append a `_session-log.md` con lo hecho, decisiones
 tomadas, y qué queda pendiente.
 
 ---
 
-## Fuentes de datos (5 planillas, subidas en cada sesión)
+## Fuentes de datos
 
-Todas vienen de Contabilium con muchas columnas de ruido.
-Solo las columnas listadas abajo son relevantes — el resto se ignora al cargar.
+El dashboard acepta datos desde dos fuentes intercambiables. Ambas
+producen DataFrames con el **mismo schema interno**, así el resto del
+pipeline (`transforms.py`, `metrics.py`, `views/`, `exports.py`) no
+distingue origen.
+
+### Modo Primario — API de Contabilium (`api_loader.py`)
+
+- **URL base:** `https://rest.contabilium.com.uy` (UY). OJO: la API
+  de Argentina vive en `rest.contabilium.com` (sin `.uy`) — no
+  confundir, las URLs de documentación pública muestran el dominio AR.
+- **Auth:** OAuth2 `client_credentials` contra `POST /token`. Token
+  Bearer de 24h (86399s). Constantes en `api_loader.py`:
+  - `BASE_URL`, `USER_AGENT`, `DEFAULT_TIMEOUT`, `MAX_RETRIES`.
+- **Credenciales:** en `.streamlit/secrets.toml`:
+  - `contabilium_client_id` — email admin de la cuenta.
+  - `contabilium_client_secret` — API Key (obtenible en Contabilium
+    → Mi Cuenta → Datos de mi empresa → API).
+  - Requiere plan Full o superior.
+- **Endpoints utilizados:**
+  - `GET /api/clientes/search` — maestro de clientes, paginado.
+  - `GET /api/conceptos/search` — maestro de productos Y combos;
+    se filtra por `Tipo` (`"Producto"` / `"Combo"`).
+  - `GET /api/comprobantes/search?fechaDesde=&fechaHasta=` — listado
+    paginado de comprobantes del rango.
+  - `GET /api/comprobantes/?id={}` — detalle de un comprobante con
+    sus `Items` y su `IDVendedor` (ambos NO vienen en el listado).
+    **Ojo: ID va como query param, no como path segment.**
+- **Paginación:** parámetro `page=N`. El response trae `Items`,
+  `TotalItems` (total global) y `TotalPage` (contraintuitivamente,
+  es el tamaño de página = 50, no la cantidad de páginas). Se
+  recorre hasta que `len(acumulado) >= TotalItems` o hasta página
+  vacía.
+- **Mapeo de campos API → schema interno:**
+
+| Interno | API | Endpoint |
+|---|---|---|
+| `documento` | `NroDoc` | clientes |
+| `razon_social` | `RazonSocial` | clientes (maestro — canónica) |
+| `vendedor` (clientes) | `IdUsuarioAdicional` → email via `VENDEDORES` | clientes |
+| `vendedor` (fc) | `IDVendedor` → email via `VENDEDORES` | comprobantes GetById |
+| `fecha` | `FechaEmision` | comprobantes listado |
+| `tipo` | `TipoFc` | comprobantes listado |
+| `moneda` | `IDMoneda` → `"UYU"` (794) o `"MONEDA_<id>"` | comprobantes listado |
+| `sku` | `Codigo` | comprobantes GetById `Items[].Codigo` |
+| `producto` | `Concepto` | comprobantes GetById `Items[].Concepto` |
+| `unidades` | `Cantidad` × signo del tipo | comprobantes GetById |
+| `monto` | `PrecioUnitario × Cantidad × (1 − Bonif/100)` × signo | comprobantes GetById |
+| `sku` (productos) | `Codigo` | conceptos |
+| `nombre` (productos) | `Nombre` | conceptos |
+| `sub_rubro` | `IdSubrubro` → código via `SUBRUBROS` | conceptos |
+| `rubro` | `IdRubro` → nombre via `RUBROS` | conceptos |
+
+- **Signo del monto/unidades** en facturación: las NCF vienen con
+  `Cantidad` y `PrecioUnitario` positivos en los items, pero el
+  comprobante totaliza negativo. `load_fc_api` aplica `-1`
+  manualmente cuando `TipoFc ∈ {NCF, NCT, NCE}`
+  (constante `TIPOS_NEGATIVOS` en `api_loader.py`).
+  Ver entrada 2026-04-17 en `decisions.md` para la validación
+  empírica.
+- **Concurrencia del N+1 en facturación:** el listado devuelve ~1000
+  comprobantes sin items. Para cada uno hay que llamar
+  `GET /api/comprobantes/?id={}` para obtener los items y el
+  `IDVendedor`. Se hace con `ThreadPoolExecutor(max_workers=10)` →
+  ~60s end-to-end.
+- **Mappings ID → valor humano** (archivos del repo):
+  - `vendedores.py`: `VENDEDORES: dict[int, str]` +
+    `VENDEDORES_OP_EXCLUIDOS: frozenset[int]`.
+  - `subrubros.py`: `SUBRUBROS: dict[int, str]` + `RUBROS: dict[int, str]`.
+  - Se regeneran cruzando xlsx vs API con el script
+    `_exploracion-api-contabilium/derivar_mappings.py`. Actualizar
+    cuando se dé de alta un vendedor nuevo o un sub-rubro nuevo.
+- **Self-test:** `python api_loader.py` corre parseos (offline) y si
+  hay credenciales locales en `secrets.toml`, valida auth +
+  paginación + los 3 loaders de maestros + `load_fc_api` sobre
+  marzo 2026.
+
+### Modo Manual Secundario — 5 planillas xlsx (`data_loader.py`)
+
+Fallback. Se accede desde el expander colapsado "Modo Manual
+Secundario" en la sidebar. Mismas 5 planillas que antes, mismas
+reglas, mismo schema resultante — sin cambios respecto al pipeline
+histórico.
+
+Todas vienen de Contabilium con muchas columnas de ruido. Solo las
+columnas listadas abajo son relevantes — el resto se ignora al cargar.
 
 ### 1. `fc_semanal.xlsx` — Facturación de la última semana
 - Hoja: `Comprobantes`
@@ -332,14 +436,32 @@ Estructura de carpetas y archivos del proyecto:
 - `.gitignore`
 - `.streamlit/secrets.toml` — local, NO commitear
 - `.streamlit/secrets.toml.example` — plantilla pública (sí va al repo)
-- `app.py` — entry point Streamlit: auth gate, file uploaders en sidebar,
-  routing de tabs (Resumen / Sub-rubro / Cobertura / Salud), banner de
-  alertas estructurales si las hay
+- `app.py` — entry point Streamlit: auth gate, sidebar bifurcada
+  (Sincronizar desde Contabilium como primario + "Modo Manual
+  Secundario" colapsado), bifurcación de datos con
+  `session_state.fuente_activa`, routing de tabs (Resumen /
+  Sub-rubro / Cobertura / Análisis / Salud), banner de alertas
+  estructurales si las hay
 - `auth.py` — login con contraseña única
 - `theme.py` — tema visual estilo Dieter Rams / Vitsoe (CSS custom +
   carga del logo en sidebar). Llamar `apply_theme()` después de
   `st.set_page_config()` y antes del auth gate
-- `data_loader.py` — carga y validación de las 5 planillas
+- `api_loader.py` — cliente de la API REST de Contabilium UY:
+  `ApiSession`, `obtener_token` OAuth2, `api_get` con retry,
+  `api_paginate`, `load_clientes_api`, `load_productos_api`,
+  `load_combos_api`, `load_fc_api` (N+1 paralelo con
+  `ThreadPoolExecutor`). Funciones puras, no importa streamlit. Self-
+  test programático al final del archivo
+- `vendedores.py` — mapping `VENDEDORES: dict[int, str]` de
+  `IDVendedor` a email canónico + `VENDEDORES_OP_EXCLUIDOS:
+  frozenset[int]` (reemplazo por-ID del conjunto histórico
+  OPJESICA/OPVALERIA). Se regenera con el script
+  `_exploracion-api-contabilium/derivar_mappings.py`
+- `subrubros.py` — mapping `SUBRUBROS: dict[int, str]` (de
+  `IdSubrubro` a código corto "A"/"BA"/"PM"/etc) + `RUBROS:
+  dict[int, str]`. Ver regeneración en `derivar_mappings.py`
+- `data_loader.py` — carga y validación de las 5 planillas (Modo
+  Manual Secundario)
 - `transforms.py` — exclusión OP, filtrado NCF, validación de moneda,
   joins, clasificación de SKU
 - `metrics.py` — cálculo de ventas y cobertura (con match estricto
@@ -374,13 +496,18 @@ Estructura de carpetas y archivos del proyecto:
 
 ### Principios de código
 
-- `data_loader.py`, `transforms.py`, `metrics.py` y `exports.py` son
-  funciones puras (reciben DataFrames, devuelven DataFrames o BytesIO,
-  sin side effects). No importan streamlit.
+- `api_loader.py`, `data_loader.py`, `transforms.py`, `metrics.py` y
+  `exports.py` son funciones puras (reciben DataFrames / credenciales /
+  sesiones, devuelven DataFrames o BytesIO, sin side effects). No
+  importan streamlit.
 - Solo `app.py` y `views/` importan streamlit.
-- Cache agresivo con `@st.cache_data` sobre las funciones de transformación
-  y sobre la generación de la agenda exportable, para fluidez al cambiar
-  filtros, pestañas o vendedor seleccionado.
+- Cache agresivo con `@st.cache_data` y `@st.cache_resource`:
+  - `@st.cache_resource` para el `ApiSession` (compartido en el proceso).
+  - `@st.cache_data(ttl=3600)` para los pulls de la API (maestros y
+    facturación por rango).
+  - `@st.cache_data` sin TTL para las funciones de transformación y la
+    generación de la agenda — se recalculan solo cuando cambian los
+    inputs hasheables.
 - Validación estricta de schemas al cargar — error claro al usuario si
   falta algo, nunca fallar silenciosamente.
 
@@ -424,8 +551,14 @@ Estructura de carpetas y archivos del proyecto:
 - Repo privado en GitHub.
 - Conectado a Streamlit Community Cloud.
 - Push a `main` → redeploy automático.
-- Secrets (password) configurados en el dashboard de Streamlit Cloud,
-  NO en el repo.
+- Secrets configurados en el dashboard de Streamlit Cloud
+  (Settings → Secrets), **NO en el repo**:
+  - `app_password` — contraseña del dashboard.
+  - `contabilium_client_id` — email admin de Contabilium.
+  - `contabilium_client_secret` — API Key de Contabilium.
+- Si faltan las credenciales de Contabilium en producción, el modo
+  API tira `AuthError` con mensaje claro y el usuario cae al
+  "Modo Manual Secundario" automáticamente.
 
 ---
 
@@ -441,7 +574,22 @@ Estructura de carpetas y archivos del proyecto:
   semanas. Siempre validar.
 - No intentar convertir USD a UYU automáticamente. Excluir y avisar.
 - No contar NCF para la métrica de cobertura de clientes.
-- No calcular monto con otra columna que no sea `Subo Total Bonif`.
+- No calcular monto con otra columna que no sea `Subo Total Bonif`
+  (en xlsx) / `PrecioUnitario × Cantidad × (1 − Bonif/100) × signo`
+  (en API — signo viene de `TIPOS_NEGATIVOS`).
+- **No llamar endpoints de escritura de la API de Contabilium**
+  (`PUT /UpdateComprobante`, `DEL /DeleteComprobante`,
+  `POST /AnularComprobante*`, etc). El `api_loader` solo expone
+  funciones que hacen GET. El `client_secret` tiene permisos de
+  escritura — tratarlo con el mismo cuidado que una password admin.
+- No pegar `contabilium_client_secret` ni el `access_token` en el
+  chat, logs o commit. Vivir exclusivamente en
+  `.streamlit/secrets.toml` (local, gitignored) y en Streamlit
+  Cloud Secrets (producción).
+- No modificar los mappings `VENDEDORES` / `SUBRUBROS` / `RUBROS`
+  a mano si hay una alternativa automatizable — correr
+  `derivar_mappings.py` y pegar el output. Los errores tipográficos
+  a mano pueden romper una métrica silenciosamente.
 
 ---
 

@@ -310,3 +310,230 @@ en pantalla que ya no recuerda al volver al auto".
 `exportar_agenda_vendedor(df_sem, df_mes, df_clientes, vendedor) -> BytesIO`.
 
 **Confirmado por:** Mariano, sesión 2026-04-10.
+
+---
+
+## 2026-04-17 — Integración con API de Contabilium: coexistencia con "Modo Manual Secundario"
+
+**Decisión:** el dashboard va a evolucionar a cargar los datos directamente
+desde la **API REST de Contabilium** (`https://rest.contabilium.com`) en
+lugar de depender exclusivamente del upload de las 5 planillas xlsx.
+
+**Modelo operativo:** **coexistencia**, no reemplazo.
+
+- **Modo primario (default):** carga desde la API. Selector de mes en la
+  sidebar principal + botón "Sincronizar desde Contabilium". El usuario
+  abre la app y sincroniza sin tocar archivos.
+- **Modo secundario (fallback):** upload manual de las 5 planillas. Vive
+  en una **sección aparte** de la sidebar etiquetada explícitamente como
+  **"Modo Manual Secundario"** (o un expander colapsado con ese nombre).
+  La intención es que quede disponible pero visualmente degradado,
+  señalando que es el plan B.
+
+**Por qué coexistencia y no reemplazo:**
+
+- Si la API de Contabilium está caída o cambia un campo silenciosamente
+  un viernes, Mariano / el Jefe de Ventas tienen que poder exportar las
+  planillas desde Contabilium y seguir la reunión del lunes sin
+  depender de resolver un bug.
+- Hasta que el modo API acumule varios meses sin sorpresas, el modo
+  manual es la red de seguridad operacional.
+- El upload manual ya existe y funciona — no cuesta mantenerlo, solo
+  hay que reubicarlo en la UI.
+
+**Por qué el manual queda visualmente secundario** (y no a la par):
+
+- Si están al mismo nivel, el usuario no sabe cuál usar y cada uno
+  arma un hábito distinto.
+- Marcarlo como "secundario" comunica implícitamente: "usá API por
+  default, vení acá solo si la API falla".
+
+**Alternativas descartadas:**
+
+- **Reemplazo total inmediato** de xlsx por API: descartado por el
+  riesgo operativo del primer mes en producción. Un bug sutil de
+  integración (tipo FAC/eFC distinto, redondeo de moneda, campo faltante
+  en algún cliente) se descubre solo cuando Mariano compara el dashboard
+  contra Excel — y si no hay Excel como plan B, el dashboard queda
+  inutilizable.
+- **Ambos modos al mismo nivel visual**: descartado porque genera
+  fricción de decisión cada vez que se abre la app.
+- **Sacar el upload manual del proyecto y mantenerlo solo en git history**:
+  descartado porque cuesta más restaurarlo en una emergencia que
+  dejarlo ahí latente.
+
+**Cuándo reevaluar:** una vez que el modo API haya corrido bien durante
+~2 meses (≈8 reuniones semanales sin incidentes), discutir si el modo
+manual sigue justificando su espacio en la UI o se mueve a un botón
+admin / se elimina del todo.
+
+**Confirmado por:** Mariano, sesión 2026-04-17.
+
+---
+
+## 2026-04-17 — Signo negativo de NCF aplicado manualmente en load_fc_api
+
+**Decisión:** en `api_loader.load_fc_api`, cuando `TipoFc` es una nota
+de crédito (`NCF`, `NCT`, `NCE`), el loader **multiplica por −1** los
+valores de `unidades` y `monto` de cada item del comprobante.
+
+**Contexto y validación empírica:**
+
+Contabilium UY devuelve el `ImporteTotalBruto` del comprobante con
+signo negativo para NCF (ej. `"-826,45"`), pero los `Items` del detalle
+traen `Cantidad` y `PrecioUnitario` **siempre positivos**. Nuestra
+fórmula canónica de monto por item (`PrecioUnitario × Cantidad ×
+(1 − Bonificacion/100)`) da por lo tanto un valor positivo.
+
+Para preservar la paridad con el `fc_mensual.xlsx` actual (donde NCF
+vienen con cantidad y monto negativos, ya resueltos desde Contabilium
+al exportar), aplicamos el signo nosotros.
+
+**Hipótesis validada** con script
+`_exploracion-api-contabilium/verificar_signo_ncf.py` sobre 5 NCF
+reales de marzo 2026: en todos los casos,
+`ratio = monto_calculado / ImporteTotalBruto_header = -1.0000` exacto.
+Sin ambigüedad — los items no tienen signo.
+
+**Implementación:**
+
+- Constante `TIPOS_NEGATIVOS = frozenset({"NCF", "NCT", "NCE"})` en
+  `api_loader.py`.
+- Las notas de **débito** (`NDF`, `NDT`, `NDE`) NO entran en este set:
+  suman como las facturas, con signo positivo.
+- El test de equivalencia con el xlsx de marzo 2026 cuadra al centavo
+  en FAC, NCF y TIK por separado, confirmando que el signo se aplica
+  correctamente.
+
+**Alternativas descartadas:**
+
+- **Dejar que `transforms.py` aplique el signo** post-pull: descartado
+  porque rompe el principio "api_loader produce DFs idénticos al
+  xlsx". El contrato del pipeline interno espera que las filas NCF
+  ya vengan con signo, igual que en el xlsx actual.
+- **Preguntar a Contabilium si pueden devolver items con signo**:
+  innecesario una vez confirmada la fórmula. Y no tenemos garantía
+  de que lo cambien sin romper integraciones de otros clientes.
+
+**Riesgo residual:** si en el futuro Contabilium decide devolver los
+items de NCF con signo negativo, nuestro doble `-1` los haría
+positivos. Mitigación: el test de equivalencia que vive en
+`_exploracion-api-contabilium/comparar_api_vs_xlsx.py` detecta el
+problema al instante (los totales por tipo dejarían de cuadrar).
+
+**Confirmado por:** Mariano, sesión 2026-04-17 (tras validación
+empírica con 5 NCF de marzo 2026).
+
+---
+
+## 2026-04-17 — Mappings de IDs → valores humanos como archivos del repo
+
+**Decisión:** los mappings
+- `IDVendedor → email/nombre` (`vendedores.py`)
+- `IdSubrubro → código corto` (`subrubros.py` → `SUBRUBROS`)
+- `IdRubro → nombre` (`subrubros.py` → `RUBROS`)
+
+viven como **dicts Python en archivos commiteados al repo**.
+
+**Por qué no vienen de la API:**
+
+Contabilium UY no expone endpoints de maestro de vendedores (probado
+con 6 paths candidatos, todos 404). Los endpoints del folder "Common"
+de Postman (SubRubros, Rubros, ObtenerInfo) tampoco responden bajo
+`/api/common/<Name>` que era el path especulado. Sin URL exacta
+confirmada, no podemos pullearlos.
+
+**Por qué en archivos del repo y no en secrets:**
+
+- No son sensibles: los emails de vendedores ya están en todos los
+  xlsx que procesa la app; los códigos de sub-rubro son negocio
+  público no confidencial.
+- Cambian muy pocas veces al año (alta/baja de un comercial, nuevo
+  sub-rubro). El flujo de actualización con git es perfectamente OK.
+- Tenerlos en código permite versionarlos, hacer PR si hay debate
+  sobre un mapping, y validarlos en code review.
+
+**Por qué derivarlos automáticamente:**
+
+En lugar de pedirle a Mariano que complete los dicts a mano (riesgoso
+— un error tipográfico y una métrica entera queda mal), el script
+`_exploracion-api-contabilium/derivar_mappings.py` **cruza el xlsx
+vigente con la API** (por `Numero` de comprobante para vendedores,
+por `SKU`/`Codigo` para sub-rubros) y deduce los mappings con ratio
+100% de certeza.
+
+La derivación del 2026-04-17 produjo 8 vendedores y 14 subrubros +
+10 rubros, todos con ratio de match 1:1 (sin ambigüedad).
+
+**Exclusión OP migra a IDs:**
+
+`VENDEDORES_OP_EXCLUIDOS = frozenset({232, 260})` (IDs de OPJESICA y
+OPVALERIA) reemplaza al set de emails histórico. Pero como el mapping
+`VENDEDORES` traduce 232→"OPJESICA@..." y 260→"OPVALERIA@...", la
+función existente `transforms.exclude_op_vendedores` (que filtra por
+email) sigue funcionando sin cambios.
+
+**Cuándo re-derivar:**
+
+- Cuando se incorpora o egresa un vendedor del equipo comercial.
+- Cuando se crea un sub-rubro nuevo en Contabilium.
+- Si un mes el test de equivalencia `comparar_api_vs_xlsx.py` deja
+  de cuadrar y la causa parece ser un ID desmapeado (aparece
+  `"ID_<n>"` en las columnas `vendedor` o `sub_rubro`).
+
+**Confirmado por:** Mariano, sesión 2026-04-17.
+
+---
+
+## 2026-04-17 — Concurrencia del N+1 y estrategia de cache del app
+
+**Decisión:** en `api_loader.load_fc_api`, el N+1 de `GetById` sobre
+~1000 comprobantes del mes se hace con
+`concurrent.futures.ThreadPoolExecutor(max_workers=10)`. En `app.py`
+el pull de la API se cachea con `@st.cache_data(ttl=3600)` (1h) y
+el token con `@st.cache_resource`.
+
+**Racional del paralelismo:**
+
+- Serial: ~1000 comprobantes × ~200 ms/request ≈ 3-5 minutos.
+  Inaceptable para la UX de la reunión semanal.
+- Pool de 10 workers: ~60 seg end-to-end (validado 58-78 seg empíricos).
+- Más workers (20, 50): marginal improvement pero riesgo de rate
+  limit. Contabilium no documenta el límite pero 10 requests
+  concurrentes nunca tiró 429 en ~10 corridas del smoke test.
+- `asyncio` + `aiohttp`: descartado por complejidad innecesaria. El
+  tradeoff "ThreadPoolExecutor con 30 líneas" vs "aiohttp+async
+  propagado por todo el módulo" favorece la simplicidad.
+
+**Manejo de errores en el pool:**
+
+Si un GetById individual falla tras los retries de `api_get`, el
+comprobante se omite del DataFrame final y se imprime un warning
+a stdout. Prioriza "dashboard con 99% de los datos" sobre "sin
+dashboard". En una Tanda futura (F) este warning se va a elevar
+al panel de salud.
+
+**Racional del cache:**
+
+- **Token** (`@st.cache_resource`): no tiene TTL explícito. El
+  `ApiSession` contiene `expires_at` y `api_get` se auto-refresca
+  cuando está por vencer. Compartido en el proceso.
+- **Pull de maestros + facturación** (`@st.cache_data(ttl=3600)`):
+  cache de 1h es un compromiso razonable. Datos del mes en curso
+  cambian a diario pero no cada 15 minutos; un resync manual (volver
+  a tocar "Sincronizar") invalida el cache si el usuario necesita
+  fresco.
+- **No se diferencia TTL por mes** (mes en curso vs meses cerrados):
+  decisión explícita de simplicidad. TTL único = fácil de razonar
+  para Mariano. Si en el futuro hay fricción real, se puede separar.
+
+**Pre-refresco del token antes del pool:**
+
+Al empezar el batch paralelo, `load_fc_api` llama
+`_refrescar_si_expirado(session)` explícitamente. Evita el caso
+teórico donde varios threads detectan simultáneamente un token
+vencido y regeneran cada uno su propio token. Como el TTL del token
+es 24h y el sync dura ~1 min, la probabilidad real es ~cero, pero
+es cheap insurance.
+
+**Confirmado por:** Mariano, sesión 2026-04-17.
