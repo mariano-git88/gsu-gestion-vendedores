@@ -258,7 +258,9 @@ def render() -> None:
         #### Tab 4 — **Análisis** (la parte estratégica)
 
         Tres bloques de exploración profunda para identificar
-        oportunidades concretas de venta.
+        oportunidades concretas de venta. Todos operan sobre el
+        **período seleccionado** (Mes / Semana / Trimestre, default
+        Mes — la opción Trimestre sólo aparece en modo API).
 
         1. **Penetración por sub-rubro** — una **matriz coloreada**
            con vendedores en filas y sub-rubros en columnas. El color

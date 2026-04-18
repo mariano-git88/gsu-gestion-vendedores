@@ -430,7 +430,10 @@ identificar oportunidades concretas de venta:
    o vendedor específico.
 
 Las tres operan sobre el período seleccionado (selector arriba de la
-vista, default Mes). Match estricto consistente con el resto.
+vista, opciones **Mes / Semana / Trimestre**, default Mes). La opción
+Trimestre aparece sólo si el modo API sincronizó el rango trimestral
+(ventana móvil de 3 meses — ver sección "Fuentes de datos"). Match
+estricto consistente con el resto.
 
 ### Export de agenda personal por vendedor
 

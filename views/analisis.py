@@ -16,8 +16,9 @@ sobre dónde están las oportunidades:
      vital" del negocio (los clientes que hay que blindar) y el resto.
 
 Las tres visualizaciones operan sobre el período seleccionado arriba
-(Semana o Mes). Default: Mes (la penetración semanal tiende a ser baja
-para todos y no aporta señal).
+(Semana, Mes o Trimestre). Default: Mes (la penetración semanal tiende
+a ser baja para todos y no aporta señal). "Trimestre" aparece sólo si
+el modo API sincronizó el rango trimestral (ventana móvil de 3 meses).
 
 Funciones puras de cálculo viven en `metrics.py`. Esta vista solo
 orquesta + estiliza.
@@ -114,14 +115,26 @@ def render(
         "concretas de cross-sell y proteger el core del negocio."
     )
 
-    # Selector de período común a las 3 secciones — default Mes
+    # Selector de período común a las 3 secciones — default Mes.
+    # "Trimestre" aparece sólo si el modo API sincronizó un trimestre
+    # (session_state.df_tri). En Modo Manual el trimestre no existe.
+    df_tri = st.session_state.get("df_tri")
+    opciones = ["Mes", "Semana"]
+    if df_tri is not None and not df_tri.empty:
+        opciones.append("Trimestre")
+
     timeframe = st.radio(
         "Período",
-        options=["Mes", "Semana"],
+        options=opciones,
         horizontal=True,
         key="analisis_tf",
     )
-    df = df_mes if timeframe == "Mes" else df_sem
+    if timeframe == "Mes":
+        df = df_mes
+    elif timeframe == "Semana":
+        df = df_sem
+    else:
+        df = df_tri
 
     if df.empty:
         st.info("No hay datos para el período seleccionado.")
