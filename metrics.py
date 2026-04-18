@@ -93,6 +93,74 @@ def _calcular_pct_cobertura(con_venta: int, asignados: int) -> float:
 # VENTAS
 # =====================================================================
 
+def comparativa_temporal(
+    df_actual: pd.DataFrame,
+    df_prev: pd.DataFrame | None = None,
+    df_yoy: pd.DataFrame | None = None,
+) -> dict:
+    """
+    Calcula totales comparativos entre el período actual, el mes
+    anterior y el mismo mes del año pasado.
+
+    Los 3 DataFrames deben estar procesados por el pipeline habitual
+    (`transforms.prepare_facturacion`) y, cuando se comparan, haber
+    sido recortados al mismo número de días (ver
+    `app._rango_mes_comparativo_mismo_dia`). Si no se recortaron, la
+    comparación numérica sigue siendo útil pero no es apples-to-apples.
+
+    Args:
+        df_actual: facturación del período de referencia (típicamente
+            el mes en curso recortado a hoy).
+        df_prev: facturación del mes anterior, recortada al mismo día.
+            None si no se pulleó (Modo Manual).
+        df_yoy: facturación del mismo mes año pasado, recortada al
+            mismo día. None si no se pulleó.
+
+    Devuelve dict:
+      {
+        "monto_actual": float,
+        "monto_prev": float | None,
+        "monto_yoy": float | None,
+        "delta_mom_pct": float | None,  # % vs mes anterior
+        "delta_yoy_pct": float | None,  # % vs mismo mes año pasado
+        "tickets_actual": int,
+        "tickets_prev": int | None,
+        "tickets_yoy": int | None,
+      }
+    Valores None cuando no hay dato comparativo disponible o cuando el
+    período comparativo tiene monto 0 (no se puede dividir).
+    """
+    def _monto_total(df):
+        if df is None or df.empty:
+            return None
+        return float(df["monto"].sum())
+
+    def _tickets(df):
+        if df is None or df.empty or "id_comprobante" not in df.columns:
+            return None
+        return int(df["id_comprobante"].nunique())
+
+    def _delta_pct(actual, comp):
+        if actual is None or comp is None or comp == 0:
+            return None
+        return round((actual - comp) / abs(comp) * 100, 2)
+
+    monto_actual = _monto_total(df_actual) or 0.0
+    monto_prev = _monto_total(df_prev)
+    monto_yoy = _monto_total(df_yoy)
+
+    return {
+        "monto_actual": monto_actual,
+        "monto_prev": monto_prev,
+        "monto_yoy": monto_yoy,
+        "delta_mom_pct": _delta_pct(monto_actual, monto_prev),
+        "delta_yoy_pct": _delta_pct(monto_actual, monto_yoy),
+        "tickets_actual": _tickets(df_actual) or 0,
+        "tickets_prev": _tickets(df_prev),
+        "tickets_yoy": _tickets(df_yoy),
+    }
+
+
 def ventas_por_vendedor(df_fc: pd.DataFrame) -> pd.DataFrame:
     """
     Totales de venta por vendedor.

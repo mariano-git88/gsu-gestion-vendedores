@@ -137,7 +137,8 @@ distingue origen.
   paginación + los 3 loaders de maestros + `load_fc_api` sobre
   marzo 2026.
 - **Rangos sincronizados:** el botón "Sincronizar" de la sidebar
-  pullea **3 rangos temporales** en serie:
+  pullea **5 rangos temporales** en serie (los 3 principales + 2
+  comparativos):
   - **Mes**: selector de mes (default = mes actual). Si el mes
     seleccionado es el mes en curso, la `fecha_hasta` se recorta a
     **hoy** (no al último día del mes). Ver entrada 2026-04-18 en
@@ -150,7 +151,19 @@ distingue origen.
     principalmente en la tab Cobertura. En Modo Manual Secundario no
     se sincroniza trimestre — esa opción solo aparece bajo modo API.
     Ver entrada 2026-04-18 en `decisions.md`.
-  - Cada rango cachea independientemente con `@st.cache_data(ttl=3600)`.
+  - **Mes anterior** (comparativo): mismo rango del mes anterior,
+    recortado al mismo día que el rango del Mes actual para que la
+    comparación sea apples-to-apples. Ejemplo: si el Mes actual es
+    abril 2026 (al día 18), el Mes anterior va `2026-03-01 → 2026-03-18`.
+    Solo se usa para el delta MoM en el Resumen. Cache TTL 24h.
+  - **Mismo mes año pasado (YoY)**: análogo al anterior pero un año
+    atrás. Ejemplo: abril 2026 al 18 → `2025-04-01 → 2025-04-18`.
+    Cache TTL 24h.
+  - **Por qué TTL 24h en los comparativos**: son meses ya cerrados,
+    no cambian entre syncs consecutivos. TTL más largo amortiza el
+    costo del N+1 (se paga 1 vez al día en lugar de 1 vez por hora).
+  - Los 3 rangos principales (Mes / Semana / Trimestre) cachean
+    independientemente con `@st.cache_data(ttl=3600)`.
 - **Timeout global del sync**: 10 minutos (constante
   `SYNC_TIMEOUT_SEC = 600` en el handler del botón). Si se excede,
   se muestra el mensaje **"Lamentablemente Contabilium está caído.
@@ -372,6 +385,14 @@ Para cada vendedor, en DOS timeframes paralelos (semana | mes):
 
 ### Ventas
 - Monto total (suma de `monto`, en UYU)
+- **Δ vs mes anterior** (MoM) y **Δ vs mismo mes año pasado** (YoY),
+  visibles en el Resumen al lado y debajo del total del mes. Comparan
+  apples-to-apples (mismo día del mes cortado en ambos rangos).
+  Implementación: `metrics.comparativa_temporal(df_actual, df_prev,
+  df_yoy)` devuelve el dict con `monto_actual`, `delta_mom_pct`,
+  `delta_yoy_pct`, etc. Si los DFs comparativos no están disponibles
+  (Modo Manual o YoY sin histórico), los deltas son `None` y la UI
+  muestra solo el número actual.
 - Unidades totales (suma de `unidades`)
 - **Tickets** (count de comprobantes distintos vía `id_comprobante`)
 - **Ticket promedio** = monto_total / tickets

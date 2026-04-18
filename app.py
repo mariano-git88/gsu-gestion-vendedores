@@ -88,12 +88,17 @@ st.session_state.setdefault("api_rango", None)  # tupla de 6 dates (mes/sem/tri)
 st.session_state.setdefault("api_errors_mes", [])
 st.session_state.setdefault("api_errors_sem", [])
 st.session_state.setdefault("api_errors_tri", [])
+st.session_state.setdefault("api_errors_prev", [])
+st.session_state.setdefault("api_errors_yoy", [])
+st.session_state.setdefault("api_rango_comp", None)
 
 # DataFrames cacheados en session (sobreviven reruns pero no logouts).
 for _key in (
     "df_fc_sem_raw",
     "df_fc_mes_raw",
     "df_fc_tri_raw",
+    "df_fc_prev_raw",
+    "df_fc_yoy_raw",
     "df_clientes",
     "df_productos",
     "df_combos",
@@ -192,6 +197,30 @@ def _api_sync_fc(fecha_desde: str, fecha_hasta: str):
     return df, errors
 
 
+@st.cache_data(ttl=86400, show_spinner="Sincronizando facturación histórica...")
+def _api_sync_fc_historico(fecha_desde: str, fecha_hasta: str):
+    """Variante de `_api_sync_fc` para rangos CERRADOS (meses anteriores
+    al mes en curso). Mismo payload y mismo parser que el sync normal,
+    pero con TTL de 24h porque los meses cerrados no cambian — así
+    pagamos el costo del N+1 una sola vez por día en lugar de cada hora.
+
+    Usado para las comparaciones temporales (Δ vs mes anterior / YoY)
+    de Sprint 2 del dashboard.
+
+    Retorna (df, errors) — mismo formato que `_api_sync_fc`.
+    """
+    session = _api_session()
+    _, _, _, clientes_items = _api_sync_maestros()
+    session, df, errors = api_loader.load_fc_api(
+        session,
+        fecha_desde,
+        fecha_hasta,
+        vendedores_map=VENDEDORES,
+        clientes_items=clientes_items,
+    )
+    return df, errors
+
+
 # Maestro de familia: archivo estático en `assets/` (independiente de
 # la fuente activa API/Manual). Se carga una vez por proceso.
 _FAMILIA_PATH = Path(__file__).parent / "assets" / "sku_familia_subgrupo.xlsx"
@@ -261,6 +290,40 @@ def _rango_mes(y: int, m: int, today: date | None = None) -> tuple[date, date]:
         return inicio, today
     ultimo = monthrange(y, m)[1]
     return inicio, date(y, m, ultimo)
+
+
+def _mes_anterior(y: int, m: int) -> tuple[int, int]:
+    """(y, m) del mes anterior calendario. Ej: (2026, 4) → (2026, 3).
+    Cruza año: (2026, 1) → (2025, 12)."""
+    m_prev = m - 1
+    y_prev = y
+    if m_prev == 0:
+        m_prev = 12
+        y_prev = y - 1
+    return y_prev, m_prev
+
+
+def _mes_yoy(y: int, m: int) -> tuple[int, int]:
+    """Mismo mes, un año atrás. Ej: (2026, 4) → (2025, 4)."""
+    return y - 1, m
+
+
+def _rango_mes_comparativo_mismo_dia(
+    y: int, m: int, today: date
+) -> tuple[date, date]:
+    """Rango de un mes comparativo, cortado al mismo día del mes que
+    `today` tiene para que la comparación sea apples-to-apples.
+
+    Ejemplo: hoy = 2026-04-18. Comparar con marzo 2026 → rango
+    (2026-03-01, 2026-03-18). Comparar con abril 2025 → rango
+    (2025-04-01, 2025-04-18). Si el mes comparativo no tiene ese día
+    (ej: today=2026-03-31 vs febrero), se usa el último día de ese mes.
+    """
+    inicio = date(y, m, 1)
+    dia_today = today.day
+    ultimo_mes_comp = monthrange(y, m)[1]
+    dia_corte = min(dia_today, ultimo_mes_comp)
+    return inicio, date(y, m, dia_corte)
 
 
 def _semana_default() -> tuple[date, date]:
@@ -411,6 +474,27 @@ with st.sidebar:
             df_fc_tri, errors_tri = _api_sync_fc(
                 _fd_tri.isoformat(), _fh_tri.isoformat()
             )
+            _check_timeout()
+            # 3) Comparativos temporales (mes anterior + mismo mes año
+            # pasado) — cache 24h porque son meses ya cerrados.
+            # Se recortan al mismo día del mes que `_fh_mes` para que la
+            # comparación sea apples-to-apples si el mes en curso está
+            # a medio camino.
+            _y_prev, _m_prev = _mes_anterior(_y_mes, _m_mes)
+            _fd_prev, _fh_prev = _rango_mes_comparativo_mismo_dia(
+                _y_prev, _m_prev, _fh_mes,
+            )
+            _y_yoy, _m_yoy = _mes_yoy(_y_mes, _m_mes)
+            _fd_yoy, _fh_yoy = _rango_mes_comparativo_mismo_dia(
+                _y_yoy, _m_yoy, _fh_mes,
+            )
+            df_fc_prev, errors_prev = _api_sync_fc_historico(
+                _fd_prev.isoformat(), _fh_prev.isoformat()
+            )
+            _check_timeout()
+            df_fc_yoy, errors_yoy = _api_sync_fc_historico(
+                _fd_yoy.isoformat(), _fh_yoy.isoformat()
+            )
             # 3) Guardar en session y activar fuente API.
             st.session_state.df_clientes = df_cli
             st.session_state.df_productos = df_prod
@@ -418,14 +502,21 @@ with st.sidebar:
             st.session_state.df_fc_mes_raw = df_fc_mes
             st.session_state.df_fc_sem_raw = df_fc_sem
             st.session_state.df_fc_tri_raw = df_fc_tri
+            st.session_state.df_fc_prev_raw = df_fc_prev
+            st.session_state.df_fc_yoy_raw = df_fc_yoy
             st.session_state.fuente_activa = "api"
             st.session_state.api_last_sync = datetime.now()
             st.session_state.api_rango = (
                 _fd_mes, _fh_mes, _fd_sem, _fh_sem, _fd_tri, _fh_tri,
             )
+            st.session_state.api_rango_comp = (
+                _fd_prev, _fh_prev, _fd_yoy, _fh_yoy,
+            )
             st.session_state.api_errors_mes = errors_mes
             st.session_state.api_errors_sem = errors_sem
             st.session_state.api_errors_tri = errors_tri
+            st.session_state.api_errors_prev = errors_prev
+            st.session_state.api_errors_yoy = errors_yoy
             _total_errors = (
                 len(errors_mes) + len(errors_sem) + len(errors_tri)
             )
@@ -529,9 +620,13 @@ with st.sidebar:
                 df_comb_m = _load_combos_xlsx(f_combos.getvalue())
                 st.session_state.df_fc_sem_raw = df_fc_sem_m
                 st.session_state.df_fc_mes_raw = df_fc_mes_m
-                # El modo manual no soporta trimestre (no hay xlsx de
-                # 3 meses) — limpiamos cualquier residuo del modo API.
+                # El modo manual no soporta trimestre ni comparativas
+                # temporales (no hay xlsx de 3 meses ni de mes
+                # anterior/YoY) — limpiamos residuos del modo API.
                 st.session_state.df_fc_tri_raw = None
+                st.session_state.df_fc_prev_raw = None
+                st.session_state.df_fc_yoy_raw = None
+                st.session_state.api_rango_comp = None
                 st.session_state.df_clientes = df_cli_m
                 st.session_state.df_productos = df_prod_m
                 st.session_state.df_combos = df_comb_m
@@ -602,6 +697,29 @@ if _df_fc_tri_raw is not None and not _df_fc_tri_raw.empty:
 else:
     st.session_state.df_tri = None
     st.session_state.health_tri = None
+
+# Comparativos temporales (mes anterior + YoY): solo modo API.
+# Se procesan con el mismo pipeline que el mes actual para que tengan
+# id_comprobante, clasificación, etc. listos para `metrics` y comparativas.
+def _prepare_comparativo(raw):
+    if raw is None or raw.empty:
+        return None
+    try:
+        df, _health = _prepare_cached(
+            raw, df_clientes, df_productos, df_combos, df_familia
+        )
+        return df
+    except Exception as e:  # noqa: BLE001
+        st.warning(f"No se pudo procesar el rango comparativo: {e}")
+        return None
+
+
+st.session_state.df_prev = _prepare_comparativo(
+    st.session_state.get("df_fc_prev_raw")
+)
+st.session_state.df_yoy = _prepare_comparativo(
+    st.session_state.get("df_fc_yoy_raw")
+)
 
 
 # =====================================================================

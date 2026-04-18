@@ -166,7 +166,11 @@ def render() -> None:
           grandes arriba. Es el monto total facturado por todo el
           equipo en cada período. Debajo de cada uno, el **número de
           tickets** y el **ticket promedio** del período (cuánto sale
-          en promedio una factura).
+          en promedio una factura). El total del mes trae además el
+          **delta vs mes anterior** (al lado del número, verde o rojo)
+          y el **delta vs mismo mes año pasado** (caption debajo),
+          ambos comparando hasta el mismo día del mes para que sea
+          apples-to-apples.
         - **Tabla "Ventas por vendedor"** — para cada vendedor, su
           monto, unidades, tickets y ticket promedio de la semana y del
           mes lado a lado. Ordenada por monto del mes descendente.

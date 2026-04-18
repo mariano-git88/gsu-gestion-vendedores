@@ -911,3 +911,68 @@ anterior, clientes nuevos, dormidos y retención.
   o interactividad, migrar.
 
 **Confirmado por:** Mariano, sesión 2026-04-18.
+
+
+---
+
+## 2026-04-18 — Sprint 2: Δ comparativo MoM/YoY + infra histórica liviana
+
+**Decisión:** agregar dos comparativos temporales al Resumen — Δ vs
+mes anterior (MoM) y Δ vs mismo mes año pasado (YoY) — sin cambiar la
+estructura de tabs ni el resto del pipeline. Ambos comparativos se
+calculan sobre un rango **recortado al mismo día del mes** que el
+período actual, para que sea apples-to-apples.
+
+### Contexto
+
+Sprint 2 del plan de insights (iteración del 2026-04-18). Mariano
+había confirmado pullear 12 meses de histórico para habilitar features
+de Sprints 2 y 3. Pero 12 meses → ~20 min de sync, inaceptable para
+una feature sola. Tradeoff: **Sprint 2 usa solo 2 rangos chicos
+extra** (mes anterior + YoY), amortizados con TTL=24h. Features que
+necesitan histórico amplio (dormidos/nuevos/retención) se postergaron
+a Sprint 3 donde el pull pesado habilita 4 features a la vez.
+
+### Implementación
+
+- **`app._mes_anterior(y, m)`** y **`app._mes_yoy(y, m)`** — helpers
+  de navegación temporal (mes-1 y año-1).
+- **`app._rango_mes_comparativo_mismo_dia(y, m, today)`** — recorta
+  el mes comparativo al mismo día que `today.day`, con fallback al
+  último día del mes si el mes comparativo es más corto (ej. hoy
+  2026-03-31, comp feb 2026 → fecha_hasta 2026-02-28).
+- **`app._api_sync_fc_historico`** — cache decorator con TTL=86400
+  (24h) para rangos cerrados. Mismo payload que `_api_sync_fc`, solo
+  cambia el TTL. Las dos funciones comparten el maestro de clientes
+  y la `ApiSession` ya cacheada.
+- **`metrics.comparativa_temporal(df_actual, df_prev, df_yoy)`** —
+  devuelve dict con montos, deltas, tickets. Tolera `df_prev=None`
+  y `df_yoy=None` (Modo Manual): devuelve `delta_*_pct = None` y la
+  UI degrada con un mensaje.
+- **`views/resumen.py`** — `st.metric("Total mes", …, delta=…)` con
+  el delta MoM como flecha verde/roja; caption debajo con el delta
+  YoY (porque `st.metric` solo soporta un delta). Helper
+  `_format_delta(pct)` para el formato.
+- **Session state nuevo**: `df_fc_prev_raw`, `df_fc_yoy_raw`,
+  `df_prev`, `df_yoy`, `api_rango_comp`, `api_errors_prev`,
+  `api_errors_yoy`. Inicializados a `None` y reseteados explícita-
+  mente en Modo Manual (que no los soporta).
+
+### Alternativas descartadas
+
+- **Pullear los 12 meses de una sola vez (20 min).** Se habría
+  "destrabado todo" pero el sync normal se volvía inaceptable. Se
+  postergó al Sprint 3 donde el costo se amortiza entre 4 features.
+- **Usar pulls mes-por-mes en Sprint 3** con cache independiente
+  por mes. Probablemente sea lo que usemos en Sprint 3 para que si
+  un mes falla, los otros sigan disponibles. Pendiente de validar.
+- **Delta YoY como segundo `st.metric`** en lugar de caption.
+  Se descartó porque `st.metric` ya tiene el MoM y 2 deltas en
+  paralelo se vuelve visualmente ruidoso en la vista de 2 columnas.
+- **No recortar al mismo día**. Daría un delta distorsionado en los
+  primeros días del mes (ej. al día 5 de abril vs marzo completo ≈
+  "abril está -84%" cuando en realidad es solo 5/30 del mes).
+  El recorte elimina ese artificio.
+
+**Confirmado por:** Mariano, sesión 2026-04-18 (continuación de
+Sprint 1 del mismo día).

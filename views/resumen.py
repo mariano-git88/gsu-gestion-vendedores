@@ -56,11 +56,37 @@ def render(
         total_mes = float(df_mes["monto"].sum()) if not df_mes.empty else 0.0
         tickets_mes = _count_tickets(df_mes)
         ticket_prom_mes = (total_mes / tickets_mes) if tickets_mes > 0 else 0.0
-        st.metric("Total mes (UYU)", f"{total_mes:,.0f}")
+
+        # Comparativa temporal si los DFs de mes anterior / YoY están
+        # disponibles (solo en modo API).
+        df_prev = st.session_state.get("df_prev")
+        df_yoy = st.session_state.get("df_yoy")
+        comp = metrics.comparativa_temporal(df_mes, df_prev, df_yoy)
+
+        _delta_mom = _format_delta(comp["delta_mom_pct"])
+        st.metric(
+            "Total mes (UYU)",
+            f"{total_mes:,.0f}",
+            delta=_delta_mom,
+            help="Variación vs mes anterior (mismo día de corte)",
+        )
         st.caption(
             f"{tickets_mes:,} ticket(s) · promedio "
             f"${ticket_prom_mes:,.0f}"
         )
+
+        # Segunda línea con el delta YoY — como st.metric solo soporta
+        # un delta, mostramos el YoY como caption explícita debajo.
+        if comp["delta_yoy_pct"] is not None:
+            _yoy_signo = "▲" if comp["delta_yoy_pct"] >= 0 else "▼"
+            st.caption(
+                f"{_yoy_signo} {abs(comp['delta_yoy_pct']):.1f}% vs "
+                f"mismo mes año pasado "
+                f"(${comp['monto_yoy']:,.0f})"
+            )
+        elif df_yoy is None:
+            st.caption("Sin comparación YoY disponible (sync manual).")
+
         _render_caption_ncf_descartadas(health_mes)
 
     st.divider()
@@ -158,6 +184,15 @@ def _count_tickets(df: pd.DataFrame) -> int:
     if df.empty or "id_comprobante" not in df.columns:
         return 0
     return int(df["id_comprobante"].nunique())
+
+
+def _format_delta(pct: float | None) -> str | None:
+    """Formatea un delta % como '+12.3%' / '-5.4%'. Devuelve None si
+    `pct` es None (st.metric lo trata como 'sin delta')."""
+    if pct is None:
+        return None
+    signo = "+" if pct >= 0 else ""
+    return f"{signo}{pct:.1f}%"
 
 
 def _render_caption_ncf_descartadas(health: dict) -> None:
