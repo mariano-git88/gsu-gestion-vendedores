@@ -57,11 +57,28 @@ def render(
         )
         return
 
-    if df_mes is None or df_mes.empty or "saldo" not in df_mes.columns:
+    if df_mes is None or df_mes.empty:
         st.info(
             "No hay datos de cobranzas para mostrar. Tocá **Sincronizar** "
             "en la sidebar para pullear facturación con los campos de "
             "saldo y vencimiento."
+        )
+        return
+
+    if "saldo" not in df_mes.columns:
+        # Caso típico: el sync usó un caché previo a que agregáramos los
+        # campos de cobranzas al parser. El cache de `_api_sync_fc` se
+        # indexa por (fecha_desde, fecha_hasta) — si los rangos no
+        # cambiaron desde el sync anterior, Streamlit devuelve el DF
+        # viejo aunque el código nuevo ya exponga saldo/vencimiento.
+        st.warning(
+            "**El sync cacheado no tiene los campos de cobranzas.** "
+            "Esto pasa si ya habías sincronizado con una versión anterior "
+            "del código y el caché de 1 h todavía está vigente.\n\n"
+            "Solución: tocá **'Resync forzado (bypass caché)'** en la "
+            "sidebar (debajo del timestamp del último sync) y después "
+            "volvé a tocar **Sincronizar**. Eso pullea fresco y los "
+            "campos de saldo/vencimiento aparecen acá."
         )
         return
 
