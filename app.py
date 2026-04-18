@@ -18,6 +18,7 @@ Coexistencia API / Manual: ver entrada 2026-04-17 en decisions.md.
 """
 
 import io
+import time
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -250,9 +251,16 @@ def _label_mes(y: int, m: int) -> str:
     return f"{meses[m-1]} {y}"
 
 
-def _rango_mes(y: int, m: int) -> tuple[date, date]:
+def _rango_mes(y: int, m: int, today: date | None = None) -> tuple[date, date]:
+    """Primer y último día del mes (y, m). Si es el mes en curso, recorta
+    fecha_hasta al día de hoy (no al último del mes)."""
+    if today is None:
+        today = date.today()
+    inicio = date(y, m, 1)
+    if (y, m) == (today.year, today.month):
+        return inicio, today
     ultimo = monthrange(y, m)[1]
-    return date(y, m, 1), date(y, m, ultimo)
+    return inicio, date(y, m, ultimo)
 
 
 def _semana_default() -> tuple[date, date]:
@@ -262,38 +270,63 @@ def _semana_default() -> tuple[date, date]:
     return lunes, hoy
 
 
-def _trimestre_actual(today: date) -> tuple[int, int]:
-    """Devuelve (año, numero_de_trimestre) del trimestre calendario.
-
-    Q1=ene-mar, Q2=abr-jun, Q3=jul-sep, Q4=oct-dic.
-    """
-    return today.year, (today.month - 1) // 3 + 1
-
-
-def _rango_trimestre(year: int, q: int) -> tuple[date, date]:
-    """Primer y último día del trimestre `q` del año `year`."""
-    mes_desde = (q - 1) * 3 + 1
-    mes_hasta = q * 3
-    ultimo = monthrange(year, mes_hasta)[1]
-    return date(year, mes_desde, 1), date(year, mes_hasta, ultimo)
+# ---------------------------------------------------------------------
+# Trimestre = ventana móvil de 3 meses consecutivos.
+#
+# Ya NO es el trimestre calendario (Q1/Q2/Q3/Q4). El usuario elige un
+# "mes final" y la ventana son los 3 meses que terminan en él. Si el
+# mes final es el mes en curso, el rango se recorta a los días ya
+# transcurridos (ver `_rango_mes`).
+#
+# Ejemplo: mes final = abr 2026 → ventana = feb+mar+abr 2026. Si hoy
+# es 18-abr-2026, fecha_hasta = 18-abr-2026.
+# ---------------------------------------------------------------------
 
 
-def _opciones_trimestres_recientes(n: int = 6) -> list[tuple[int, int]]:
-    """Lista de (year, trimestre) recientes, actual primero."""
-    hoy = date.today()
-    y, q = _trimestre_actual(hoy)
-    out: list[tuple[int, int]] = []
-    for _ in range(n):
-        out.append((y, q))
-        q -= 1
-        if q == 0:
-            q = 4
-            y -= 1
-    return out
+def _rango_trimestre(
+    y_final: int, m_final: int, today: date | None = None
+) -> tuple[date, date]:
+    """Primer día del mes que arranca la ventana y último día del mes
+    final (recortado a hoy si es el mes en curso)."""
+    if today is None:
+        today = date.today()
+    # Retroceder 2 meses desde el mes final para obtener el mes inicial.
+    y_ini, m_ini = y_final, m_final
+    for _ in range(2):
+        m_ini -= 1
+        if m_ini == 0:
+            m_ini = 12
+            y_ini -= 1
+    inicio = date(y_ini, m_ini, 1)
+    _, fin = _rango_mes(y_final, m_final, today=today)
+    return inicio, fin
 
 
-def _label_trimestre(y: int, q: int) -> str:
-    return f"Q{q} {y}"
+def _opciones_trimestres_recientes(n: int = 12) -> list[tuple[int, int]]:
+    """Lista de (year, month) recientes como candidatos a "mes final" de
+    la ventana, mes actual primero."""
+    return _opciones_meses_recientes(n)
+
+
+def _label_trimestre(y_final: int, m_final: int) -> str:
+    """Label humano de la ventana de 3 meses. Ejemplo: "Feb → Abr 2026"
+    o "Nov 2025 → Ene 2026" cuando cruza año."""
+    meses_abrev = [
+        "Ene", "Feb", "Mar", "Abr", "May", "Jun",
+        "Jul", "Ago", "Sep", "Oct", "Nov", "Dic",
+    ]
+    y_ini, m_ini = y_final, m_final
+    for _ in range(2):
+        m_ini -= 1
+        if m_ini == 0:
+            m_ini = 12
+            y_ini -= 1
+    if y_ini == y_final:
+        return f"{meses_abrev[m_ini-1]} → {meses_abrev[m_final-1]} {y_final}"
+    return (
+        f"{meses_abrev[m_ini-1]} {y_ini} → "
+        f"{meses_abrev[m_final-1]} {y_final}"
+    )
 
 
 # =====================================================================
@@ -312,8 +345,9 @@ with st.sidebar:
         index=0,
         key="api_mes_idx",
     )
+    _hoy = date.today()
     _y_mes, _m_mes = _opciones[_idx_mes]
-    _fd_mes, _fh_mes = _rango_mes(_y_mes, _m_mes)
+    _fd_mes, _fh_mes = _rango_mes(_y_mes, _m_mes, today=_hoy)
 
     # -- Selector de semana --
     _sem_default = _semana_default()
@@ -325,19 +359,22 @@ with st.sidebar:
         "Semana hasta", value=_sem_default[1], key="api_sem_hasta"
     )
 
-    # -- Selector de trimestre (para vista Cobertura) --
-    _opc_tri = _opciones_trimestres_recientes(8)
+    # -- Selector de trimestre (ventana móvil de 3 meses) --
+    # El usuario elige el "mes final" y la ventana son los 3 meses que
+    # terminan en él. Si el mes final es el mes en curso, se recorta a
+    # los días ya transcurridos.
+    _opc_tri = _opciones_trimestres_recientes(12)
     _idx_tri = st.selectbox(
-        "Trimestre (para Cobertura)",
+        "Trimestre (mes final) — para Cobertura",
         options=range(len(_opc_tri)),
         format_func=lambda i: _label_trimestre(*_opc_tri[i]),
         index=0,
         key="api_tri_idx",
     )
-    _y_tri, _q_tri = _opc_tri[_idx_tri]
-    _fd_tri, _fh_tri = _rango_trimestre(_y_tri, _q_tri)
+    _y_tri, _m_tri = _opc_tri[_idx_tri]
+    _fd_tri, _fh_tri = _rango_trimestre(_y_tri, _m_tri, today=_hoy)
     st.caption(
-        f"Rango Q{_q_tri}: {_fd_tri.isoformat()} → {_fh_tri.isoformat()}"
+        f"Rango: {_fd_tri.isoformat()} → {_fh_tri.isoformat()}"
     )
 
     if st.button(
@@ -346,16 +383,31 @@ with st.sidebar:
         use_container_width=True,
         key="btn_sync_api",
     ):
+        # Umbral blando de 10 min: si al terminar un sub-step el total
+        # acumulado lo supera, abortamos antes del próximo sub-step y
+        # mostramos el mensaje amigable de "Contabilium caído".
+        SYNC_TIMEOUT_SEC = 600
+        _t0 = time.monotonic()
+
+        def _check_timeout():
+            if time.monotonic() - _t0 > SYNC_TIMEOUT_SEC:
+                raise TimeoutError(
+                    f"Sync excedió {SYNC_TIMEOUT_SEC}s"
+                )
+
         try:
             # 1) Maestros (clientes, productos, combos) — cache 1h.
             df_cli, df_prod, df_comb, _ = _api_sync_maestros()
+            _check_timeout()
             # 2) Facturación mensual, semanal y trimestral — cache 1h por rango.
             df_fc_mes, errors_mes = _api_sync_fc(
                 _fd_mes.isoformat(), _fh_mes.isoformat()
             )
+            _check_timeout()
             df_fc_sem, errors_sem = _api_sync_fc(
                 _fd_sem.isoformat(), _fh_sem.isoformat()
             )
+            _check_timeout()
             df_fc_tri, errors_tri = _api_sync_fc(
                 _fd_tri.isoformat(), _fh_tri.isoformat()
             )
@@ -396,10 +448,15 @@ with st.sidebar:
                 "→ Secrets si estás en producción). Mientras tanto podés "
                 "usar el **Modo Manual Secundario** más abajo."
             )
-        except api_loader.ApiError as e:
+        except (TimeoutError, api_loader.ApiError) as e:
+            # Unificamos timeout y errores de red bajo el mismo mensaje
+            # amigable al usuario — ambos se resuelven igual: esperar y
+            # reintentar, o usar el Modo Manual.
             st.error(
-                f"**Error al sincronizar con la API:** {e}\n\n"
-                "Si persiste, podés usar el **Modo Manual Secundario** abajo."
+                "**Lamentablemente Contabilium está caído.** Por favor "
+                "probá nuevamente más tarde o utilizá la opción de "
+                "carga manual más abajo.\n\n"
+                f"_Detalle técnico_: {e}"
             )
 
     # -- Estado del último sync + botón resync forzado --

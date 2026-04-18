@@ -55,14 +55,27 @@ def render() -> None:
            mes actual).
         3. Elegí el rango de fechas de la **semana** a revisar (por
            default, lunes de esta semana hasta hoy).
-        4. Elegí el **trimestre** (por default el trimestre calendario
-           actual — se usa principalmente en la tab Cobertura).
+        4. Elegí el **trimestre** — es una **ventana móvil de 3 meses
+           consecutivos** definida por un "mes final". Por default el
+           mes final es el mes actual (o sea, ventana = últimos 3
+           meses terminando hoy). Si elegís otro mes final, la ventana
+           se mueve: mes final abril 2026 → feb+mar+abr 2026.
         5. Tocá el botón **Sincronizar**. Tarda ~1-3 minutos la primera
            vez: trae los maestros de clientes y productos + toda la
            facturación del mes, la semana y el trimestre.
         6. Cuando termine, aparece un mensaje "Sincronizado" y el
            dashboard se llena con los datos. A partir de ahí podés
            navegar entre las 5 tabs.
+
+        > **Mes en curso recortado al día**: si el mes (o el último
+        > mes del trimestre) es el mes actual, el rango termina
+        > **hoy**, no el último día del mes. Así no se comparan días
+        > facturados vs días que todavía no transcurrieron.
+
+        > **Si el sync tarda más de 10 minutos** o si Contabilium no
+        > responde, el dashboard te avisa con el mensaje
+        > *"Lamentablemente Contabilium está caído…"* y podés caer al
+        > Modo Manual Secundario.
 
         > **Resync forzado**: si acabás de emitir una factura y querés
         > verla reflejada YA (sin esperar que venza la caché de 1 hora),
@@ -203,10 +216,12 @@ def render() -> None:
 
         - **Semana** — típico para la reunión semanal.
         - **Mes** — foto del mes en curso.
-        - **Trimestre** (sólo disponible en Modo API) — visión del
-          trimestre calendario. Útil para QBR (Quarterly Business
+        - **Trimestre** (sólo disponible en Modo API) — ventana móvil
+          de 3 meses consecutivos que termina en el "mes final" que
+          elegiste en la sidebar. Útil para QBR (Quarterly Business
           Review) y para detectar clientes que llevan ≥1 mes sin
-          comprar.
+          comprar. Si el mes final es el mes en curso, el rango se
+          recorta a hoy.
 
         Y **4 bloques** de datos uno debajo del otro:
 

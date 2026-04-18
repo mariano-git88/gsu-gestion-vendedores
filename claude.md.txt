@@ -138,12 +138,26 @@ distingue origen.
   marzo 2026.
 - **Rangos sincronizados:** el botón "Sincronizar" de la sidebar
   pullea **3 rangos temporales** en serie:
-  - **Mes**: selector de mes (default = mes actual).
+  - **Mes**: selector de mes (default = mes actual). Si el mes
+    seleccionado es el mes en curso, la `fecha_hasta` se recorta a
+    **hoy** (no al último día del mes). Ver entrada 2026-04-18 en
+    `decisions.md`.
   - **Semana**: rango arbitrario (default = lunes de esta semana → hoy).
-  - **Trimestre**: trimestre calendario (default = Q actual). Se usa
+  - **Trimestre**: ventana móvil de **3 meses consecutivos** definida
+    por un "mes final" elegible. Default = mes actual como final.
+    Ejemplo: mes final = abril 2026 → ventana = feb+mar+abr 2026. Si
+    el mes final es el mes en curso, también se recorta a hoy. Se usa
     principalmente en la tab Cobertura. En Modo Manual Secundario no
     se sincroniza trimestre — esa opción solo aparece bajo modo API.
+    Ver entrada 2026-04-18 en `decisions.md`.
   - Cada rango cachea independientemente con `@st.cache_data(ttl=3600)`.
+- **Timeout global del sync**: 10 minutos (constante
+  `SYNC_TIMEOUT_SEC = 600` en el handler del botón). Si se excede,
+  se muestra el mensaje **"Lamentablemente Contabilium está caído.
+  Por favor probá nuevamente más tarde o utilizá la opción de carga
+  manual"**. Mismo mensaje se usa para `ApiError` (fallos de red o
+  del servidor). `AuthError` mantiene su mensaje específico de
+  credenciales. Ver entrada 2026-04-18 en `decisions.md`.
 - **Botón "Resync forzado"**: debajo del sincronizar normal. Limpia
   los caches de `_api_sync_maestros` y `_api_sync_fc` para forzar
   un pull fresco (bypass del TTL de 1h). Útil cuando se acaba de

@@ -716,3 +716,124 @@ intacto.
   maestro de Contabilium.
 
 **Confirmado por:** Mariano, sesión 2026-04-17 (post-deploy).
+
+
+---
+
+## 2026-04-18 — Trimestre como ventana móvil de 3 meses + recorte del mes en curso
+
+**Decisión:** la opción "Trimestre" del dashboard deja de ser un
+trimestre calendario fijo (Q1=ene-mar, Q2=abr-jun, …) y pasa a ser
+**una ventana móvil de 3 meses consecutivos** definida por un "mes
+final" elegible por el usuario. Ejemplo: mes final = abril 2026 →
+ventana = feb+mar+abr 2026.
+
+Adicionalmente, **cuando el rango incluye el mes en curso, el sync
+recorta la fecha_hasta al día de hoy** en lugar del último día del
+mes. Esto aplica tanto al selector de **Mes** como al último mes del
+**Trimestre** cuando coincide con el mes actual.
+
+**Contexto:** Mariano planteó dos problemas con el diseño anterior:
+
+1. **Q1/Q2/Q3/Q4 calendario es arbitrario para el negocio.** Si el
+   Jefe de Ventas quiere analizar "los últimos 3 meses cerrados" o
+   "feb-mar-abr porque abril es el arranque del segundo trimestre
+   comercial", el trimestre calendario no le sirve — siempre mostraba
+   el trimestre en curso (completo o incompleto) o un trimestre
+   pasado entero, sin flexibilidad intermedia.
+
+2. **Comparar meses cerrados vs el mes en curso distorsiona la
+   lectura.** Si el dashboard se usa el 18 de abril, mostrar el "mes
+   de abril" hasta el 30 de abril implica incluir facturación que
+   todavía no existe. Los promedios por vendedor quedan subvaluados
+   porque se dividen entre días que aún no transcurrieron.
+
+**Alternativas descartadas:**
+
+- **Dejar Q calendario y agregar un segundo selector "últimos 3
+  meses".** Complica la UI y duplica conceptos ("¿qué trimestre
+  miro?"). Preferimos reemplazar.
+- **Permitir 3 meses no-contiguos** (ej: ene + mar + may). Requiere
+  3 rangos de API separados, 3 caches independientes, y la
+  justificación comercial es débil — los análisis normalmente son
+  sobre 3 meses seguidos.
+- **Proyectar el mes en curso a 30 días** (regla de 3 sobre los días
+  transcurridos) para que sea comparable. Descartado: agregaría
+  complejidad conceptual ("esto es la venta proyectada") y el usuario
+  prefiere ver la cifra real al día, no una estimación.
+
+**Implementación (app.py):**
+
+- `_rango_mes(y, m, today=None)` ahora acepta `today` y recorta
+  `fecha_hasta` a `today` si `(y, m) == (today.year, today.month)`.
+- `_rango_trimestre(y_final, m_final, today=None)` devuelve la
+  ventana `[primer día del mes de 2 meses atrás, último día del mes
+  final recortado]`.
+- `_opciones_trimestres_recientes(n)` devuelve (año, mes) de los
+  últimos `n` meses como candidatos a "mes final".
+- `_label_trimestre(y_final, m_final)` produce labels tipo
+  `"Feb → Abr 2026"` o `"Nov 2025 → Ene 2026"` cuando cruza año.
+- Selector en sidebar renombrado a "Trimestre (mes final) — para
+  Cobertura". El nombre visible "Trimestre" **se mantiene** a pedido
+  del usuario (evitar retrabajo de capacitación).
+- Caption debajo del selector muestra el rango real calculado.
+
+**Cambios que NO se hicieron (consciente):**
+
+- El rango **Semana** ya se comporta bien — `_semana_default()` usa
+  `lunes → hoy`, que es un recorte natural. No requiere cambios.
+- El resto del pipeline (`transforms.py`, `metrics.py`, `views/`)
+  sigue agnóstico al origen de los rangos. Solo cambia qué fechas
+  se pasan a `_api_sync_fc`.
+
+**Confirmado por:** Mariano, sesión 2026-04-18.
+
+
+---
+
+## 2026-04-18 — Mensaje amigable + timeout de 10 min en sync API
+
+**Decisión:** cuando la sincronización con Contabilium falla por
+timeout global (>10 min) o por cualquier error de red/API genérico,
+el dashboard muestra el mensaje:
+
+> **Lamentablemente Contabilium está caído.** Por favor probá
+> nuevamente más tarde o utilizá la opción de carga manual más abajo.
+
+Los errores de autenticación (credenciales mal configuradas)
+mantienen su mensaje específico — son un problema distinto y requieren
+otra acción del operador.
+
+**Contexto:** el sync API normal tarda ~2-3 min; los requests
+individuales tienen 30s de timeout × 3 retries. Si Contabilium
+está degradado pero no devuelve 500 directo, el sync puede
+prolongarse mucho y el usuario queda mirando el spinner sin saber
+si esperar o abortar. Sin mensaje claro, termina cerrando la
+pestaña en lugar de caer al Modo Manual Secundario — que es
+exactamente para lo que existe.
+
+**Implementación (app.py):**
+
+- Constante local `SYNC_TIMEOUT_SEC = 600` en el handler del botón
+  "Sincronizar".
+- Helper local `_check_timeout()` que se invoca entre sub-steps
+  del sync (maestros → fc mes → fc semana → fc trimestre) y
+  levanta `TimeoutError` si el elapsed global lo supera.
+- `except (TimeoutError, api_loader.ApiError)` unificado con el
+  mensaje amigable. `AuthError` queda separado.
+
+**Alternativas descartadas:**
+
+- **`ThreadPoolExecutor.submit(...).result(timeout=600)` envolviendo
+  todo el sync.** Más robusto (corta mid-call si un request queda
+  colgado), pero requiere propagar el contexto de Streamlit al
+  thread hijo (`add_script_run_ctx`) y complica el manejo del cache
+  de `@st.cache_data`. El approach actual (medir elapsed entre
+  sub-steps) captura el 95% de los casos reales con una décima
+  parte de complejidad.
+- **Agresividad mayor (5 min).** 2-3 min es el tiempo normal; 5 min
+  daría poco margen en días de red lenta o Streamlit Cloud
+  saturado. 10 min es un punto razonable: si al decimoprimer minuto
+  no terminó, asumimos problema real.
+
+**Confirmado por:** Mariano, sesión 2026-04-18.
