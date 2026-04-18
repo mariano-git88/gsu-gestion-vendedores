@@ -373,10 +373,41 @@ Para cada vendedor, en DOS timeframes paralelos (semana | mes):
 ### Ventas
 - Monto total (suma de `monto`, en UYU)
 - Unidades totales (suma de `unidades`)
+- **Tickets** (count de comprobantes distintos vía `id_comprobante`)
+- **Ticket promedio** = monto_total / tickets
 - Desglose de monto por `sub_rubro`
 - Desglose de unidades por `sub_rubro`
 - Posibilidad de filtrar por SKU específico
 - Posibilidad de filtrar por combo específico (SKUs con sub_rubro = 'COMBO')
+
+> **Columna `id_comprobante`**: canónica del schema, presente tanto en
+> modo API como en Modo Manual. En API = `Id` del comprobante que
+> retorna Contabilium. En Manual = sintético `"vendedor|documento|fecha|tipo"`
+> (el xlsx no trae número de comprobante). El proxy subestima levemente
+> si un mismo vendedor emite dos comprobantes del mismo tipo al mismo
+> cliente el mismo día — caso raro, aceptable como aproximación.
+
+### Cobertura general — métricas adicionales por vendedor
+
+La tabla de cobertura general (tab Cobertura y preview en Resumen) además
+de `cobertura_pct` muestra dos columnas derivadas que dan señal de
+**calidad** de la cartera de cada vendedor:
+
+- **`concentracion_80`** (columna UI: "Conc. 80%") — cuántos clientes
+  concentran el 80% del monto vendido por el vendedor. Cuanto más bajo,
+  más dependiente el vendedor de pocos clientes (riesgo). Cálculo: se
+  ordenan los clientes FAC del vendedor en su propia cartera por monto
+  descendente, se acumula, y se cuenta cuántos se necesitan para superar
+  80%. Helper interno `_concentracion_80_por_vendedor` en `metrics.py`.
+
+- **`mix_top3`** (columna UI: "Mix top-3") — string con los 3 sub-rubros
+  con mayor participación en la venta del vendedor, formato
+  `"A 85% · BA 10% · resto 5%"`. "resto" aparece cuando hay >3 sub-rubros
+  con monto positivo. Helper interno `_mix_top3_por_vendedor` en
+  `metrics.py`.
+
+Ambas se calculan sobre FAC en cartera propia (match estricto), igual
+que `cobertura_pct`. NCF no cuentan.
 
 ### Cobertura de clientes
 
@@ -411,7 +442,7 @@ Para cada vendedor, en DOS timeframes paralelos (semana | mes):
 
 ### Análisis profundo (tab "Análisis")
 
-Tab dedicada con tres bloques de exploración estratégica para
+Tab dedicada con **cuatro** bloques de exploración estratégica para
 identificar oportunidades concretas de venta:
 
 1. **Penetración por sub-rubro** — matriz pivot vendedor × sub-rubro
@@ -429,7 +460,15 @@ identificar oportunidades concretas de venta:
    marca con un highlight crema sutil. Selector "(Todos los vendedores)"
    o vendedor específico.
 
-Las tres operan sobre el período seleccionado (selector arriba de la
+4. **Patrones temporales** — dos gráficos de barras lado a lado:
+   ventas por **día de la semana** (Lun-Dom, en castellano) y ventas
+   por **quincena del mes** (1-15 vs 16-fin). Selector de vendedor
+   (todos / específico). Útil para detectar concentraciones indebidas:
+   un vendedor con todo el monto en la segunda quincena sugiere
+   empujón artificial al cierre. Funciones puras en `metrics.py`:
+   `ventas_por_dia_semana`, `ventas_por_quincena`.
+
+Las cuatro operan sobre el período seleccionado (selector arriba de la
 vista, opciones **Mes / Semana / Trimestre**, default Mes). La opción
 Trimestre aparece sólo si el modo API sincronizó el rango trimestral
 (ventana móvil de 3 meses — ver sección "Fuentes de datos"). Match

@@ -837,3 +837,77 @@ exactamente para lo que existe.
   no terminó, asumimos problema real.
 
 **Confirmado por:** Mariano, sesión 2026-04-18.
+
+
+---
+
+## 2026-04-18 — Sprint 1 de insights: ticket promedio, concentración 80%, mix top-3, patrones temporales
+
+**Decisión:** agregar cuatro nuevas métricas de performance a nivel
+vendedor, distribuidas entre las tabs Resumen, Cobertura y Análisis,
+sin romper las vistas existentes.
+
+### Qué se agregó
+
+1. **Ticket promedio** — en Resumen. Debajo del total (semana y mes)
+   aparece el count de tickets y el monto promedio por ticket. También
+   en la tabla "Ventas por vendedor" se agregan las columnas `tickets`
+   y `ticket_promedio` para semana y mes.
+
+2. **Concentración 80% por vendedor** — en la tabla de cobertura
+   general (en Cobertura y en Resumen). Columna "Conc. 80%" = N
+   clientes que concentran el 80% de la venta del vendedor. Cuanto
+   más bajo, más dependiente el vendedor de pocos clientes.
+
+3. **Mix top-3 de sub-rubro por vendedor** — misma tabla, columna
+   "Mix top-3". Formato `"A 85% · BA 10% · resto 5%"`. Los 3 sub-rubros
+   con mayor participación en la venta FAC propia del vendedor.
+
+4. **Patrones temporales** — nueva sub-sección en la tab Análisis
+   (4to bloque). Dos gráficos: ventas por día de la semana (Lun-Dom)
+   y ventas por quincena (1-15 vs 16-fin). Selector de vendedor
+   independiente.
+
+### Contexto
+
+Mariano pidió un paquete grande de mejoras (9 features de performance
++ discovery de cobranzas). Decidimos ordenar por sprints: Sprint 1
+captura las 4 features que funcionan solo con los datos actuales
+(sin pullear meses históricos) y tienen cálculo trivial. Sprint 2
+agregará la capa histórica (12 meses) para habilitar Δ vs mes
+anterior, clientes nuevos, dormidos y retención.
+
+### Implementación
+
+- **Nueva columna canónica `id_comprobante`** en el DataFrame de
+  facturación, exportada tanto por `api_loader.load_fc_api` (Id real
+  del comprobante de Contabilium, como string) como por
+  `data_loader.load_fc` (string sintético `"vendedor|documento|fecha|tipo"`).
+  Necesaria para contar tickets distintos. El proxy del xlsx subestima
+  el count si dos comprobantes del mismo tipo salen al mismo cliente
+  el mismo día — raro, aceptable.
+- **Nuevas funciones en `metrics.py`**: `ventas_por_vendedor` se
+  extendió con `tickets` y `ticket_promedio`; `cobertura_por_vendedor`
+  se extendió con `concentracion_80` y `mix_top3` (helpers
+  `_concentracion_80_por_vendedor`, `_mix_top3_por_vendedor`).
+  Dos funciones nuevas: `ventas_por_dia_semana` y `ventas_por_quincena`.
+- **Views actualizadas**: `resumen.py` (2 captions y 4 columnas extras
+  en la tabla), `cobertura.py` (column_config para las 2 columnas
+  nuevas), `analisis.py` (bloque 4 nuevo con 2 gráficos de barras y
+  tablas de detalle debajo).
+
+### Alternativas descartadas
+
+- **Contar tickets con groupby `(vendedor, documento, fecha, tipo)`
+  en lugar de agregar una columna**. Funcionaba pero ofuscaba la
+  intención. Una columna canónica `id_comprobante` se reusa mejor en
+  futuros insights (DSO por vendedor, frecuencia de compra, etc.).
+- **Mostrar "N clientes = 80%" como porcentaje (ej: "10%")**. Se
+  descartó: el número absoluto ("2 clientes") es más impactante
+  visualmente para detectar riesgo.
+- **Gráficos de día de semana con Altair / Plotly**. Se usó
+  `st.bar_chart` por simplicidad y porque el theme Dieter Rams no
+  requiere más customización. Si en algún momento se quieren tooltips
+  o interactividad, migrar.
+
+**Confirmado por:** Mariano, sesión 2026-04-18.

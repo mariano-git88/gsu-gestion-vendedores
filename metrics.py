@@ -101,18 +101,48 @@ def ventas_por_vendedor(df_fc: pd.DataFrame) -> pd.DataFrame:
     (devoluciones reales) se incluyen en la suma con sus valores
     negativos, neteando con las FAC.
 
+    Agrega también `tickets` (count de comprobantes distintos vía
+    `id_comprobante`) y `ticket_promedio` = monto_total / tickets.
+    Si `id_comprobante` no existe en el input (casos viejos), devuelve
+    `tickets = 0` y `ticket_promedio = 0.0` — nunca rompe.
+
     Devuelve DataFrame con columnas:
-      vendedor, monto_total, unidades_totales
+      vendedor, monto_total, unidades_totales, tickets, ticket_promedio
 
     Ordenado por monto_total descendente.
     """
+    base_cols = [
+        "vendedor", "monto_total", "unidades_totales",
+        "tickets", "ticket_promedio",
+    ]
     if df_fc.empty:
-        return pd.DataFrame(columns=["vendedor", "monto_total", "unidades_totales"])
+        return pd.DataFrame(columns=base_cols)
 
-    return (
+    agg = (
         df_fc.groupby("vendedor", dropna=False)
         .agg(monto_total=("monto", "sum"), unidades_totales=("unidades", "sum"))
         .reset_index()
+    )
+
+    if "id_comprobante" in df_fc.columns:
+        tickets = (
+            df_fc.groupby("vendedor", dropna=False)["id_comprobante"]
+            .nunique()
+            .reset_index(name="tickets")
+        )
+        agg = agg.merge(tickets, on="vendedor", how="left")
+    else:
+        agg["tickets"] = 0
+
+    agg["tickets"] = agg["tickets"].fillna(0).astype(int)
+    agg["ticket_promedio"] = agg.apply(
+        lambda r: round(r["monto_total"] / r["tickets"], 2)
+        if r["tickets"] > 0 else 0.0,
+        axis=1,
+    )
+
+    return (
+        agg[base_cols]
         .sort_values("monto_total", ascending=False)
         .reset_index(drop=True)
     )
@@ -185,13 +215,21 @@ def cobertura_por_vendedor(
       - clientes_con_venta: cuántos de esos clientes recibieron al
         menos una venta tipo FAC del MISMO vendedor en el período.
       - cobertura_pct: clientes_con_venta / clientes_asignados (%).
+      - concentracion_80: cuántos clientes concentran el 80% del monto
+        vendido por el vendedor (Pareto propio). Cuanto más bajo, más
+        concentrado — señal de riesgo. Si el vendedor no tiene ventas,
+        el valor es 0.
+      - mix_top3: string con los 3 sub-rubros más vendidos y su %,
+        formato "A 85% · BA 10% · resto 5%".
 
     Solo se reportan vendedores que aparecen en `clientes.xlsx` (los
     que tienen cartera). Vendedores que facturan pero no tienen
     cartera (los huérfanos que detecta `check_vendedores_sin_cartera`)
     NO aparecen acá — se reportan en el panel de salud.
 
-    NCF nunca cuentan para esta métrica.
+    NCF nunca cuentan para la cobertura; para `concentracion_80` y
+    `mix_top3` tampoco, por consistencia con la "foto de venta"
+    que mide esas dos (Pareto y mix son sobre ventas positivas).
     """
     asignados = _clientes_asignados_por_vendedor(df_clientes)
     fac_en_cartera = _fac_en_cartera_propia(df_fc, df_clientes)
@@ -212,7 +250,96 @@ def cobertura_por_vendedor(
         ),
         axis=1,
     )
+
+    # --- Concentración Pareto por vendedor ---
+    concentracion = _concentracion_80_por_vendedor(fac_en_cartera)
+    result = result.merge(concentracion, on="vendedor", how="left")
+    result["concentracion_80"] = (
+        result["concentracion_80"].fillna(0).astype(int)
+    )
+
+    # --- Mix top-3 de sub-rubro por vendedor ---
+    mix = _mix_top3_por_vendedor(fac_en_cartera)
+    result = result.merge(mix, on="vendedor", how="left")
+    result["mix_top3"] = result["mix_top3"].fillna("—")
+
     return result.sort_values("cobertura_pct", ascending=False).reset_index(drop=True)
+
+
+def _concentracion_80_por_vendedor(
+    fac_en_cartera: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Para cada vendedor, cuántos clientes concentran el 80% de su venta.
+
+    Se calcula sobre `fac_en_cartera` (FAC del vendedor en su propia
+    cartera — match estricto). Ordena clientes por monto descendente,
+    acumula, y cuenta cuántos hacen falta para llegar al 80%.
+
+    Devuelve DataFrame con columnas: vendedor, concentracion_80.
+    """
+    if fac_en_cartera.empty:
+        return pd.DataFrame(columns=["vendedor", "concentracion_80"])
+
+    por_cliente = (
+        fac_en_cartera.groupby(["vendedor", "documento"], as_index=False)["monto"]
+        .sum()
+    )
+    # Descartar clientes con monto <= 0 (puede pasar si NCF > FAC por cliente).
+    por_cliente = por_cliente[por_cliente["monto"] > 0]
+
+    resultados = []
+    for vendedor, grupo in por_cliente.groupby("vendedor"):
+        g = grupo.sort_values("monto", ascending=False).reset_index(drop=True)
+        total = float(g["monto"].sum())
+        if total <= 0:
+            resultados.append({"vendedor": vendedor, "concentracion_80": 0})
+            continue
+        acumulado = g["monto"].cumsum() / total
+        # +1 porque iloc 0 es el primer cliente y ya representa X%.
+        n = int((acumulado < 0.8).sum()) + 1
+        resultados.append({"vendedor": vendedor, "concentracion_80": n})
+
+    return pd.DataFrame(resultados)
+
+
+def _mix_top3_por_vendedor(
+    fac_en_cartera: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Para cada vendedor, string con los 3 sub-rubros más vendidos y su %.
+
+    Formato: "A 85% · BA 10% · resto 5%". Si hay <3 sub-rubros, muestra
+    los que haya. Si el total es 0, devuelve string vacío.
+
+    Devuelve DataFrame con columnas: vendedor, mix_top3.
+    """
+    if fac_en_cartera.empty:
+        return pd.DataFrame(columns=["vendedor", "mix_top3"])
+
+    por_sr = (
+        fac_en_cartera.groupby(["vendedor", "sub_rubro"], as_index=False)["monto"]
+        .sum()
+    )
+
+    resultados = []
+    for vendedor, grupo in por_sr.groupby("vendedor"):
+        g = grupo[grupo["monto"] > 0].sort_values("monto", ascending=False)
+        total = float(g["monto"].sum())
+        if total <= 0:
+            resultados.append({"vendedor": vendedor, "mix_top3": ""})
+            continue
+        top3 = g.head(3)
+        partes = [
+            f"{row.sub_rubro} {row.monto / total * 100:.0f}%"
+            for row in top3.itertuples(index=False)
+        ]
+        resto_monto = total - float(top3["monto"].sum())
+        if resto_monto > 0:
+            partes.append(f"resto {resto_monto / total * 100:.0f}%")
+        resultados.append({"vendedor": vendedor, "mix_top3": " · ".join(partes)})
+
+    return pd.DataFrame(resultados)
 
 
 def cobertura_por_sub_rubro(
@@ -477,6 +604,134 @@ def heatmap_cliente_sub_rubro(
     top.insert(0, "razon_social", top["documento"].map(rs_map))
 
     return top
+
+
+DIAS_SEMANA_ES = {
+    0: "Lunes",
+    1: "Martes",
+    2: "Miércoles",
+    3: "Jueves",
+    4: "Viernes",
+    5: "Sábado",
+    6: "Domingo",
+}
+
+
+def ventas_por_dia_semana(
+    df_fc: pd.DataFrame,
+    vendedor: str | None = None,
+) -> pd.DataFrame:
+    """
+    Ventas agrupadas por día de la semana (lunes a domingo, en español).
+
+    Args:
+        vendedor: si se pasa, filtra al vendedor específico. None = todos.
+
+    Suma `monto` y count de comprobantes distintos por día. Las NCF
+    netean; los días que queden en 0 aparecen igual con valor 0 para
+    que el bar chart no tenga huecos.
+
+    Devuelve DataFrame con columnas:
+      dia, dia_orden, monto, tickets
+    ordenado por `dia_orden` (Lunes primero).
+    """
+    cols = ["dia", "dia_orden", "monto", "tickets"]
+    if df_fc.empty:
+        return pd.DataFrame(columns=cols)
+
+    df = df_fc.copy()
+    if vendedor is not None:
+        df = df[df["vendedor"] == vendedor]
+        if df.empty:
+            return pd.DataFrame(columns=cols)
+
+    fechas = pd.to_datetime(df["fecha"], errors="coerce")
+    df = df.assign(__wd=fechas.dt.weekday)
+
+    monto = (
+        df.groupby("__wd", dropna=True)["monto"]
+        .sum()
+        .reset_index(name="monto")
+    )
+
+    if "id_comprobante" in df.columns:
+        tickets = (
+            df.groupby("__wd", dropna=True)["id_comprobante"]
+            .nunique()
+            .reset_index(name="tickets")
+        )
+        out = monto.merge(tickets, on="__wd", how="left")
+    else:
+        out = monto.assign(tickets=0)
+
+    # Rellenar los 7 días aunque no haya datos, para que el gráfico sea prolijo.
+    full = pd.DataFrame({"__wd": list(range(7))})
+    out = full.merge(out, on="__wd", how="left").fillna(0)
+    out["dia"] = out["__wd"].map(DIAS_SEMANA_ES)
+    out["dia_orden"] = out["__wd"].astype(int)
+    out["monto"] = out["monto"].astype(float).round(2)
+    out["tickets"] = out["tickets"].astype(int)
+
+    return out[cols].sort_values("dia_orden").reset_index(drop=True)
+
+
+def ventas_por_quincena(
+    df_fc: pd.DataFrame,
+    vendedor: str | None = None,
+) -> pd.DataFrame:
+    """
+    Ventas agrupadas por quincena dentro del mes: "1-15" vs "16-fin".
+
+    Útil para detectar patrones de cierre (vendedores que concentran
+    toda la venta en la última quincena "empujando el cierre" vs los
+    que venden parejo).
+
+    Args:
+        vendedor: si se pasa, filtra al vendedor específico. None = todos.
+
+    Devuelve DataFrame con columnas:
+      quincena, monto, tickets
+    ordenado con "1-15" primero.
+    """
+    cols = ["quincena", "monto", "tickets"]
+    if df_fc.empty:
+        return pd.DataFrame(columns=cols)
+
+    df = df_fc.copy()
+    if vendedor is not None:
+        df = df[df["vendedor"] == vendedor]
+        if df.empty:
+            return pd.DataFrame(columns=cols)
+
+    fechas = pd.to_datetime(df["fecha"], errors="coerce")
+    dia_mes = fechas.dt.day
+    quincena = dia_mes.where(dia_mes.isna(), (dia_mes <= 15).map({True: "1-15", False: "16-fin"}))
+    df = df.assign(__q=quincena)
+
+    monto = (
+        df.groupby("__q", dropna=True)["monto"]
+        .sum()
+        .reset_index(name="monto")
+    )
+
+    if "id_comprobante" in df.columns:
+        tickets = (
+            df.groupby("__q", dropna=True)["id_comprobante"]
+            .nunique()
+            .reset_index(name="tickets")
+        )
+        out = monto.merge(tickets, on="__q", how="left")
+    else:
+        out = monto.assign(tickets=0)
+
+    # Asegurar las dos quincenas en el output, aunque estén vacías.
+    full = pd.DataFrame({"__q": ["1-15", "16-fin"]})
+    out = full.merge(out, on="__q", how="left").fillna(0)
+    out["quincena"] = out["__q"]
+    out["monto"] = out["monto"].astype(float).round(2)
+    out["tickets"] = out["tickets"].astype(int)
+
+    return out[cols].reset_index(drop=True)
 
 
 def pareto_clientes(

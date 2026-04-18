@@ -192,16 +192,37 @@ def load_fc(file_or_path) -> pd.DataFrame:
     preservar formato (no convertir a int, no quitar ceros).
 
     Devuelve DataFrame con columnas:
-      documento, razon_social, vendedor, fecha, tipo, moneda,
-      sku, producto, unidades, monto
+      id_comprobante, documento, razon_social, vendedor, fecha, tipo,
+      moneda, sku, producto, unidades, monto
+
+    El xlsx no trae número de comprobante, así que `id_comprobante` se
+    sintetiza como `"vendedor|documento|fecha|tipo"`. Subestima ligera-
+    mente en el caso raro de dos comprobantes del mismo tipo emitidos
+    el mismo día al mismo cliente por el mismo vendedor — aceptable
+    como proxy para contar tickets. En modo API el ID real viene del
+    listado de Contabilium.
     """
-    return _read_and_validate(
+    df = _read_and_validate(
         file_or_path,
         sheet_name=SHEET_FC,
         required=REQUIRED_FC,
         rename=RENAME_FC,
         dtype={"Documento": str},
     )
+    df.insert(
+        0,
+        "id_comprobante",
+        (
+            df["vendedor"].astype(str)
+            + "|"
+            + df["documento"].astype(str)
+            + "|"
+            + df["fecha"].astype(str)
+            + "|"
+            + df["tipo"].astype(str)
+        ),
+    )
+    return df
 
 
 def load_clientes(file_or_path) -> pd.DataFrame:

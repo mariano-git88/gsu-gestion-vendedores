@@ -690,6 +690,7 @@ def load_fc_api(
             # `filter_notas_credito` en transforms.py lo descarte.
             rows.append(
                 {
+                    "id_comprobante": str(cid),
                     "documento": documento,
                     "razon_social": razon_social,
                     "vendedor": vendedor,
@@ -715,6 +716,7 @@ def load_fc_api(
             unidades = signo * cantidad
             rows.append(
                 {
+                    "id_comprobante": str(cid),
                     "documento": documento,
                     "razon_social": razon_social,
                     "vendedor": vendedor,
@@ -731,6 +733,7 @@ def load_fc_api(
     df = pd.DataFrame(
         rows,
         columns=[
+            "id_comprobante",
             "documento",
             "razon_social",
             "vendedor",
@@ -750,6 +753,7 @@ def _empty_fc_df() -> pd.DataFrame:
     """DataFrame vacío con el schema canónico de facturación."""
     return pd.DataFrame(
         columns=[
+            "id_comprobante",
             "documento",
             "razon_social",
             "vendedor",

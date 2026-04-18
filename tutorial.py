@@ -164,15 +164,19 @@ def render() -> None:
 
         - **Total semana (UYU)** y **Total mes (UYU)** — los dos números
           grandes arriba. Es el monto total facturado por todo el
-          equipo en cada período.
+          equipo en cada período. Debajo de cada uno, el **número de
+          tickets** y el **ticket promedio** del período (cuánto sale
+          en promedio una factura).
         - **Tabla "Ventas por vendedor"** — para cada vendedor, su
-          monto y unidades de la semana y del mes lado a lado.
-          Ordenada por monto del mes descendente.
+          monto, unidades, tickets y ticket promedio de la semana y del
+          mes lado a lado. Ordenada por monto del mes descendente.
         - **Tabla "Cobertura general por vendedor (mes)"** — para cada
-          vendedor, cuántos clientes asignados tiene en cartera y a
-          cuántos les vendió al menos algo este mes. La columna
-          `cobertura_pct` te dice qué porcentaje de su cartera está
-          activa este mes.
+          vendedor: `clientes_asignados`, `clientes_con_venta`,
+          `cobertura_pct` (% de su cartera activa este mes),
+          **Conc. 80%** (cuántos clientes concentran el 80% de su
+          venta — cuanto más bajo, más dependiente de pocos) y
+          **Mix top-3** (los 3 sub-rubros con mayor % de venta del
+          vendedor).
         """
     )
 
@@ -257,7 +261,7 @@ def render() -> None:
         """
         #### Tab 4 — **Análisis** (la parte estratégica)
 
-        Tres bloques de exploración profunda para identificar
+        Cuatro bloques de exploración profunda para identificar
         oportunidades concretas de venta. Todos operan sobre el
         **período seleccionado** (Mes / Semana / Trimestre, default
         Mes — la opción Trimestre sólo aparece en modo API).
@@ -282,6 +286,13 @@ def render() -> None:
            (el "core 80%") y cuáles son el resto. Las filas del core
            se resaltan con un fondo crema. Estos son los clientes que
            tenés que **blindar antes de salir a buscar nuevos**.
+
+        4. **Patrones temporales** — dos gráficos de barras lado a
+           lado: **ventas por día de la semana** (lun-dom) y **ventas
+           por quincena del mes** (1-15 vs 16-fin). Tiene su propio
+           selector de vendedor. Útil para detectar patrones raros:
+           un vendedor con toda la venta en la segunda quincena
+           probablemente esté "empujando el cierre" artificialmente.
         """
     )
 

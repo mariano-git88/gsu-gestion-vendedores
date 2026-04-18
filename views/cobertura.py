@@ -66,7 +66,10 @@ def render(
     st.caption(
         "De los clientes asignados a cada vendedor, cuántos recibieron "
         "al menos una venta FAC en el período. Las NCF no cuentan para "
-        "esta métrica."
+        "esta métrica. **Conc. 80%**: cuántos clientes concentran el 80% "
+        "de la venta del vendedor (cuanto más bajo, más concentrado el "
+        "riesgo). **Mix top-3**: los 3 sub-rubros con mayor participación "
+        "en la venta del vendedor."
     )
     cob = metrics.cobertura_por_vendedor(df, df_clientes)
     if cob.empty:
@@ -76,6 +79,16 @@ def render(
             cob.style.format({"cobertura_pct": "{:.1f}%"}),
             use_container_width=True,
             hide_index=True,
+            column_config={
+                "concentracion_80": st.column_config.NumberColumn(
+                    "Conc. 80%",
+                    help="N clientes que concentran el 80% de la venta",
+                ),
+                "mix_top3": st.column_config.TextColumn(
+                    "Mix top-3",
+                    help="Los 3 sub-rubros con mayor % de venta",
+                ),
+            },
         )
 
     # ----- Bloque 2: cobertura por sub-rubro -----

@@ -151,6 +151,10 @@ def render(
     st.divider()
     _seccion_pareto(df, df_clientes)
 
+    # Bloque 4
+    st.divider()
+    _seccion_patrones_temporales(df, df_clientes)
+
 
 # =====================================================================
 # Bloque 1: Penetración por sub-rubro
@@ -328,3 +332,69 @@ def _seccion_pareto(df: pd.DataFrame, df_clientes: pd.DataFrame) -> None:
     styled = par.style.apply(_highlight_core, axis=1).format(fmt)
 
     st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+# =====================================================================
+# Bloque 4: Patrones temporales (día de semana / quincena)
+# =====================================================================
+
+def _seccion_patrones_temporales(
+    df: pd.DataFrame, df_clientes: pd.DataFrame
+) -> None:
+    st.markdown("### Patrones temporales")
+    st.caption(
+        "Cuándo vende cada vendedor dentro del período. Útil para "
+        "detectar concentración indebida (ej: empujones de cierre en la "
+        "última quincena) y patrones de día de la semana."
+    )
+
+    vendedores_cartera = sorted(
+        df_clientes["vendedor"].dropna().astype(str).unique().tolist()
+    )
+    options = ["(Todos los vendedores)"] + vendedores_cartera
+    sel = st.selectbox(
+        "Vendedor",
+        options=options,
+        key="patrones_vendedor",
+    )
+    vendedor_filter = None if sel == "(Todos los vendedores)" else sel
+
+    col_dia, col_q = st.columns(2)
+
+    # --- Día de la semana ---
+    with col_dia:
+        st.markdown("**Ventas por día de la semana**")
+        por_dia = metrics.ventas_por_dia_semana(df, vendedor=vendedor_filter)
+        if por_dia.empty or float(por_dia["monto"].sum()) == 0:
+            st.info("Sin datos en el período.")
+        else:
+            chart_dia = por_dia.set_index("dia")[["monto"]]
+            st.bar_chart(chart_dia, height=240)
+            st.dataframe(
+                por_dia[["dia", "monto", "tickets"]].style.format(
+                    {"monto": "{:,.0f}", "tickets": "{:,}"}
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    # --- Quincena ---
+    with col_q:
+        st.markdown("**Ventas por quincena del mes**")
+        st.caption(
+            "Día 1-15 vs 16-fin. Patrón muy segundo-tercio "
+            "sugiere empujón artificial al cierre."
+        )
+        por_q = metrics.ventas_por_quincena(df, vendedor=vendedor_filter)
+        if por_q.empty or float(por_q["monto"].sum()) == 0:
+            st.info("Sin datos en el período.")
+        else:
+            chart_q = por_q.set_index("quincena")[["monto"]]
+            st.bar_chart(chart_q, height=240)
+            st.dataframe(
+                por_q.style.format(
+                    {"monto": "{:,.0f}", "tickets": "{:,}"}
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )

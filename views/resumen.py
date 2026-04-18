@@ -40,15 +40,27 @@ def render(
 
     st.subheader("Resumen del período")
 
-    # ----- Big numbers: total semana vs mes -----
+    # ----- Big numbers: total + ticket promedio semana vs mes -----
     col_sem, col_mes = st.columns(2)
     with col_sem:
         total_sem = float(df_sem["monto"].sum()) if not df_sem.empty else 0.0
+        tickets_sem = _count_tickets(df_sem)
+        ticket_prom_sem = (total_sem / tickets_sem) if tickets_sem > 0 else 0.0
         st.metric("Total semana (UYU)", f"{total_sem:,.0f}")
+        st.caption(
+            f"{tickets_sem:,} ticket(s) · promedio "
+            f"${ticket_prom_sem:,.0f}"
+        )
         _render_caption_ncf_descartadas(health_sem)
     with col_mes:
         total_mes = float(df_mes["monto"].sum()) if not df_mes.empty else 0.0
+        tickets_mes = _count_tickets(df_mes)
+        ticket_prom_mes = (total_mes / tickets_mes) if tickets_mes > 0 else 0.0
         st.metric("Total mes (UYU)", f"{total_mes:,.0f}")
+        st.caption(
+            f"{tickets_mes:,} ticket(s) · promedio "
+            f"${ticket_prom_mes:,.0f}"
+        )
         _render_caption_ncf_descartadas(health_mes)
 
     st.divider()
@@ -64,28 +76,47 @@ def render(
         columns={
             "monto_total": "monto_semana",
             "unidades_totales": "unidades_semana",
+            "tickets": "tickets_semana",
+            "ticket_promedio": "ticket_prom_semana",
         }
     )
     ventas_mes = metrics.ventas_por_vendedor(df_mes).rename(
         columns={
             "monto_total": "monto_mes",
             "unidades_totales": "unidades_mes",
+            "tickets": "tickets_mes",
+            "ticket_promedio": "ticket_prom_mes",
         }
     )
 
     # Outer join para conservar vendedores que solo aparecen en uno de los dos
     combined = ventas_sem.merge(ventas_mes, on="vendedor", how="outer").fillna(0)
-    for col in ["monto_semana", "unidades_semana", "monto_mes", "unidades_mes"]:
+    for col in [
+        "monto_semana", "unidades_semana", "tickets_semana",
+        "monto_mes", "unidades_mes", "tickets_mes",
+    ]:
         combined[col] = combined[col].astype(int)
     combined = combined.sort_values("monto_mes", ascending=False).reset_index(drop=True)
+
+    # Orden visual: intercalar las columnas del mes y la semana agrupadas
+    col_order = [
+        "vendedor",
+        "monto_semana", "unidades_semana", "tickets_semana", "ticket_prom_semana",
+        "monto_mes", "unidades_mes", "tickets_mes", "ticket_prom_mes",
+    ]
+    combined = combined[col_order]
 
     st.dataframe(
         combined.style.format(
             {
                 "monto_semana": "{:,}",
                 "unidades_semana": "{:,}",
+                "tickets_semana": "{:,}",
+                "ticket_prom_semana": "{:,.0f}",
                 "monto_mes": "{:,}",
                 "unidades_mes": "{:,}",
+                "tickets_mes": "{:,}",
+                "ticket_prom_mes": "{:,.0f}",
             }
         ),
         use_container_width=True,
@@ -108,7 +139,25 @@ def render(
             cob.style.format({"cobertura_pct": "{:.1f}%"}),
             use_container_width=True,
             hide_index=True,
+            column_config={
+                "concentracion_80": st.column_config.NumberColumn(
+                    "Conc. 80%",
+                    help="N clientes que concentran el 80% de la venta del vendedor",
+                ),
+                "mix_top3": st.column_config.TextColumn(
+                    "Mix top-3",
+                    help="Los 3 sub-rubros con mayor % de venta",
+                ),
+            },
         )
+
+
+def _count_tickets(df: pd.DataFrame) -> int:
+    """Count de comprobantes distintos en el DF (vía id_comprobante).
+    Robusto a inputs que no traigan la columna."""
+    if df.empty or "id_comprobante" not in df.columns:
+        return 0
+    return int(df["id_comprobante"].nunique())
 
 
 def _render_caption_ncf_descartadas(health: dict) -> None:
