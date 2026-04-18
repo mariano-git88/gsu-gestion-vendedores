@@ -162,6 +162,13 @@ distingue origen.
   - **Por qué TTL 24h en los comparativos**: son meses ya cerrados,
     no cambian entre syncs consecutivos. TTL más largo amortiza el
     costo del N+1 (se paga 1 vez al día en lugar de 1 vez por hora).
+  - **Histórico 12 meses (opt-in)**: botón separado en la sidebar
+    **"Cargar histórico (12 meses)"** — pullea un rango grande
+    (primer día del mes de hace 12 meses → hoy) con TTL 24h. Primer
+    pull ~11-18 min; siguientes 24 h usan caché. Habilita las
+    features de clientes dormidos, nuevos, retención y frecuencia
+    (ver decisión 2026-04-18 Sprint 3). Si no se cargó, las 4
+    sub-secciones muestran un aviso "cargá el histórico" y no rompen.
   - Los 3 rangos principales (Mes / Semana / Trimestre) cachean
     independientemente con `@st.cache_data(ttl=3600)`.
 - **Timeout global del sync**: 10 minutos (constante
@@ -407,6 +414,30 @@ Para cada vendedor, en DOS timeframes paralelos (semana | mes):
 > (el xlsx no trae número de comprobante). El proxy subestima levemente
 > si un mismo vendedor emite dos comprobantes del mismo tipo al mismo
 > cliente el mismo día — caso raro, aceptable como aproximación.
+
+### Análisis longitudinal (requiere histórico 12m)
+
+Cuatro métricas que solo funcionan con el botón "Cargar histórico
+(12 meses)" accionado. Las definiciones operativas fueron acordadas
+con Mariano 2026-04-18 y están fijas:
+
+- **Cliente dormido** (`metrics.clientes_dormidos`): cliente en
+  cartera sin FAC de su vendedor asignado desde hace **más de 90
+  días**. Incluye a los que nunca compraron (caso `Nunca`). UI en
+  Cobertura, sub-sección al final.
+- **Cliente nuevo** (`metrics.clientes_nuevos`): cliente con primera
+  FAC en el mes actual Y **sin FAC previas en los 12 meses
+  anteriores**. Match estricto. UI en Cobertura, sub-sección al final.
+- **Tasa de retención por vendedor** (`metrics.tasa_retencion`):
+  A = clientes del vendedor que compraron en el mes calendario de
+  `hoy - 6 meses`. B = subset de A que también compró en los últimos
+  90 días desde hoy. Retención % = |B ∩ A| / |A| × 100. UI en
+  Análisis como bloque 5.
+- **Frecuencia de compra por cliente** (`metrics.frecuencia_compra_por_cliente`):
+  para clientes con ≥2 FAC propias en el histórico, promedio de
+  días entre compras consecutivas. Días por día (no por comprobante:
+  si hay múltiples FAC el mismo día, cuentan como una sola compra
+  para el cálculo de intervalo). UI en Análisis como bloque 6.
 
 ### Cobertura general — métricas adicionales por vendedor
 

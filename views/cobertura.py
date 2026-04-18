@@ -59,6 +59,9 @@ def render(
 
     if df.empty:
         st.info("No hay datos para el período seleccionado.")
+        # Las secciones de histórico (dormidos / nuevos) no dependen
+        # del período seleccionado; saltamos a ellas.
+        _render_secciones_historicas(df_mes, df_clientes)
         return
 
     # ----- Bloque 1: cobertura general -----
@@ -172,3 +175,115 @@ def render(
                 hide_index=True,
             )
             st.caption(f"Total: {len(no_compradores)} clientes sin compra del SKU.")
+
+    _render_secciones_historicas(df_mes, df_clientes)
+
+
+def _render_secciones_historicas(
+    df_mes: pd.DataFrame, df_clientes: pd.DataFrame
+) -> None:
+    """
+    Renderiza los bloques que dependen del histórico 12m:
+      - Clientes dormidos (últimos 90 días)
+      - Clientes nuevos del mes (sin compras previas en 12m)
+
+    Independientes del selector de período de la tab (se calculan
+    siempre sobre el histórico + `df_mes`).
+    """
+    # ----- Bloque 5: Clientes dormidos (requiere histórico 12m) -----
+    st.divider()
+    st.markdown("### Clientes dormidos")
+    st.caption(
+        "Clientes en cartera que **no reciben una FAC de su vendedor "
+        "asignado desde hace más de 90 días**. Incluye también los que "
+        "nunca compraron (caso `Nunca`). La lista se calcula sobre el "
+        "histórico de 12 meses — cargarlo desde la sidebar si no está."
+    )
+    df_hist12 = st.session_state.get("df_hist12")
+    if df_hist12 is None or df_hist12.empty:
+        st.info(
+            "Para ver esta sección, cargá el **histórico de 12 meses** "
+            "desde la sidebar (botón 'Cargar histórico')."
+        )
+    else:
+        dormidos = metrics.clientes_dormidos(df_hist12, df_clientes)
+        if dormidos.empty:
+            st.success(
+                "No hay clientes dormidos — todos los clientes en cartera "
+                "compraron en los últimos 90 días."
+            )
+        else:
+            _dormidos_vendedores = sorted(
+                dormidos["vendedor"].dropna().astype(str).unique().tolist()
+            )
+            _dormidos_opts = ["(Todos)"] + _dormidos_vendedores
+            _dormidos_sel = st.selectbox(
+                "Filtrar por vendedor",
+                options=_dormidos_opts,
+                key="dormidos_vendedor_sel",
+            )
+            vista = (
+                dormidos
+                if _dormidos_sel == "(Todos)"
+                else dormidos[dormidos["vendedor"] == _dormidos_sel]
+            )
+            # Display: "Nunca" para los clientes sin compras
+            vista = vista.copy()
+            vista["dias_sin_comprar"] = vista["dias_sin_comprar"].apply(
+                lambda v: "Nunca" if pd.isna(v) else int(v)
+            )
+            vista["ultima_fecha_compra"] = vista["ultima_fecha_compra"].apply(
+                lambda d: "—" if pd.isna(d) else pd.Timestamp(d).strftime("%Y-%m-%d")
+            )
+            st.dataframe(
+                vista,
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(f"Total: {len(vista)} cliente(s) dormido(s).")
+
+    # ----- Bloque 6: Clientes nuevos del mes -----
+    st.divider()
+    st.markdown("### Clientes nuevos del mes")
+    st.caption(
+        "Clientes con primera compra (FAC de su vendedor asignado) en "
+        "lo que va del mes y **sin compras en los 12 meses previos**. "
+        "Requiere el histórico cargado."
+    )
+    if df_hist12 is None or df_hist12.empty:
+        st.info(
+            "Para ver esta sección, cargá el **histórico de 12 meses** "
+            "desde la sidebar."
+        )
+    else:
+        nuevos = metrics.clientes_nuevos(df_mes, df_hist12, df_clientes)
+        if nuevos.empty:
+            st.info(
+                "No hay clientes nuevos en el mes actual (según el "
+                "criterio 'sin compras en los 12 meses previos')."
+            )
+        else:
+            _nuevos_vendedores = sorted(
+                nuevos["vendedor"].dropna().astype(str).unique().tolist()
+            )
+            _nuevos_opts = ["(Todos)"] + _nuevos_vendedores
+            _nuevos_sel = st.selectbox(
+                "Filtrar por vendedor",
+                options=_nuevos_opts,
+                key="nuevos_vendedor_sel",
+            )
+            vista_nuevos = (
+                nuevos
+                if _nuevos_sel == "(Todos)"
+                else nuevos[nuevos["vendedor"] == _nuevos_sel]
+            )
+            vista_nuevos = vista_nuevos.copy()
+            vista_nuevos["primera_compra"] = vista_nuevos["primera_compra"].apply(
+                lambda d: "—" if pd.isna(d) else pd.Timestamp(d).strftime("%Y-%m-%d")
+            )
+            st.dataframe(
+                vista_nuevos.style.format({"monto_mes": "{:,.0f}"}),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(f"Total: {len(vista_nuevos)} cliente(s) nuevo(s).")

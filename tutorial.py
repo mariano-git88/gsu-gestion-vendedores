@@ -81,6 +81,14 @@ def render() -> None:
         > verla reflejada YA (sin esperar que venza la caché de 1 hora),
         > tocá el botón **"Resync forzado (bypass caché)"** que aparece
         > debajo del timestamp del último sync.
+
+        > **Cargar histórico (12 meses)**: botón separado en la sidebar
+        > que pullea los últimos 12 meses de facturación. Primer pull
+        > tarda ~11-18 min; las siguientes 24 h usan caché. **Es
+        > opcional pero habilita 4 secciones**: Clientes dormidos y
+        > Clientes nuevos en la tab Cobertura, Tasa de retención y
+        > Frecuencia de compra en la tab Análisis. Sin el histórico,
+        > esas secciones aparecen con un aviso "cargá el histórico".
         """
     )
 
@@ -247,7 +255,17 @@ def render() -> None:
            un producto específico, y ves para cada vendedor cuántos
            de sus clientes lo compraron este período.
 
-        4. **Clientes que NO compraron este SKU en el mes** — la lista
+        4. **Clientes dormidos** (requiere histórico 12m) — clientes
+           en cartera que no reciben una FAC de su vendedor desde hace
+           más de 90 días. Los que nunca compraron aparecen con
+           "Nunca". Filtro por vendedor.
+
+        5. **Clientes nuevos del mes** (requiere histórico 12m) —
+           clientes con primera FAC este mes y sin compras en los 12
+           meses anteriores. Indica captaciones reales (no solo
+           clientes que retornan después de un rato).
+
+        6. **Clientes que NO compraron este SKU en el mes** — la lista
            detallada de los huecos para el SKU seleccionado arriba.
            Te muestra la razón social y el vendedor de cada uno, para
            que puedas asignar visitas.
@@ -297,6 +315,19 @@ def render() -> None:
            selector de vendedor. Útil para detectar patrones raros:
            un vendedor con toda la venta en la segunda quincena
            probablemente esté "empujando el cierre" artificialmente.
+
+        5. **Tasa de retención por vendedor** (requiere histórico
+           12m) — de los clientes que el vendedor tenía activos hace
+           6 meses, cuántos siguen activos en los últimos 3 meses.
+           Retención alta = vendedor cuida la base. Retención baja =
+           fuga silenciosa de clientes.
+
+        6. **Frecuencia de compra por cliente** (requiere histórico
+           12m) — para cada cliente con ≥2 compras en el año,
+           cuántos días promedio hay entre una compra y la siguiente.
+           Clientes con promedio bajo son los más frecuentes — si
+           empiezan a estirar ese promedio, es señal temprana de
+           fuga.
         """
     )
 

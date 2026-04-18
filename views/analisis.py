@@ -155,6 +155,14 @@ def render(
     st.divider()
     _seccion_patrones_temporales(df, df_clientes)
 
+    # Bloques 5 y 6: requieren histórico 12m. Si no está cargado,
+    # cada sub-bloque muestra un aviso y no rompe.
+    st.divider()
+    _seccion_retencion(df_clientes)
+
+    st.divider()
+    _seccion_frecuencia(df_clientes)
+
 
 # =====================================================================
 # Bloque 1: Penetración por sub-rubro
@@ -337,6 +345,102 @@ def _seccion_pareto(df: pd.DataFrame, df_clientes: pd.DataFrame) -> None:
 # =====================================================================
 # Bloque 4: Patrones temporales (día de semana / quincena)
 # =====================================================================
+
+# =====================================================================
+# Bloque 5: Tasa de retención (requiere histórico 12m)
+# =====================================================================
+
+def _seccion_retencion(df_clientes: pd.DataFrame) -> None:
+    st.markdown("### Tasa de retención por vendedor")
+    st.caption(
+        "De los clientes que compraron **hace 6 meses calendario** (A), "
+        "cuántos también compraron **en los últimos 3 meses** (B ∩ A). "
+        "Retención = |B ∩ A| / |A|. Cuanto más alto, más vendedor "
+        "conserva su base. Match estricto (vendedor operación = "
+        "asignado). Requiere el histórico de 12 meses cargado."
+    )
+    df_hist12 = st.session_state.get("df_hist12")
+    if df_hist12 is None or df_hist12.empty:
+        st.info(
+            "Para ver esta sección, cargá el **histórico de 12 meses** "
+            "desde la sidebar."
+        )
+        return
+
+    ret = metrics.tasa_retencion(df_hist12, df_clientes)
+    if ret.empty:
+        st.info(
+            "No hay datos suficientes para calcular la retención "
+            "(ningún cliente con FAC hace 6 meses)."
+        )
+        return
+
+    st.dataframe(
+        ret.style.map(_color_for_pct, subset=["retencion_pct"])
+        .format({"retencion_pct": "{:.1f}%"}),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# =====================================================================
+# Bloque 6: Frecuencia de compra por cliente (requiere histórico 12m)
+# =====================================================================
+
+def _seccion_frecuencia(df_clientes: pd.DataFrame) -> None:
+    st.markdown("### Frecuencia de compra por cliente")
+    st.caption(
+        "Para cada cliente con al menos 2 FAC en el histórico de 12 "
+        "meses, el promedio de días entre compras consecutivas. "
+        "Valores bajos = clientes muy frecuentes. Útil para detectar "
+        "clientes que están estirando su frecuencia habitual (señal "
+        "temprana de cliente en fuga)."
+    )
+    df_hist12 = st.session_state.get("df_hist12")
+    if df_hist12 is None or df_hist12.empty:
+        st.info(
+            "Para ver esta sección, cargá el **histórico de 12 meses** "
+            "desde la sidebar."
+        )
+        return
+
+    frec = metrics.frecuencia_compra_por_cliente(df_hist12, df_clientes)
+    if frec.empty:
+        st.info(
+            "No hay clientes con al menos 2 compras en los últimos 12 meses."
+        )
+        return
+
+    _vendedores = sorted(
+        frec["vendedor"].dropna().astype(str).unique().tolist()
+    )
+    _opts = ["(Todos los vendedores)"] + _vendedores
+    _sel = st.selectbox(
+        "Filtrar por vendedor",
+        options=_opts,
+        key="frecuencia_vendedor_sel",
+    )
+    vista = (
+        frec
+        if _sel == "(Todos los vendedores)"
+        else frec[frec["vendedor"] == _sel]
+    )
+    vista = vista.copy()
+    vista["ultima_compra"] = vista["ultima_compra"].apply(
+        lambda d: "—" if pd.isna(d) else pd.Timestamp(d).strftime("%Y-%m-%d")
+    )
+    st.dataframe(
+        vista.style.format(
+            {
+                "n_compras": "{:,}",
+                "dias_promedio_entre_compras": "{:.1f}",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.caption(f"Total: {len(vista)} cliente(s) con historial analizable.")
+
 
 def _seccion_patrones_temporales(
     df: pd.DataFrame, df_clientes: pd.DataFrame

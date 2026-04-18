@@ -93,6 +93,396 @@ def _calcular_pct_cobertura(con_venta: int, asignados: int) -> float:
 # VENTAS
 # =====================================================================
 
+# =====================================================================
+# ANÁLISIS LONGITUDINAL (requieren histórico de 12 meses)
+# =====================================================================
+
+def clientes_dormidos(
+    df_hist: pd.DataFrame,
+    df_clientes: pd.DataFrame,
+    hoy: pd.Timestamp | None = None,
+    umbral_dias: int = 90,
+) -> pd.DataFrame:
+    """
+    Lista de clientes en cartera que no recibieron una FAC de su
+    vendedor asignado en los últimos `umbral_dias` (default 90).
+
+    Criterio "dormido" = la fecha de su última FAC es anterior a
+    `hoy - umbral_dias`, considerando solo ventas del mismo vendedor
+    asignado (match estricto). Los clientes que NUNCA compraron
+    también aparecen (con `dias_sin_comprar` = None y fecha nula).
+
+    Args:
+        df_hist: facturación de los últimos 12 meses ya procesada
+            (`transforms.prepare_facturacion`). Si es None o vacío,
+            la función devuelve DataFrame vacío.
+        df_clientes: maestro de cartera.
+        hoy: referencia temporal (default = pd.Timestamp.today().normalize()).
+        umbral_dias: a partir de cuántos días sin comprar se considera
+            dormido. Default 90 (confirmado por Mariano 2026-04-18).
+
+    Devuelve DataFrame con columnas:
+      vendedor, documento, razon_social, ultima_fecha_compra,
+      dias_sin_comprar
+    Ordenado por vendedor y días descendente (más dormido arriba).
+    """
+    cols = [
+        "vendedor", "documento", "razon_social",
+        "ultima_fecha_compra", "dias_sin_comprar",
+    ]
+    if df_hist is None or df_hist.empty:
+        return pd.DataFrame(columns=cols)
+
+    if hoy is None:
+        hoy = pd.Timestamp.today().normalize()
+
+    # Cartera única con razón social
+    cartera = (
+        df_clientes[["vendedor", "documento", "razon_social"]]
+        .dropna(subset=["vendedor", "documento"])
+        .drop_duplicates(subset=["vendedor", "documento"])
+    )
+
+    # Última FAC por (vendedor, documento) — match estricto
+    df_fac = df_hist[df_hist["tipo"] == TIPO_FAC].copy()
+    if not df_fac.empty:
+        df_fac["fecha"] = pd.to_datetime(df_fac["fecha"], errors="coerce")
+        ultima = (
+            df_fac.groupby(["vendedor", "documento"], as_index=False)["fecha"]
+            .max()
+            .rename(columns={"fecha": "ultima_fecha_compra"})
+        )
+    else:
+        ultima = pd.DataFrame(
+            columns=["vendedor", "documento", "ultima_fecha_compra"]
+        )
+
+    result = cartera.merge(ultima, on=["vendedor", "documento"], how="left")
+    result["dias_sin_comprar"] = result["ultima_fecha_compra"].apply(
+        lambda d: (hoy - d).days if pd.notna(d) else None
+    )
+
+    # Filtrar: dormidos (>umbral) o nunca compraron (NaT)
+    mask_dormido = (
+        result["dias_sin_comprar"].isna()
+        | (result["dias_sin_comprar"] > umbral_dias)
+    )
+    result = result[mask_dormido][cols]
+
+    # Orden: primero los que tienen más días dormidos; los NaN al final
+    return (
+        result.sort_values(
+            ["vendedor", "dias_sin_comprar"],
+            ascending=[True, False],
+            na_position="last",
+        )
+        .reset_index(drop=True)
+    )
+
+
+def clientes_nuevos(
+    df_mes: pd.DataFrame,
+    df_hist: pd.DataFrame,
+    df_clientes: pd.DataFrame,
+    inicio_mes_actual: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """
+    Clientes con primera FAC en el mes actual (período `df_mes`) que
+    NO tenían FAC previas en los 12 meses anteriores (según `df_hist`).
+
+    Match estricto: la compra del mes actual tiene que ser del
+    vendedor asignado al cliente. Un cliente que compró por primera
+    vez a un vendedor distinto al asignado no se cuenta como "nuevo"
+    para ese vendedor.
+
+    Args:
+        df_mes: facturación del mes actual, ya procesada.
+        df_hist: facturación de los 12 meses anteriores. Debe cubrir
+            `inicio_mes_actual - 12 meses` → `inicio_mes_actual`.
+        df_clientes: maestro de cartera.
+        inicio_mes_actual: primer día del mes actual (para filtrar el
+            histórico a "meses previos"). Default: primer día del mes
+            de hoy.
+
+    Devuelve DataFrame con columnas:
+      vendedor, documento, razon_social, primera_compra, monto_mes
+    Ordenado por vendedor y monto_mes descendente.
+    """
+    cols = [
+        "vendedor", "documento", "razon_social",
+        "primera_compra", "monto_mes",
+    ]
+    if df_mes is None or df_mes.empty:
+        return pd.DataFrame(columns=cols)
+
+    if inicio_mes_actual is None:
+        hoy = pd.Timestamp.today().normalize()
+        inicio_mes_actual = pd.Timestamp(hoy.year, hoy.month, 1)
+
+    cartera = (
+        df_clientes[["vendedor", "documento", "razon_social"]]
+        .dropna(subset=["vendedor", "documento"])
+        .drop_duplicates(subset=["vendedor", "documento"])
+    )
+
+    # Compradores del mes (FAC, match estricto con cartera)
+    fac_mes_cartera = _fac_en_cartera_propia(df_mes, df_clientes)
+    if fac_mes_cartera.empty:
+        return pd.DataFrame(columns=cols)
+
+    fac_mes_cartera = fac_mes_cartera.copy()
+    fac_mes_cartera["fecha"] = pd.to_datetime(
+        fac_mes_cartera["fecha"], errors="coerce"
+    )
+
+    # Sumar monto y tomar fecha mínima (primera compra) por cliente
+    compradores = (
+        fac_mes_cartera.groupby(["vendedor", "documento"], as_index=False)
+        .agg(primera_compra=("fecha", "min"), monto_mes=("monto", "sum"))
+    )
+
+    # Compradores previos en el histórico (cualquier FAC propia antes
+    # del inicio del mes actual)
+    if df_hist is None or df_hist.empty:
+        previos = pd.DataFrame(columns=["vendedor", "documento"])
+    else:
+        fac_hist = df_hist[df_hist["tipo"] == TIPO_FAC].copy()
+        fac_hist["fecha"] = pd.to_datetime(fac_hist["fecha"], errors="coerce")
+        fac_hist = fac_hist[fac_hist["fecha"] < inicio_mes_actual]
+        # Match estricto: vendedor de la operación = vendedor asignado
+        fac_hist_cartera = fac_hist.merge(
+            cartera[["vendedor", "documento"]],
+            on=["vendedor", "documento"],
+            how="inner",
+        )
+        previos = (
+            fac_hist_cartera[["vendedor", "documento"]]
+            .drop_duplicates()
+        )
+
+    # Nuevos = compradores del mes SIN compras previas
+    nuevos = compradores.merge(
+        previos.assign(__had_before=1),
+        on=["vendedor", "documento"],
+        how="left",
+    )
+    nuevos = nuevos[nuevos["__had_before"].isna()].drop(columns="__had_before")
+
+    # Traer razón social
+    nuevos = nuevos.merge(cartera, on=["vendedor", "documento"], how="left")
+    nuevos["monto_mes"] = nuevos["monto_mes"].astype(float).round(2)
+
+    return (
+        nuevos[cols]
+        .sort_values(
+            ["vendedor", "monto_mes"],
+            ascending=[True, False],
+        )
+        .reset_index(drop=True)
+    )
+
+
+def tasa_retencion(
+    df_hist: pd.DataFrame,
+    df_clientes: pd.DataFrame,
+    hoy: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """
+    Tasa de retención por vendedor.
+
+    Definición (acordada con Mariano 2026-04-18):
+      - A = clientes del vendedor que compraron (FAC propia) en el
+        mes calendario de `hoy - 6 meses`.
+      - B = subset de A que también compró (FAC propia) en los
+        últimos 3 meses (últimos 90 días desde `hoy`).
+      - retención_pct = |B| / |A| × 100. Si |A| = 0, retención = 0.
+
+    Match estricto en ambos conjuntos (vendedor operación = vendedor
+    asignado).
+
+    Args:
+        df_hist: histórico que cubra al menos `hoy - 6m` hasta `hoy`.
+        df_clientes: maestro de cartera.
+        hoy: referencia temporal (default = pd.Timestamp.today().normalize()).
+
+    Devuelve DataFrame con columnas:
+      vendedor, clientes_hace_6m, clientes_retenidos_3m, retencion_pct
+    Ordenado por retencion_pct descendente.
+    """
+    cols = [
+        "vendedor", "clientes_hace_6m",
+        "clientes_retenidos_3m", "retencion_pct",
+    ]
+    if df_hist is None or df_hist.empty:
+        return pd.DataFrame(columns=cols)
+
+    if hoy is None:
+        hoy = pd.Timestamp.today().normalize()
+
+    # Ventana "hace 6 meses": el mes calendario correspondiente.
+    # Si hoy es 2026-04-18, "hace 6 meses" = octubre 2025 (mes completo).
+    m_6m = hoy - pd.DateOffset(months=6)
+    inicio_6m = pd.Timestamp(m_6m.year, m_6m.month, 1)
+    # Último día del mes "hace 6 meses"
+    if m_6m.month == 12:
+        fin_6m = pd.Timestamp(m_6m.year, 12, 31)
+    else:
+        fin_6m = pd.Timestamp(m_6m.year, m_6m.month + 1, 1) - pd.Timedelta(days=1)
+
+    # Ventana "últimos 3 meses": 90 días hacia atrás desde hoy.
+    inicio_3m = hoy - pd.Timedelta(days=90)
+
+    df_fac = df_hist[df_hist["tipo"] == TIPO_FAC].copy()
+    if df_fac.empty:
+        return pd.DataFrame(columns=cols)
+    df_fac["fecha"] = pd.to_datetime(df_fac["fecha"], errors="coerce")
+
+    fac_en_cartera = _fac_en_cartera_propia(df_fac, df_clientes)
+    if fac_en_cartera.empty:
+        return pd.DataFrame(columns=cols)
+    fac_en_cartera = fac_en_cartera.copy()
+    fac_en_cartera["fecha"] = pd.to_datetime(
+        fac_en_cartera["fecha"], errors="coerce"
+    )
+
+    # A: (vendedor, documento) que compraron hace 6 meses
+    mask_6m = (
+        (fac_en_cartera["fecha"] >= inicio_6m)
+        & (fac_en_cartera["fecha"] <= fin_6m)
+    )
+    a_set = (
+        fac_en_cartera[mask_6m][["vendedor", "documento"]]
+        .drop_duplicates()
+    )
+
+    # B: (vendedor, documento) que compraron en los últimos 3 meses
+    mask_3m = fac_en_cartera["fecha"] >= inicio_3m
+    b_set = (
+        fac_en_cartera[mask_3m][["vendedor", "documento"]]
+        .drop_duplicates()
+    )
+
+    # Retenidos = A ∩ B
+    retenidos = a_set.merge(b_set, on=["vendedor", "documento"], how="inner")
+
+    a_por_vendedor = (
+        a_set.groupby("vendedor", as_index=False)["documento"]
+        .nunique()
+        .rename(columns={"documento": "clientes_hace_6m"})
+    )
+    r_por_vendedor = (
+        retenidos.groupby("vendedor", as_index=False)["documento"]
+        .nunique()
+        .rename(columns={"documento": "clientes_retenidos_3m"})
+    )
+
+    result = a_por_vendedor.merge(r_por_vendedor, on="vendedor", how="left")
+    result["clientes_retenidos_3m"] = (
+        result["clientes_retenidos_3m"].fillna(0).astype(int)
+    )
+    result["retencion_pct"] = result.apply(
+        lambda r: round(r["clientes_retenidos_3m"] / r["clientes_hace_6m"] * 100, 2)
+        if r["clientes_hace_6m"] > 0 else 0.0,
+        axis=1,
+    )
+
+    return (
+        result[cols]
+        .sort_values("retencion_pct", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+def frecuencia_compra_por_cliente(
+    df_hist: pd.DataFrame,
+    df_clientes: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Para cada cliente con ≥2 FAC en el histórico, el promedio de días
+    entre compras consecutivas del mismo vendedor asignado (match
+    estricto).
+
+    Cálculo: para cada (vendedor, documento), ordenar fechas
+    ascendentemente y calcular el promedio de las diferencias
+    consecutivas. El resultado es un proxy de "cada cuántos días me
+    compra este cliente". Valores bajos = clientes frecuentes.
+
+    Se descartan clientes con una sola FAC (no se puede calcular un
+    "intervalo entre compras"). Los clientes con 0 FAC tampoco aparecen.
+
+    Args:
+        df_hist: histórico 12m ya procesado.
+        df_clientes: maestro (para traer razón social).
+
+    Devuelve DataFrame con columnas:
+      vendedor, documento, razon_social, n_compras,
+      dias_promedio_entre_compras, ultima_compra
+    Ordenado por dias_promedio_entre_compras ascendente (más frecuentes arriba).
+    """
+    cols = [
+        "vendedor", "documento", "razon_social",
+        "n_compras", "dias_promedio_entre_compras", "ultima_compra",
+    ]
+    if df_hist is None or df_hist.empty:
+        return pd.DataFrame(columns=cols)
+
+    df_fac = df_hist[df_hist["tipo"] == TIPO_FAC].copy()
+    fac_en_cartera = _fac_en_cartera_propia(df_fac, df_clientes)
+    if fac_en_cartera.empty:
+        return pd.DataFrame(columns=cols)
+
+    fac_en_cartera = fac_en_cartera.copy()
+    fac_en_cartera["fecha"] = pd.to_datetime(
+        fac_en_cartera["fecha"], errors="coerce"
+    )
+
+    # Colapsar a 1 fila por (vendedor, documento, fecha) — si un día
+    # hay 2 comprobantes, contamos como una sola compra para el
+    # cálculo de frecuencia.
+    por_dia = (
+        fac_en_cartera.groupby(["vendedor", "documento", "fecha"], as_index=False)
+        .size()
+        .drop(columns="size", errors="ignore")
+    )
+
+    resultados = []
+    for (vendedor, documento), grupo in por_dia.groupby(["vendedor", "documento"]):
+        fechas = grupo["fecha"].sort_values().reset_index(drop=True)
+        n_compras = len(fechas)
+        if n_compras < 2:
+            continue
+        diffs = fechas.diff().dropna().dt.days
+        dias_promedio = round(float(diffs.mean()), 1)
+        resultados.append(
+            {
+                "vendedor": vendedor,
+                "documento": documento,
+                "n_compras": n_compras,
+                "dias_promedio_entre_compras": dias_promedio,
+                "ultima_compra": fechas.iloc[-1],
+            }
+        )
+
+    if not resultados:
+        return pd.DataFrame(columns=cols)
+
+    result = pd.DataFrame(resultados)
+
+    # Razón social
+    cartera = (
+        df_clientes[["vendedor", "documento", "razon_social"]]
+        .dropna(subset=["vendedor", "documento"])
+        .drop_duplicates(subset=["vendedor", "documento"])
+    )
+    result = result.merge(cartera, on=["vendedor", "documento"], how="left")
+
+    return (
+        result[cols]
+        .sort_values("dias_promedio_entre_compras", ascending=True)
+        .reset_index(drop=True)
+    )
+
+
 def comparativa_temporal(
     df_actual: pd.DataFrame,
     df_prev: pd.DataFrame | None = None,

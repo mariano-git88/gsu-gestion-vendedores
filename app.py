@@ -46,6 +46,10 @@ st.set_page_config(
     layout="wide",
 )
 
+# Timeout global para operaciones de sync. Ver decisión 2026-04-18
+# (mensaje amigable + timeout de 10 min).
+SYNC_TIMEOUT_SEC = 600
+
 theme.apply_theme()
 
 # =====================================================================
@@ -91,6 +95,10 @@ st.session_state.setdefault("api_errors_tri", [])
 st.session_state.setdefault("api_errors_prev", [])
 st.session_state.setdefault("api_errors_yoy", [])
 st.session_state.setdefault("api_rango_comp", None)
+# Histórico 12m — carga opt-in, separada del Sincronizar normal
+st.session_state.setdefault("api_hist_last_sync", None)
+st.session_state.setdefault("api_errors_hist", [])
+st.session_state.setdefault("api_rango_hist", None)
 
 # DataFrames cacheados en session (sobreviven reruns pero no logouts).
 for _key in (
@@ -99,6 +107,7 @@ for _key in (
     "df_fc_tri_raw",
     "df_fc_prev_raw",
     "df_fc_yoy_raw",
+    "df_fc_hist12_raw",
     "df_clientes",
     "df_productos",
     "df_combos",
@@ -446,10 +455,9 @@ with st.sidebar:
         use_container_width=True,
         key="btn_sync_api",
     ):
-        # Umbral blando de 10 min: si al terminar un sub-step el total
-        # acumulado lo supera, abortamos antes del próximo sub-step y
-        # mostramos el mensaje amigable de "Contabilium caído".
-        SYNC_TIMEOUT_SEC = 600
+        # Umbral blando de SYNC_TIMEOUT_SEC (global, 10 min): si al
+        # terminar un sub-step el total acumulado lo supera, abortamos
+        # antes del próximo sub-step y mostramos el mensaje amigable.
         _t0 = time.monotonic()
 
         def _check_timeout():
@@ -569,13 +577,77 @@ with st.sidebar:
         ):
             _api_sync_maestros.clear()
             _api_sync_fc.clear()
+            _api_sync_fc_historico.clear()
             st.session_state.api_last_sync = None
+            st.session_state.api_hist_last_sync = None
             st.session_state.fuente_activa = None
             st.success(
                 "Caché limpiado. Tocá 'Sincronizar' arriba para traer "
                 "datos frescos."
             )
             st.rerun()
+
+    # -- Carga opt-in del histórico 12 meses --
+    # Es un pull separado porque es caro (~11-18 min primera vez).
+    # Con TTL de 24h, la segunda y siguientes veces del día vienen
+    # del cache instantáneamente. Se usa para features que requieren
+    # ventana temporal amplia (dormidos, nuevos, retención, frecuencia).
+    st.divider()
+    st.markdown("**Histórico 12 meses** (para dormidos / nuevos / retención)")
+    _hist_ts = st.session_state.api_hist_last_sync
+    if _hist_ts is not None:
+        st.caption(
+            f"Último pull histórico OK: {_hist_ts.strftime('%Y-%m-%d %H:%M')}"
+        )
+    else:
+        st.caption(
+            "No cargado. Requiere un pull pesado (~11-18 min la primera "
+            "vez; las siguientes 24 h usan caché)."
+        )
+    _btn_label = (
+        "Recargar histórico (12 meses)"
+        if _hist_ts is not None
+        else "Cargar histórico (12 meses)"
+    )
+    if st.button(
+        _btn_label,
+        type="secondary",
+        use_container_width=True,
+        key="btn_load_historico",
+        help=(
+            "Pullea los últimos 12 meses de facturación desde Contabilium. "
+            "Habilita las features de clientes dormidos, nuevos, retención "
+            "y frecuencia de compra. TTL de caché: 24 h."
+        ),
+    ):
+        _t0_hist = time.monotonic()
+        try:
+            _fd_hist = date(_hoy.year - 1, _hoy.month, 1)
+            _fh_hist = _hoy
+            df_fc_hist12, errors_hist = _api_sync_fc_historico(
+                _fd_hist.isoformat(), _fh_hist.isoformat()
+            )
+            if time.monotonic() - _t0_hist > SYNC_TIMEOUT_SEC:
+                raise TimeoutError(f"Histórico excedió {SYNC_TIMEOUT_SEC}s")
+            st.session_state.df_fc_hist12_raw = df_fc_hist12
+            st.session_state.api_hist_last_sync = datetime.now()
+            st.session_state.api_rango_hist = (_fd_hist, _fh_hist)
+            st.session_state.api_errors_hist = errors_hist
+            st.success(
+                f"Histórico cargado: {len(df_fc_hist12):,} filas en "
+                f"{_fd_hist.isoformat()} → {_fh_hist.isoformat()}. "
+                f"{len(errors_hist)} comprobante(s) omitidos por fetch fallido."
+            )
+            st.rerun()
+        except api_loader.AuthError as e:
+            st.error(f"**Credenciales rechazadas**: {e}")
+        except (TimeoutError, api_loader.ApiError) as e:
+            st.error(
+                "**Lamentablemente Contabilium está caído.** Por favor "
+                "probá nuevamente más tarde o utilizá la opción de "
+                "carga manual más abajo.\n\n"
+                f"_Detalle técnico_: {e}"
+            )
 
     st.divider()
 
@@ -719,6 +791,11 @@ st.session_state.df_prev = _prepare_comparativo(
 )
 st.session_state.df_yoy = _prepare_comparativo(
     st.session_state.get("df_fc_yoy_raw")
+)
+
+# Histórico 12 meses — mismo tratamiento, separado porque es opt-in.
+st.session_state.df_hist12 = _prepare_comparativo(
+    st.session_state.get("df_fc_hist12_raw")
 )
 
 

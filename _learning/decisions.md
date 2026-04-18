@@ -976,3 +976,91 @@ a Sprint 3 donde el pull pesado habilita 4 features a la vez.
 
 **Confirmado por:** Mariano, sesión 2026-04-18 (continuación de
 Sprint 1 del mismo día).
+
+
+---
+
+## 2026-04-18 — Sprint 3: análisis longitudinal con histórico 12 meses (dormidos, nuevos, retención, frecuencia)
+
+**Decisión:** agregar 4 features que requieren un histórico amplio
+(12 meses calendario previos + mes en curso), todas montadas sobre
+un pull único y opt-in que vive en su propio botón de la sidebar.
+
+### Features agregadas
+
+1. **Clientes dormidos** — umbral 90 días sin FAC del vendedor
+   asignado. Incluye "nunca compraron". UI en Cobertura (bloque 5).
+2. **Clientes nuevos** — primera FAC en el mes actual sin compras
+   previas en los 12 meses anteriores. Match estricto. UI en
+   Cobertura (bloque 6).
+3. **Tasa de retención por vendedor** — A = compraron hace 6 meses
+   (mes calendario). B = subset de A que compró en los últimos 90
+   días desde hoy. Retención % = |B ∩ A| / |A|. UI en Análisis.
+4. **Frecuencia de compra por cliente** — promedio de días entre
+   compras consecutivas para clientes con ≥2 FAC propias. UI en
+   Análisis.
+
+### Infra: carga opt-in del histórico
+
+- **Botón nuevo en la sidebar**: "Cargar histórico (12 meses)" (o
+  "Recargar" si ya hay pull previo). Separado del botón
+  "Sincronizar" normal para no encarecerlo.
+- **Rango pulleado**: desde `hoy.year - 1, hoy.month, 1` hasta
+  `hoy`. Ejemplo hoy=2026-04-18 → desde 2025-04-01, hasta
+  2026-04-18. Cubre 12 meses calendario previos + mes en curso.
+- **Cache**: `_api_sync_fc_historico` con TTL=86400 (24h, el mismo
+  decorator que se usa para los comparativos MoM/YoY). Después del
+  primer pull pesado, las siguientes 24 h sirven del cache.
+- **Costo estimado primer pull**: ~11-18 min (12000+ comprobantes
+  con N+1 de 10 workers). Aceptable para una acción explícita del
+  usuario, 1 vez al día.
+- **Degradación**: si el histórico no está cargado, las 4 sub-
+  secciones muestran un aviso "cargá el histórico" y el resto del
+  dashboard funciona normal.
+
+### Alternativas descartadas
+
+- **Hacer el pull al tocar "Sincronizar"**. Habría sumado 11-18 min
+  al flujo normal, inaceptable.
+- **12 pulls mensuales independientes** (tolerancia a fallos). Más
+  robusto pero complejo. En la práctica, si un batch falla de los
+  ~240 páginas, la lista `errors` ya lo captura sin romper los
+  demás. Se deja mensual-por-mensual como opción si el pull único
+  se vuelve inestable.
+- **Umbral dormido = 60 días** (propuesta inicial). Mariano
+  confirmó 90 días como más representativo del negocio GSU (ciclo
+  de compra típico).
+- **Cliente nuevo = sin compras EVER** (criterio laxo). Descartado:
+  preferimos "sin compras en los últimos 12 meses" para incluir
+  reactivaciones reales (cliente histórico que volvió).
+- **Frecuencia medida por comprobante en vez de por día**. Se
+  colapsa a "una compra por día" para no contar dos FAC del mismo
+  día como dos "intervalos de 0 días", lo cual distorsionaba hacia
+  abajo el promedio en vendedores con split de facturación.
+
+### Implementación
+
+- **Nuevas funciones puras en `metrics.py`**:
+  `clientes_dormidos`, `clientes_nuevos`, `tasa_retencion`,
+  `frecuencia_compra_por_cliente`. Match estricto consistente con
+  el resto del módulo.
+- **Nuevo cache `_api_sync_fc_historico` reutilizado** en el botón
+  histórico (ya existía para comparativos).
+- **Session state nuevo**: `df_fc_hist12_raw`, `df_hist12`,
+  `api_hist_last_sync`, `api_errors_hist`, `api_rango_hist`.
+- **`views/cobertura.py`**: refactor del `return` temprano por un
+  helper `_render_secciones_historicas(df_mes, df_clientes)` que
+  se llama siempre, para que los bloques 5 y 6 funcionen aunque
+  el período seleccionado esté vacío.
+- **`views/analisis.py`**: dos funciones nuevas
+  `_seccion_retencion` y `_seccion_frecuencia` que chequean
+  `df_hist12` y degradan elegantemente.
+
+### Validación programática
+
+Smoke test in-memory con cartera de 5 clientes y perfiles
+construidos ex profeso (frecuente / dormido / nuevo / retenido /
+fuga). Los 4 cálculos cuadraron contra los valores esperados
+manualmente.
+
+**Confirmado por:** Mariano, sesión 2026-04-18.
