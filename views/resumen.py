@@ -39,6 +39,12 @@ def render(
     health_mes = health_mes or {}
 
     st.subheader("Resumen del período")
+    st.caption(
+        "Los montos de esta tab (y de Sub-rubro, Cobertura, Análisis) "
+        "están **sin IVA** (neto con bonificación). Los montos de la tab "
+        "**Cobranzas** vienen **con IVA** — así los expone Contabilium "
+        "para el saldo adeudado. **No son directamente comparables.**"
+    )
 
     # ----- Big numbers: total + ticket promedio semana vs mes -----
     col_sem, col_mes = st.columns(2)

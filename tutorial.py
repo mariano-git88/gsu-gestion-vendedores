@@ -65,7 +65,7 @@ def render() -> None:
            facturación del mes, la semana y el trimestre.
         6. Cuando termine, aparece un mensaje "Sincronizado" y el
            dashboard se llena con los datos. A partir de ahí podés
-           navegar entre las 5 tabs.
+           navegar entre las 6 tabs.
 
         > **Mes en curso recortado al día**: si el mes (o el último
         > mes del trimestre) es el mes actual, el rango termina
@@ -149,14 +149,14 @@ def render() -> None:
 
     st.divider()
 
-    # ----- Las 5 tabs -----
+    # ----- Las 6 tabs -----
     st.markdown(
         """
-        ### Las 5 tabs (de izquierda a derecha)
+        ### Las 6 tabs (de izquierda a derecha)
 
         Cada tab es una vista distinta de los datos. Las primeras 3 son
         del uso diario en la reunión. La 4ta es exploración estratégica.
-        La 5ta es diagnóstico de los datos.
+        La 5ta es estado de cobranzas. La 6ta es diagnóstico de datos.
         """
     )
 
@@ -334,7 +334,40 @@ def render() -> None:
     # Tab 5
     st.markdown(
         """
-        #### Tab 5 — **Salud**
+        #### Tab 5 — **Cobranzas** (deuda viva)
+
+        Estado actual de lo que los clientes deben. Solo disponible en
+        **modo API** — requiere los campos `saldo` y `fecha de
+        vencimiento` que vienen con el detalle del comprobante de
+        Contabilium (los xlsx del Modo Manual no los traen).
+
+        Contiene:
+
+        1. **4 KPIs arriba** — Deuda total viva, Deuda vencida (con
+           % del total como delta), Deuda corriente, Días promedio
+           de deuda (global).
+
+        2. **Aging por cliente** — matriz con un cliente por fila y los
+           buckets en columnas: **Al día** (no vencido), **0-30**,
+           **31-60**, **61-90**, **90+ días**, **Sin venc.**. Cada
+           celda es el saldo en ese bucket. Filtrable por vendedor.
+
+        3. **Top deudores** — los clientes con mayor saldo pendiente,
+           con el total, cantidad de comprobantes abiertos y la fecha
+           del comprobante más viejo. Slider para elegir cuántos mostrar.
+
+        4. **Días promedio de deuda por vendedor** — para cada vendedor,
+           días promedio entre la emisión de cada factura pendiente y
+           hoy. Valores altos = cartera que envejece. Útil para
+           complementar las métricas de venta con una lectura de
+           calidad de cobranza.
+        """
+    )
+
+    # Tab 6
+    st.markdown(
+        """
+        #### Tab 6 — **Salud**
 
         Diagnóstico de los datos cargados. Es la tab a la que
         recurrís cuando algo te llama la atención y querés entender

@@ -415,6 +415,58 @@ Para cada vendedor, en DOS timeframes paralelos (semana | mes):
 > si un mismo vendedor emite dos comprobantes del mismo tipo al mismo
 > cliente el mismo día — caso raro, aceptable como aproximación.
 
+### Cobranzas (tab dedicada, requiere modo API)
+
+Tab nueva construida sobre el hallazgo del discovery 2026-04-18: el
+detalle de cada comprobante ya trae `Saldo`, `FechaVencimiento`,
+`CondicionVenta` y `Pagos`. **No se llama a ningún endpoint
+adicional** — los 4 campos se propagan desde el N+1 existente de
+`load_fc_api`.
+
+**Schema enriquecido del DataFrame de facturación (Modo API solamente):**
+
+- `saldo` (float) — monto pendiente del comprobante con IVA.
+  0 = cobrado, >0 = adeudado. Replicado en todas las filas del mismo
+  comprobante para simplicidad.
+- `fecha_vencimiento` (datetime o None) — fecha de vencimiento del
+  comprobante. Puede ser None si el ERP no registró plazo.
+- `condicion_venta` (string) — ej "30 Cuenta Corriente", "Contado".
+- `pagos_count` (int) — cantidad de pagos parciales recibidos.
+  Suele ser 0 incluso en comprobantes cobrados (los pagos totales
+  no siempre aparecen en ese array; el `Saldo = 0` es la señal
+  canónica de cobranza).
+
+**Funciones de cálculo** (`metrics.py`, todas operan colapsando el DF
+a una fila por comprobante vía `_deuda_viva_por_comprobante`):
+
+- `aging_por_cliente(df, hoy)` → matriz cliente × bucket
+  (Al día / 0-30 / 31-60 / 61-90 / 90+ / Sin vencimiento) con saldo
+  en cada celda. Los buckets se calculan sobre
+  `hoy - fecha_vencimiento`. Helpers internos `_bucket_aging` y
+  constante `BUCKETS_ORDEN`.
+- `top_deudores(df, n=20)` → ranking por saldo pendiente sumado por
+  cliente. Incluye `comprobantes_pendientes` y `comprobante_mas_viejo`.
+- `dias_promedio_deuda_por_vendedor(df, hoy)` → para cada vendedor,
+  promedio simple de `hoy - fecha_emision` sobre comprobantes con
+  saldo > 0. Proxy de DSO sin necesitar el endpoint de cobranzas.
+- `deuda_vencida_vs_corriente(df, hoy)` → dict con total, vencida,
+  corriente, pct_vencida, n_vencidos, n_corrientes.
+
+**Reglas de cobranzas:**
+
+- Solo se considera `tipo == FAC`. Las NCF no se cuentan como deuda
+  (ya netean contra la FAC original en el ERP — `IdComprobanteAsociado`
+  no se usa todavía para tracking fino).
+- "Al día" = aún no vencido. No es un bucket de mora.
+- "Sin vencimiento" = el ERP no registró plazo. Típicamente son
+  contado que ya se cobraron (Saldo = 0, no aparecen) o excepciones.
+- El `Saldo` viene **bruto con IVA** (ej: FAC con `ImporteTotalBruto
+  = "1.260,00"` tiene `Saldo = "1.537,20"` = 1260×1.22 cuando está
+  adeudado). No es comparable con el `monto` neto sin IVA del DF.
+
+**Modo Manual**: la tab degrada con un aviso. Los xlsx no traen saldo
+ni vencimiento.
+
 ### Análisis longitudinal (requiere histórico 12m)
 
 Cuatro métricas que solo funcionan con el botón "Cargar histórico
@@ -554,9 +606,9 @@ sobre el export.
 
 ## Panel de salud de datos
 
-El panel vive en su propia tab dedicada (la **5ta**, después de Resumen,
-Sub-rubro, Cobertura y Análisis). El usuario tiene que hacer click para
-verlo, no aparece junto al dashboard principal. **Excepción**: si hay
+El panel vive en su propia tab dedicada (la **6ta**, después de Resumen,
+Sub-rubro, Cobertura, Análisis y Cobranzas). El usuario tiene que hacer
+click para verlo, no aparece junto al dashboard principal. **Excepción**: si hay
 alertas estructurales en rojo (vendedores sin cartera o clientes
 duplicados), arriba de las tabs aparece un banner discreto avisando
 para que no se le pase información crítica al usuario.
@@ -628,10 +680,15 @@ Estructura de carpetas y archivos del proyecto:
   - `views/resumen.py` — vista principal por vendedor (totales semana y mes)
   - `views/sub_rubro.py` — desglose por sub-rubro con filtros
   - `views/cobertura.py` — cobertura general, por sub-rubro, por SKU,
-    y lista de clientes que NO compraron un SKU específico en el mes
+    y lista de clientes que NO compraron un SKU específico en el mes.
+    Incluye además las sub-secciones de **Clientes dormidos** y
+    **Clientes nuevos** (requieren histórico 12m)
   - `views/analisis.py` — análisis profundo: penetración por sub-rubro,
-    heatmap cliente×sub-rubro, Pareto de clientes. Incluye helpers
+    heatmap cliente×sub-rubro, Pareto de clientes, patrones temporales,
+    tasa de retención y frecuencia de compra. Incluye helpers
     locales de styling sin matplotlib (ver "Principios de código" abajo)
+  - `views/cobranzas.py` — estado de deuda viva: KPIs, aging, top
+    deudores, días promedio de deuda por vendedor. Solo modo API
 - `assets/` — recursos visuales + maestros estáticos (lowercase,
   importante para Linux)
   - `assets/logo.png` — logo de grupo Suprabond para la sidebar

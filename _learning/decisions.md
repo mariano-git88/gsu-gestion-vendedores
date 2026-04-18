@@ -1064,3 +1064,101 @@ fuga). Los 4 cálculos cuadraron contra los valores esperados
 manualmente.
 
 **Confirmado por:** Mariano, sesión 2026-04-18.
+
+
+---
+
+## 2026-04-18 — Tab Cobranzas: 5 KPIs desde el detalle del comprobante
+
+**Decisión:** agregar una 6ta tab "Cobranzas" al dashboard con el
+estado actual de la deuda viva — aging por cliente, top deudores,
+deuda vencida vs corriente, días promedio de deuda por vendedor.
+Todos los cálculos salen de enriquecer `load_fc_api` con 4 campos
+que ya vienen en el detalle del comprobante; **no se llama a ningún
+endpoint nuevo de la API**.
+
+### Contexto
+
+El discovery de 2026-04-18 (sesión 7, `_exploracion-api-contabilium/
+smoke_cobranzas*.py`) confirmó empíricamente que los endpoints
+tradicionales de cuentas corrientes / saldos / cobros no existen en
+Contabilium UY. Pero descubrió que el detalle de cada comprobante
+(`GET /api/comprobantes/?id={ID}`, que ya pulleamos en el N+1 de
+`load_fc_api`) trae `Saldo`, `FechaVencimiento`, `CondicionVenta` y
+`Pagos`. Validación contra marzo 2026: cuando `Saldo = 0` el
+comprobante está cobrado; cuando `Saldo > 0` el monto coincide con
+`ImporteTotalBruto × 1.22` (IVA UY) — o sea, el saldo bruto del
+comprobante.
+
+### Implementación
+
+- **`api_loader.load_fc_api`** agrega 4 columnas nuevas al DataFrame:
+  `saldo` (parseado con `parse_monto_uy` ya existente),
+  `fecha_vencimiento` (parseado con `parse_fecha_iso`),
+  `condicion_venta` (string), `pagos_count` (int). Replicados en
+  todas las filas del mismo comprobante.
+- **`_empty_fc_df`** actualizado.
+- **5 funciones nuevas en `metrics.py`**:
+  - `_deuda_viva_por_comprobante(df)` (helper privado): colapsa a
+    una fila por comprobante con `saldo > 0` y `tipo == FAC`.
+  - `_bucket_aging(dias)` (helper): convierte días desde
+    vencimiento en bucket string.
+  - `aging_por_cliente(df, hoy)` → matriz cliente × bucket.
+  - `top_deudores(df, n=20)` → ranking.
+  - `dias_promedio_deuda_por_vendedor(df, hoy)`.
+  - `deuda_vencida_vs_corriente(df, hoy)` → dict con KPIs.
+- **Nueva vista `views/cobranzas.py`** con 4 bloques: KPIs (4
+  metrics), aging, top deudores con slider, días promedio por
+  vendedor. Degradación en Modo Manual con aviso.
+- **Tab nueva en `app.py`** como 6ta posición, entre Análisis y Salud.
+
+### Alternativas descartadas
+
+- **Pullear `/api/cobranzas/search`** en paralelo al N+1 de
+  comprobantes. Fue la hipótesis inicial antes del discovery.
+  Descartada al confirmar que el detalle del comprobante ya trae
+  todo lo que necesitamos. Queda disponible como fuente
+  secundaria si en el futuro quisiéramos un DSO clásico preciso
+  (necesitaríamos la fecha de cobro, no solo "hoy - fecha de
+  emisión").
+- **Aging sobre fecha de emisión en lugar de vencimiento.** Más
+  simple pero menos útil para el negocio: un comprobante emitido
+  hace 60 días con plazo de 90 días NO está vencido, y contar sus
+  60 días como mora sería erróneo. Vamos con vencimiento.
+- **Ratio venta/cobro por período.** Descartado para el MVP porque
+  `Saldo` está en bruto con IVA y `monto` está en neto sin IVA —
+  no son comparables sin una normalización cuidadosa. Si Mariano
+  pide la métrica, la agregamos con el cruce explícito.
+- **Dashboard hermano separado** (conversación original). Preferimos
+  integrar como tab nueva para que el Jefe de Ventas tenga venta
+  + cobranza en la misma reunión, sin saltar entre apps.
+- **NCF negativas contra deuda**. Las NCF pueden venir con saldo
+  negativo (si compensan una FAC no cobrada). Para el MVP se
+  ignoran — solo contamos `saldo > 0` en `tipo == FAC`. La
+  compensación ocurre a nivel ERP; nuestro dashboard solo
+  refleja el estado del saldo de cada FAC, no los asientos.
+- **DSO clásico preciso**. Requiere la fecha del cobro, que está
+  en `Pagos[0].Fecha` pero ese campo suele ser null. Alternativa
+  más rigurosa: cruzar con `/api/cobranzas/search` por
+  `IDComprobante`. Para el MVP usamos "días promedio de deuda" =
+  `hoy - fecha_emision` sobre comprobantes con saldo > 0. Proxy
+  simple, calculable sin requests extras.
+
+### Validación
+
+Smoke test in-memory con 6 comprobantes sintéticos:
+- 1 FAC cobrada → no aparece en deuda.
+- 1 FAC vencida 15 días (bucket 0-30, saldo 500).
+- 1 FAC vencida 45 días (bucket 31-60, saldo 800).
+- 1 FAC vencida 100 días (bucket 90+, saldo 1200).
+- 1 FAC con vencimiento futuro (bucket Al día, saldo 600).
+- 1 FAC sin fecha de vencimiento (bucket Sin vencimiento, saldo 300).
+
+Las 4 funciones retornaron los números esperados al dólar:
+- Aging: todos los clientes en sus buckets correctos.
+- Top deudores: Cliente C primero con 1800 (2 comprobantes).
+- Días promedio: V2=61 días, V1=42.3 días. Cálculo manual verificado.
+- Deuda total: 3400, vencida 2500, corriente 900, pct_vencida 73.53%.
+
+**Confirmado por:** Mariano, sesión 2026-04-18 (continuación de
+Sprints 1/2/3 del mismo día).

@@ -483,6 +483,334 @@ def frecuencia_compra_por_cliente(
     )
 
 
+# =====================================================================
+# COBRANZAS (requieren campos saldo / fecha_vencimiento en el df)
+# =====================================================================
+#
+# Las 4 funciones de cobranzas operan sobre DataFrames que tienen las
+# columnas `saldo`, `fecha_vencimiento`, `condicion_venta` agregadas
+# por `api_loader.load_fc_api` (discovery 2026-04-18: el detalle del
+# comprobante ya trae saldo y vencimiento, no hace falta pipeline
+# separado de cobranzas). El Modo Manual Secundario no soporta estas
+# métricas — el xlsx no tiene saldo ni vencimiento.
+#
+# IMPORTANTE: el DF viene con una fila por ITEM del comprobante. Los
+# campos saldo/fecha_vencimiento están replicados en todas las filas
+# del mismo comprobante. Antes de sumar saldos hay que **colapsar a
+# una fila por comprobante** con `_deuda_viva_por_comprobante`.
+
+
+def _deuda_viva_por_comprobante(df_fc: pd.DataFrame) -> pd.DataFrame:
+    """
+    Colapsa `df_fc` a una fila por comprobante con saldo > 0.
+
+    Cada fila representa un comprobante único con su saldo pendiente,
+    fecha de emisión y fecha de vencimiento. Se filtra a `tipo == FAC`
+    (las NCF no se cuentan como deuda; ya netean al emitirse contra la
+    FAC original en el ERP).
+
+    Devuelve DataFrame con columnas:
+      id_comprobante, vendedor, documento, razon_social, fecha,
+      fecha_vencimiento, saldo, condicion_venta
+    """
+    cols = [
+        "id_comprobante", "vendedor", "documento", "razon_social",
+        "fecha", "fecha_vencimiento", "saldo", "condicion_venta",
+    ]
+    if df_fc.empty or "saldo" not in df_fc.columns:
+        return pd.DataFrame(columns=cols)
+
+    df = df_fc[df_fc["tipo"] == TIPO_FAC].copy()
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
+    # Una fila por comprobante (tomamos first — los campos de
+    # cobranza están replicados en cada item del mismo cid).
+    colapsado = (
+        df.groupby("id_comprobante", as_index=False)
+        .agg(
+            vendedor=("vendedor", "first"),
+            documento=("documento", "first"),
+            razon_social=("razon_social", "first"),
+            fecha=("fecha", "first"),
+            fecha_vencimiento=("fecha_vencimiento", "first"),
+            saldo=("saldo", "first"),
+            condicion_venta=("condicion_venta", "first"),
+        )
+    )
+    # Filtramos a deuda viva (saldo > 0).
+    return colapsado[colapsado["saldo"] > 0][cols].reset_index(drop=True)
+
+
+def _bucket_aging(dias: int | None) -> str:
+    """Clasifica días desde vencimiento en buckets.
+
+    Convención:
+      - dias < 0: comprobante aún no vencido → "Al día".
+      - 0 <= dias <= 30: "0-30" (recién vencido).
+      - 31 <= dias <= 60: "31-60".
+      - 61 <= dias <= 90: "61-90".
+      - dias > 90: "90+" (crónico).
+      - None (sin fecha de vencimiento): "Sin vencimiento".
+    """
+    if dias is None or pd.isna(dias):
+        return "Sin vencimiento"
+    d = int(dias)
+    if d < 0:
+        return "Al día"
+    if d <= 30:
+        return "0-30"
+    if d <= 60:
+        return "31-60"
+    if d <= 90:
+        return "61-90"
+    return "90+"
+
+
+BUCKETS_ORDEN = ["Al día", "0-30", "31-60", "61-90", "90+", "Sin vencimiento"]
+
+
+def aging_por_cliente(
+    df_fc: pd.DataFrame, hoy: pd.Timestamp | None = None
+) -> pd.DataFrame:
+    """
+    Matriz de aging por cliente: para cada cliente con deuda viva,
+    cuánto debe en cada bucket (0-30 / 31-60 / 61-90 / 90+ / Al día /
+    Sin vencimiento).
+
+    El bucket se determina por los días entre `hoy` y
+    `fecha_vencimiento` de cada comprobante. Los comprobantes sin
+    fecha de vencimiento caen en "Sin vencimiento" (bucket informativo
+    — no significa "en mora", solo que el ERP no registró plazo).
+
+    Devuelve DataFrame con columnas:
+      vendedor, documento, razon_social,
+      al_dia, b_0_30, b_31_60, b_61_90, b_90_mas, sin_vencimiento,
+      deuda_total
+    Ordenado por deuda_total descendente.
+    """
+    cols_out = [
+        "vendedor", "documento", "razon_social",
+        "al_dia", "b_0_30", "b_31_60", "b_61_90", "b_90_mas",
+        "sin_vencimiento", "deuda_total",
+    ]
+    deuda = _deuda_viva_por_comprobante(df_fc)
+    if deuda.empty:
+        return pd.DataFrame(columns=cols_out)
+
+    if hoy is None:
+        hoy = pd.Timestamp.today().normalize()
+
+    deuda = deuda.copy()
+    deuda["fecha_vencimiento"] = pd.to_datetime(
+        deuda["fecha_vencimiento"], errors="coerce"
+    )
+    deuda["dias"] = (hoy - deuda["fecha_vencimiento"]).dt.days
+    deuda["bucket"] = deuda["dias"].apply(_bucket_aging)
+
+    # Sumar saldo por (vendedor, documento, bucket)
+    pivoted = (
+        deuda.groupby(
+            ["vendedor", "documento", "razon_social", "bucket"],
+            as_index=False,
+        )["saldo"]
+        .sum()
+        .pivot_table(
+            index=["vendedor", "documento", "razon_social"],
+            columns="bucket",
+            values="saldo",
+            fill_value=0.0,
+        )
+        .reset_index()
+    )
+
+    # Asegurar todas las columnas (algunos buckets pueden no aparecer)
+    for b in BUCKETS_ORDEN:
+        if b not in pivoted.columns:
+            pivoted[b] = 0.0
+
+    # Renombrar a claves snake_case para que sean amables en la vista
+    rename_buckets = {
+        "Al día": "al_dia",
+        "0-30": "b_0_30",
+        "31-60": "b_31_60",
+        "61-90": "b_61_90",
+        "90+": "b_90_mas",
+        "Sin vencimiento": "sin_vencimiento",
+    }
+    pivoted = pivoted.rename(columns=rename_buckets)
+    pivoted["deuda_total"] = pivoted[
+        ["al_dia", "b_0_30", "b_31_60", "b_61_90", "b_90_mas", "sin_vencimiento"]
+    ].sum(axis=1).round(2)
+    for c in ["al_dia", "b_0_30", "b_31_60", "b_61_90", "b_90_mas", "sin_vencimiento"]:
+        pivoted[c] = pivoted[c].round(2)
+
+    return (
+        pivoted[cols_out]
+        .sort_values("deuda_total", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+def top_deudores(
+    df_fc: pd.DataFrame, n: int = 20
+) -> pd.DataFrame:
+    """
+    Top N clientes con mayor deuda viva (saldo > 0 sumado por cliente).
+
+    Se suma el saldo de todos los comprobantes FAC del mismo cliente,
+    independiente de vendedor. Incluye una columna con la cantidad de
+    comprobantes pendientes para dar contexto.
+
+    Devuelve DataFrame con columnas:
+      documento, razon_social, vendedor, deuda_total,
+      comprobantes_pendientes, comprobante_mas_viejo
+    Ordenado por deuda_total descendente.
+    """
+    cols_out = [
+        "documento", "razon_social", "vendedor",
+        "deuda_total", "comprobantes_pendientes",
+        "comprobante_mas_viejo",
+    ]
+    deuda = _deuda_viva_por_comprobante(df_fc)
+    if deuda.empty:
+        return pd.DataFrame(columns=cols_out)
+
+    deuda = deuda.copy()
+    deuda["fecha"] = pd.to_datetime(deuda["fecha"], errors="coerce")
+
+    agregado = (
+        deuda.groupby(
+            ["documento", "razon_social", "vendedor"],
+            as_index=False,
+        )
+        .agg(
+            deuda_total=("saldo", "sum"),
+            comprobantes_pendientes=("id_comprobante", "nunique"),
+            comprobante_mas_viejo=("fecha", "min"),
+        )
+    )
+    agregado["deuda_total"] = agregado["deuda_total"].round(2)
+
+    return (
+        agregado[cols_out]
+        .sort_values("deuda_total", ascending=False)
+        .head(n)
+        .reset_index(drop=True)
+    )
+
+
+def dias_promedio_deuda_por_vendedor(
+    df_fc: pd.DataFrame, hoy: pd.Timestamp | None = None
+) -> pd.DataFrame:
+    """
+    Para cada vendedor, días promedio de sus comprobantes con deuda
+    viva — calculado como `hoy - fecha_emision`. Es un proxy del DSO
+    clásico, más simple de calcular sin llamar al endpoint de cobranzas.
+
+    Valores altos sugieren que el vendedor deja envejecer sus
+    facturas pendientes; valores bajos indican rotación rápida o
+    poca deuda vieja.
+
+    Se ponderan todos los comprobantes por igual (no por monto). Si
+    se quisiera ponderar por saldo, habría que hacer un promedio
+    ponderado — se deja para una iteración posterior si el número
+    "peso monto" tuviera más sentido operativo.
+
+    Devuelve DataFrame con columnas:
+      vendedor, comprobantes_pendientes, deuda_total,
+      dias_promedio_deuda
+    Ordenado por dias_promedio_deuda descendente (peor arriba).
+    """
+    cols_out = [
+        "vendedor", "comprobantes_pendientes",
+        "deuda_total", "dias_promedio_deuda",
+    ]
+    deuda = _deuda_viva_por_comprobante(df_fc)
+    if deuda.empty:
+        return pd.DataFrame(columns=cols_out)
+
+    if hoy is None:
+        hoy = pd.Timestamp.today().normalize()
+
+    deuda = deuda.copy()
+    deuda["fecha"] = pd.to_datetime(deuda["fecha"], errors="coerce")
+    deuda["dias_deuda"] = (hoy - deuda["fecha"]).dt.days
+
+    result = (
+        deuda.groupby("vendedor", as_index=False)
+        .agg(
+            comprobantes_pendientes=("id_comprobante", "nunique"),
+            deuda_total=("saldo", "sum"),
+            dias_promedio_deuda=("dias_deuda", "mean"),
+        )
+    )
+    result["deuda_total"] = result["deuda_total"].round(2)
+    result["dias_promedio_deuda"] = result["dias_promedio_deuda"].round(1)
+
+    return (
+        result[cols_out]
+        .sort_values("dias_promedio_deuda", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+def deuda_vencida_vs_corriente(
+    df_fc: pd.DataFrame, hoy: pd.Timestamp | None = None
+) -> dict:
+    """
+    Resumen de deuda viva total, partida en vencida vs corriente.
+
+    - **Deuda vencida** = saldo de comprobantes con `fecha_vencimiento
+      < hoy` (ya pasó el plazo).
+    - **Deuda corriente** = saldo de comprobantes con
+      `fecha_vencimiento >= hoy` o sin vencimiento registrado.
+
+    Devuelve dict:
+      {
+        "total": float,
+        "vencida": float,
+        "corriente": float,
+        "pct_vencida": float,  # vencida / total × 100
+        "n_vencidos": int,     # cantidad de comprobantes vencidos
+        "n_corrientes": int,
+      }
+    """
+    vacio = {
+        "total": 0.0, "vencida": 0.0, "corriente": 0.0,
+        "pct_vencida": 0.0, "n_vencidos": 0, "n_corrientes": 0,
+    }
+    deuda = _deuda_viva_por_comprobante(df_fc)
+    if deuda.empty:
+        return vacio
+
+    if hoy is None:
+        hoy = pd.Timestamp.today().normalize()
+
+    deuda = deuda.copy()
+    deuda["fecha_vencimiento"] = pd.to_datetime(
+        deuda["fecha_vencimiento"], errors="coerce"
+    )
+    vencidos = (
+        deuda["fecha_vencimiento"].notna()
+        & (deuda["fecha_vencimiento"] < hoy)
+    )
+
+    total = float(deuda["saldo"].sum())
+    vencida = float(deuda.loc[vencidos, "saldo"].sum())
+    corriente = total - vencida
+    pct = (vencida / total * 100) if total > 0 else 0.0
+
+    return {
+        "total": round(total, 2),
+        "vencida": round(vencida, 2),
+        "corriente": round(corriente, 2),
+        "pct_vencida": round(pct, 2),
+        "n_vencidos": int(vencidos.sum()),
+        "n_corrientes": int((~vencidos).sum()),
+    }
+
+
 def comparativa_temporal(
     df_actual: pd.DataFrame,
     df_prev: pd.DataFrame | None = None,

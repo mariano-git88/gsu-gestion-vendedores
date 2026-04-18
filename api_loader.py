@@ -684,6 +684,21 @@ def load_fc_api(
         # TIPOS_NEGATIVOS arriba para la justificación.
         signo = -1.0 if tipo in TIPOS_NEGATIVOS else 1.0
 
+        # Campos de cobranzas (discovery 2026-04-18). El detalle del
+        # comprobante trae:
+        #   Saldo: string UY con monto pendiente bruto (con IVA).
+        #          0 → cobrado. >0 → adeudado. Replicado en todas las
+        #          filas del comprobante para simplificar métricas.
+        #   FechaVencimiento: ISO string. Puede ser null.
+        #   CondicionVenta: ej "30 Cuenta Corriente", "Contado".
+        #   Pagos: array de pagos parciales. Puede ser null si el
+        #          comprobante se cobró de una vez (o sigue adeudado).
+        saldo = parse_monto_uy(detail.get("Saldo"))
+        fecha_venc = parse_fecha_iso(detail.get("FechaVencimiento"))
+        cond_venta = str(detail.get("CondicionVenta") or "").strip()
+        pagos_raw = detail.get("Pagos") or []
+        pagos_count = len(pagos_raw) if isinstance(pagos_raw, list) else 0
+
         if not items:
             # Comprobante sin items (ej. NCF de descuento comercial).
             # Mantenemos la fila con sku/producto vacíos para que
@@ -701,6 +716,10 @@ def load_fc_api(
                     "producto": "",
                     "unidades": 0.0,
                     "monto": 0.0,
+                    "saldo": saldo,
+                    "fecha_vencimiento": fecha_venc,
+                    "condicion_venta": cond_venta,
+                    "pagos_count": pagos_count,
                 }
             )
             continue
@@ -727,6 +746,10 @@ def load_fc_api(
                     "producto": str(it.get("Concepto") or "").strip(),
                     "unidades": unidades,
                     "monto": monto,
+                    "saldo": saldo,
+                    "fecha_vencimiento": fecha_venc,
+                    "condicion_venta": cond_venta,
+                    "pagos_count": pagos_count,
                 }
             )
 
@@ -744,6 +767,10 @@ def load_fc_api(
             "producto",
             "unidades",
             "monto",
+            "saldo",
+            "fecha_vencimiento",
+            "condicion_venta",
+            "pagos_count",
         ],
     )
     return session, df, errors
@@ -764,6 +791,10 @@ def _empty_fc_df() -> pd.DataFrame:
             "producto",
             "unidades",
             "monto",
+            "saldo",
+            "fecha_vencimiento",
+            "condicion_venta",
+            "pagos_count",
         ]
     )
 
