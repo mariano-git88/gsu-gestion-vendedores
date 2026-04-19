@@ -287,3 +287,65 @@ hipótesis a testear en un debug de datos, y cuesta casi nada
 falsearla/confirmarla (una pregunta al operador o un
 `print(df.head())`). Construir teorías de arquitectura antes de
 verificar la entrada desperdicia tiempo y desvía la conversación.
+
+
+---
+
+## 2026-04-18 — Cache stale de `@st.cache_data` tras enriquecer un schema
+
+**Qué pasó:** ocurrió dos veces el mismo patrón, una al agregar los
+campos de cobranzas (`saldo`, `fecha_vencimiento`) al parser de
+`load_fc_api`, y otra al agregar `stock` al parser de
+`load_productos_api`:
+
+1. Deployamos el código nuevo a Streamlit Cloud.
+2. Mariano tocó "Sincronizar" esperando ver los campos nuevos.
+3. Las nuevas tabs (Cobranzas, Inventario) mostraban el mensaje
+   "no hay datos" a pesar de que sí había sync OK.
+
+**Causa raíz:** `@st.cache_data(ttl=3600)` sobre `_api_sync_fc` y
+`@st.cache_data(ttl=3600)` sobre `_api_sync_maestros` hashean solo
+los **parámetros de entrada** (fecha_desde/fecha_hasta o nada
+respectivamente), no el código de la función. Al tocar Sincronizar
+con los mismos rangos de la vez anterior, Streamlit devuelve el
+DataFrame cacheado — **sin las columnas nuevas** que el código nuevo
+agregaría si corriera.
+
+En **Streamlit Cloud**, al push de GitHub el proceso reinicia y
+vacía los caches automáticamente, así que en teoría esto no debería
+pasar. Pero pasó — probablemente porque Mariano había sincronizado
+muy recientemente antes del deploy y el estado se mantuvo en
+session_state o el restart no fue completo. No pude reproducirlo
+consistentemente.
+
+**Cómo detectamos:** la vista de la nueva tab chequeaba
+`"saldo" not in df.columns` (o `"stock" not in df.columns`) y
+mostraba un mensaje genérico "No hay datos, tocá Sincronizar". Ese
+mensaje era **engañoso** — Mariano ya había sincronizado y no tenía
+forma de saber que el fix era el Resync forzado.
+
+**Fix operativo:** separar el check de "df vacío" del check de
+"schema mismatch" en la vista, y para el segundo mostrar un mensaje
+específico: *"El sync cacheado no tiene los campos de X. Tocá
+'Resync forzado (bypass caché)' en la sidebar y volvé a Sincronizar."*
+
+**Fix que NO hicimos pero queda pendiente si vuelve a pasar:** hacer
+el cache key del sync más defensivo incluyendo una firma del schema
+esperado. Opción concreta: después de `_api_sync_fc` o
+`_api_sync_maestros`, comparar las columnas del DF devuelto contra
+una lista de columnas esperadas (constante en el módulo); si hay
+mismatch, hacer `func.clear()` y retry. Agrega una línea de lógica
+defensiva y evita que el usuario tenga que pensar en limpiar caché.
+
+**Lecciones para el futuro:**
+
+- **Cada vez que cambiemos el schema producido por un loader cacheado**
+  (agregar columnas al DataFrame de API), sumar un mensaje específico
+  en las vistas que consumen las columnas nuevas, para que el usuario
+  sepa qué hacer cuando el cache no tenga las columnas.
+- **No asumir que el redeploy limpia cache**. Aunque en teoría
+  debería, en la práctica apareció este problema 2 veces. Defensivo =
+  mensaje específico + opción Resync forzado muy visible.
+- **Si aparece una 3ra vez**, implementar el schema-signature check
+  en vez de solo el mensaje — el patrón se vuelve costoso de explicar
+  al usuario cada vez que se agregan columnas.
