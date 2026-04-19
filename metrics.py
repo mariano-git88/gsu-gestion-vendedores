@@ -484,6 +484,236 @@ def frecuencia_compra_por_cliente(
 
 
 # =====================================================================
+# INVENTARIO (requiere histórico 12m + stock en productos/combos)
+# =====================================================================
+#
+# Stock viene del detalle de conceptos en Contabilium (discovery
+# 2026-04-18). La venta semanal promedio se calcula sobre `df_hist`
+# (histórico 12 meses). Las "semanas de stock" = stock / venta_sem.
+# Umbral crítico = <4 semanas (confirmado por Mariano 2026-04-18).
+
+SEMANAS_POR_MES = 4.345  # (30.44 días / 7)
+CRITICIDAD_SEMANAS = 4.0  # umbral para marcar crítico
+
+
+def _venta_unidades_por_sku_en_rango(
+    df_hist: pd.DataFrame,
+    desde: pd.Timestamp,
+    hasta: pd.Timestamp,
+) -> pd.DataFrame:
+    """Suma unidades por SKU (FAC + NCF netean) entre `desde` y `hasta`.
+
+    Devuelve DataFrame con columnas: sku, unidades. Unidades puede ser
+    negativa si las devoluciones superaron las ventas (caso raro pero
+    posible); en ese caso la venta semanal se clampa a 0 en el caller.
+    """
+    if df_hist.empty:
+        return pd.DataFrame(columns=["sku", "unidades"])
+    df = df_hist.copy()
+    df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
+    mask = (df["fecha"] >= desde) & (df["fecha"] <= hasta)
+    sub = df[mask]
+    if sub.empty:
+        return pd.DataFrame(columns=["sku", "unidades"])
+    return (
+        sub.groupby("sku", as_index=False)["unidades"]
+        .sum()
+        .rename(columns={"unidades": "unidades"})
+    )
+
+
+def ventas_semanales_por_sku(
+    df_hist: pd.DataFrame,
+    hoy: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """
+    Venta semanal promedio por SKU bajo 3 cortes temporales:
+      - ultimo_mes: unidades últimos 30 días / 4.345
+      - ultimos_3m: unidades últimos 90 días / (90/7)
+      - mejor_mes_12m: de los últimos 12 meses calendario, el mes con
+        MAYOR unidades netas, dividido por 4.345.
+
+    Los 3 valores se devuelven siempre, aunque el usuario solo use uno
+    para marcar criticidad.
+
+    Valores negativos (devoluciones netas) se clampan a 0 — "venta
+    semanal" debajo de cero no tiene sentido para el cálculo de
+    semanas de stock.
+
+    Devuelve DataFrame con columnas:
+      sku, venta_sem_ultimo_mes, venta_sem_ultimos_3m, venta_sem_mejor_mes
+    """
+    cols = [
+        "sku",
+        "venta_sem_ultimo_mes",
+        "venta_sem_ultimos_3m",
+        "venta_sem_mejor_mes",
+    ]
+    if df_hist is None or df_hist.empty:
+        return pd.DataFrame(columns=cols)
+
+    if hoy is None:
+        hoy = pd.Timestamp.today().normalize()
+
+    # --- Corte 1: últimos 30 días ---
+    v1 = _venta_unidades_por_sku_en_rango(
+        df_hist, hoy - pd.Timedelta(days=30), hoy
+    )
+    v1["venta_sem_ultimo_mes"] = (v1["unidades"] / SEMANAS_POR_MES).clip(lower=0)
+    v1 = v1[["sku", "venta_sem_ultimo_mes"]]
+
+    # --- Corte 2: últimos 90 días ---
+    v2 = _venta_unidades_por_sku_en_rango(
+        df_hist, hoy - pd.Timedelta(days=90), hoy
+    )
+    v2["venta_sem_ultimos_3m"] = (v2["unidades"] / (90 / 7)).clip(lower=0)
+    v2 = v2[["sku", "venta_sem_ultimos_3m"]]
+
+    # --- Corte 3: mejor mes calendario de los últimos 12 ---
+    # Para cada (sku, año, mes), sumar unidades. Tomar el máximo por sku.
+    df = df_hist.copy()
+    df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
+    limite_inferior = hoy - pd.DateOffset(months=12)
+    df = df[df["fecha"] >= limite_inferior]
+    if df.empty:
+        v3 = pd.DataFrame(columns=["sku", "venta_sem_mejor_mes"])
+    else:
+        df["_ym"] = df["fecha"].dt.to_period("M")
+        mensuales = (
+            df.groupby(["sku", "_ym"], as_index=False)["unidades"].sum()
+        )
+        mejor = (
+            mensuales.groupby("sku", as_index=False)["unidades"]
+            .max()
+            .rename(columns={"unidades": "venta_sem_mejor_mes"})
+        )
+        mejor["venta_sem_mejor_mes"] = (
+            mejor["venta_sem_mejor_mes"] / SEMANAS_POR_MES
+        ).clip(lower=0)
+        v3 = mejor
+
+    # Outer join de los 3 cortes sobre sku
+    result = v1.merge(v2, on="sku", how="outer").merge(v3, on="sku", how="outer")
+    for c in [
+        "venta_sem_ultimo_mes", "venta_sem_ultimos_3m", "venta_sem_mejor_mes"
+    ]:
+        result[c] = result[c].fillna(0.0).round(2)
+
+    return result[cols].reset_index(drop=True)
+
+
+def inventario_semanas_stock(
+    df_productos: pd.DataFrame,
+    df_combos: pd.DataFrame,
+    df_hist: pd.DataFrame,
+    hoy: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """
+    Tabla consolidada de inventario: para cada SKU (productos y combos)
+    muestra stock actual, venta semanal promedio bajo 3 cortes, y
+    semanas de stock resultantes.
+
+    Args:
+        df_productos: maestro de productos con columnas sku, nombre,
+            sub_rubro, rubro, stock.
+        df_combos: maestro de combos con columnas sku, nombre, stock
+            (ya calculado derivado de componentes).
+        df_hist: histórico de 12 meses ya procesado.
+        hoy: referencia temporal.
+
+    Devuelve DataFrame con columnas:
+      sku, nombre, tipo, sub_rubro, stock,
+      venta_sem_ultimo_mes, venta_sem_ultimos_3m, venta_sem_mejor_mes,
+      semanas_ultimo_mes, semanas_ultimos_3m, semanas_mejor_mes,
+      critico   (True si semanas_ultimos_3m < CRITICIDAD_SEMANAS)
+    Ordenado por semanas_ultimos_3m ascendente (más críticos arriba).
+
+    Notas:
+      - `tipo` = "Producto" o "Combo".
+      - SKUs sin venta en el corte → semanas = infinito (representado
+        como pd.NA). El criticidad flag usa el corte de 3 meses —
+        si no hay venta, NO se marca crítico porque no tiene sentido.
+      - Stock = 0 con venta positiva → semanas = 0 (ya se acabó).
+    """
+    cols_out = [
+        "sku", "nombre", "tipo", "sub_rubro", "stock",
+        "venta_sem_ultimo_mes", "venta_sem_ultimos_3m", "venta_sem_mejor_mes",
+        "semanas_ultimo_mes", "semanas_ultimos_3m", "semanas_mejor_mes",
+        "critico",
+    ]
+    if df_productos is None and df_combos is None:
+        return pd.DataFrame(columns=cols_out)
+
+    # Unificar productos y combos con columna tipo
+    partes = []
+    if df_productos is not None and not df_productos.empty:
+        p = df_productos[["sku", "nombre", "sub_rubro", "stock"]].copy()
+        p["tipo"] = "Producto"
+        partes.append(p)
+    if df_combos is not None and not df_combos.empty:
+        c = df_combos[["sku", "nombre", "stock"]].copy()
+        c["sub_rubro"] = "COMBO"
+        c["tipo"] = "Combo"
+        partes.append(c)
+    if not partes:
+        return pd.DataFrame(columns=cols_out)
+
+    base = pd.concat(partes, ignore_index=True)
+
+    # Trae venta semanal por sku (3 cortes)
+    if df_hist is None or df_hist.empty:
+        ventas = pd.DataFrame(columns=[
+            "sku", "venta_sem_ultimo_mes",
+            "venta_sem_ultimos_3m", "venta_sem_mejor_mes",
+        ])
+    else:
+        ventas = ventas_semanales_por_sku(df_hist, hoy=hoy)
+
+    result = base.merge(ventas, on="sku", how="left")
+    for c in [
+        "venta_sem_ultimo_mes", "venta_sem_ultimos_3m", "venta_sem_mejor_mes"
+    ]:
+        result[c] = result[c].fillna(0.0)
+
+    # Semanas de stock por corte. stock / venta_semanal. Si venta=0 →
+    # semanas = NA (infinito). Si venta>0 y stock=0 → semanas = 0.
+    def _semanas(stock, venta):
+        return round(stock / venta, 1) if venta > 0 else pd.NA
+
+    result["semanas_ultimo_mes"] = result.apply(
+        lambda r: _semanas(r["stock"], r["venta_sem_ultimo_mes"]), axis=1
+    )
+    result["semanas_ultimos_3m"] = result.apply(
+        lambda r: _semanas(r["stock"], r["venta_sem_ultimos_3m"]), axis=1
+    )
+    result["semanas_mejor_mes"] = result.apply(
+        lambda r: _semanas(r["stock"], r["venta_sem_mejor_mes"]), axis=1
+    )
+
+    # Crítico: semanas de stock (corte 3 meses, el default) < umbral.
+    # Si no hay venta en 3 meses, NO es crítico (no hay demanda).
+    result["critico"] = result["semanas_ultimos_3m"].apply(
+        lambda s: (s is not pd.NA) and (pd.notna(s)) and (s < CRITICIDAD_SEMANAS)
+    )
+
+    # Ordenar: primero los críticos por semanas ascendente; después el resto
+    # por semanas descendente (SKUs más saturados abajo). SKUs sin venta
+    # al final.
+    def _sort_key(row):
+        s = row["semanas_ultimos_3m"]
+        if pd.isna(s):
+            return (2, 0)  # sin venta: al final
+        if row["critico"]:
+            return (0, float(s))  # críticos primero, ascendente
+        return (1, float(s))  # OK después, ascendente también
+
+    result["_k"] = result.apply(_sort_key, axis=1)
+    result = result.sort_values("_k").drop(columns="_k").reset_index(drop=True)
+
+    return result[cols_out]
+
+
+# =====================================================================
 # COBRANZAS (requieren campos saldo / fecha_vencimiento en el df)
 # =====================================================================
 #

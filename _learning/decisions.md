@@ -1162,3 +1162,103 @@ Las 4 funciones retornaron los números esperados al dólar:
 
 **Confirmado por:** Mariano, sesión 2026-04-18 (continuación de
 Sprints 1/2/3 del mismo día).
+
+
+---
+
+## 2026-04-18 — Tab Inventario: stock + semanas de stock bajo 3 cortes
+
+**Decisión:** agregar una 7ma tab "Inventario" que muestra stock
+actual por SKU y calcula **semanas de stock** bajo 3 cortes de venta
+semanal promedio (últimos 30 días / últimos 90 días / mejor mes de
+los últimos 12), marcando **críticos** a los SKUs con menos de 4
+semanas según el corte de 3 meses.
+
+### Hallazgos del discovery (2026-04-18, post-Cobranzas)
+
+- `/api/conceptos/search` trae los campos `Stock` y `StockMinimo`
+  en cada concepto. **No hay endpoint separado de depósitos ni de
+  stock**; todos los candidatos dan 404 (`/api/depositos`,
+  `/api/stock`, `/api/inventario`, `/api/clientes/{id}/saldo`,
+  etc.). Consolidado alcanza (confirmado por Mariano).
+- El **detalle del combo** (`/api/conceptos/?id={ID}` con
+  `Tipo == "Combo"`) trae `Items: [{Id, Codigo, Cantidad}]` con la
+  composición. Lista de materiales completa, sin N+1 adicional por
+  componente (el stock de cada componente ya vino en el listado).
+- Ejemplo validado empíricamente: combo "COMBO SLT" con 26
+  componentes. Contabilium reporta `Stock = 9` en el combo, pero
+  nuestro cálculo derivado da `13` — ambos valores son posibles
+  según el método, **elegimos el derivado**.
+
+### Definiciones operativas (Mariano 2026-04-18)
+
+- **Consolidado por SKU** (no por depósito).
+- **Crítico = <4 semanas** de stock.
+- **Default de venta semanal promedio**: últimos 3 meses.
+- **Combos**: considerar componentes para determinar el stock del combo.
+
+### Implementación
+
+- **`api_loader.load_productos_api`** agrega columnas `stock` y
+  `stock_minimo` (del listado de conceptos).
+- **`api_loader.load_combos_api`** reescrita: ahora hace N+1 sobre
+  los combos (~9 en GSU, ~1 s adicional) para obtener `Items` y
+  calcular `stock_combo = floor(min(stock_componente / cantidad))`.
+  Si falta Items o un componente no tiene stock, cae en 0. Nueva
+  columna `stock` en el DF de combos.
+- **Dos funciones nuevas en `metrics.py`**:
+  - `ventas_semanales_por_sku(df_hist, hoy)` → 3 cortes, con
+    valores negativos clampeados a 0. Helper privado
+    `_venta_unidades_por_sku_en_rango` para el rango genérico.
+  - `inventario_semanas_stock(df_productos, df_combos, df_hist,
+    hoy)` → tabla unificada con stock, 3 cortes de venta, 3 de
+    semanas, flag `critico`. Orden: críticos primero por semanas
+    ascendente, SKUs sin venta al final.
+- **Constantes**: `SEMANAS_POR_MES = 4.345`, `CRITICIDAD_SEMANAS = 4.0`.
+- **Nueva vista `views/inventario.py`** con 3 KPIs arriba, filtros
+  (Tipo / Sub-rubro / Solo críticos), tabla principal con styling
+  de fila roja para críticos.
+- **Tab nueva en `app.py`** como 6ta posición (entre Cobranzas y Salud).
+
+### Alternativas descartadas
+
+- **Usar el `Stock` que Contabilium reporta en los combos**. Más
+  simple pero menos conservador. Si Contabilium tiene un cálculo
+  obsoleto o manual, nuestro cálculo derivado da la foto real de
+  "combos efectivamente armables". Mariano lo pidió explícitamente.
+- **Ponderar los 3 cortes** (ej. 50% corte 3m + 30% mejor-12m +
+  20% último mes). Descartado — es más honesto mostrar los 3 y
+  dejar que el usuario elija qué escenario le preocupa. El flag
+  crítico se define sobre el default para consistencia.
+- **Calcular también stock valorizado (UYU)**. Nice to have pero
+  fuera del scope inicial. Si Mariano lo pide, se agrega con
+  `precio × stock` multiplicando `PrecioFinal` del concepto.
+- **Pullear el stock de forma separada del maestro de productos**
+  (ej. cache propio con TTL chico porque el stock cambia mucho).
+  Descartado: el stock viene con el mismo pull que productos y el
+  TTL de 1h del maestro es suficiente. El "Resync forzado" ya
+  atiende el caso de necesitar datos frescos.
+- **Filtro de "stock bajo stock mínimo"** (usar `StockMinimo` del
+  ERP). Descartado porque en los datos de GSU muchos productos
+  tienen `StockMinimo = 0`. El criterio por semanas de stock es
+  más universal y útil para la reunión.
+
+### Validación
+
+Smoke test in-memory con 5 productos + 1 combo:
+- Producto D (stock 0, venta alta) → 0 semanas, crítico ✓
+- Producto B (stock 10, venta ~19/sem) → 0.5 semanas, crítico ✓
+- Producto A (stock 100, venta ~5/sem) → 19.8 semanas, OK ✓
+- Producto C (stock 500, venta 0.5/sem) → 925 semanas, OK ✓
+- Producto E (sin venta) → NA, no crítico ✓
+- Orden correcto: críticos primero.
+
+**Validación adicional contra la cuenta UY real**:
+- 579 productos pulleados con stock.
+- 448 con stock > 0 (77%).
+- Stock total = 225,426 unidades.
+- 9 combos con stock derivado (5 con stock positivo, 4 en 0 porque
+  no tienen Items en el detalle — productos individuales marcados
+  como "Combo" en el ERP).
+
+**Confirmado por:** Mariano, sesión 2026-04-18.

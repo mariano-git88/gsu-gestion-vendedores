@@ -65,7 +65,7 @@ def render() -> None:
            facturación del mes, la semana y el trimestre.
         6. Cuando termine, aparece un mensaje "Sincronizado" y el
            dashboard se llena con los datos. A partir de ahí podés
-           navegar entre las 6 tabs.
+           navegar entre las 7 tabs.
 
         > **Mes en curso recortado al día**: si el mes (o el último
         > mes del trimestre) es el mes actual, el rango termina
@@ -149,14 +149,15 @@ def render() -> None:
 
     st.divider()
 
-    # ----- Las 6 tabs -----
+    # ----- Las 7 tabs -----
     st.markdown(
         """
-        ### Las 6 tabs (de izquierda a derecha)
+        ### Las 7 tabs (de izquierda a derecha)
 
         Cada tab es una vista distinta de los datos. Las primeras 3 son
         del uso diario en la reunión. La 4ta es exploración estratégica.
-        La 5ta es estado de cobranzas. La 6ta es diagnóstico de datos.
+        La 5ta es estado de cobranzas. La 6ta es inventario. La 7ma es
+        diagnóstico de datos.
         """
     )
 
@@ -367,7 +368,39 @@ def render() -> None:
     # Tab 6
     st.markdown(
         """
-        #### Tab 6 — **Salud**
+        #### Tab 6 — **Inventario** (stock y semanas de stock)
+
+        Solo disponible en **modo API** y requiere el **histórico de
+        12 meses** cargado desde la sidebar (el cálculo de venta
+        semanal necesita histórico).
+
+        Para cada SKU (productos y combos consolidado):
+
+        - **Stock actual** que viene de Contabilium. Para combos, el
+          stock se **calcula derivado desde los componentes** —
+          `floor(min(stock_componente / cantidad_requerida))`. Si
+          falta un solo componente, el combo no se puede armar, por
+          más que Contabilium reporte stock positivo.
+        - **Venta semanal promedio en 3 cortes**:
+          - **Último mes** (últimos 30 días, volátil)
+          - **Últimos 3 meses** (default para criticidad — estable)
+          - **Mejor mes-12m** (conservador: asume que el pico se repite)
+        - **Semanas de stock** = stock / venta semanal, bajo cada corte.
+        - **Flag crítico**: `sem 3m < 4` → la fila se resalta en rojo.
+          Los SKUs sin venta en 3 meses NO se marcan críticos (no hay
+          demanda activa que proteger).
+
+        **KPIs arriba**: SKUs totales, SKUs críticos (con % del total),
+        unidades totales en stock.
+
+        **Filtros**: Tipo (Producto / Combo), Sub-rubro, Solo críticos.
+        """
+    )
+
+    # Tab 7
+    st.markdown(
+        """
+        #### Tab 7 — **Salud**
 
         Diagnóstico de los datos cargados. Es la tab a la que
         recurrís cuando algo te llama la atención y querés entender

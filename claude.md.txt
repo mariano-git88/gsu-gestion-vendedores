@@ -415,6 +415,51 @@ Para cada vendedor, en DOS timeframes paralelos (semana | mes):
 > si un mismo vendedor emite dos comprobantes del mismo tipo al mismo
 > cliente el mismo día — caso raro, aceptable como aproximación.
 
+### Inventario (tab dedicada, requiere modo API + histórico 12m)
+
+Tab construida sobre el hallazgo del discovery 2026-04-18: el listado
+de conceptos de Contabilium trae `Stock` y `StockMinimo`, y el detalle
+de cada combo trae `Items` con su composición. **No se llama a ningún
+endpoint adicional** — los campos se agregan al pull de maestros.
+
+**Schema enriquecido del maestro:**
+
+- `df_productos` ahora incluye columnas `stock` (float, unidades) y
+  `stock_minimo` (float, umbral que GSU setea en el ERP).
+- `df_combos` incluye columna `stock` **derivada de componentes**:
+  `stock_combo = floor(min(stock_componente / cantidad_requerida))`.
+  Requiere N+1 sobre los combos (9 en GSU ≈ 1 s adicional).
+
+**Funciones de cálculo** (`metrics.py`):
+
+- `ventas_semanales_por_sku(df_hist, hoy)` → por SKU, venta semanal
+  promedio bajo 3 cortes temporales:
+  - `venta_sem_ultimo_mes` (últimos 30 días / 4.345)
+  - `venta_sem_ultimos_3m` (últimos 90 días / 12.86)
+  - `venta_sem_mejor_mes` (mejor mes calendario de los últimos 12 / 4.345)
+  Valores negativos se clampean a 0.
+- `inventario_semanas_stock(df_productos, df_combos, df_hist, hoy)` →
+  tabla consolidada con stock, los 3 cortes y **semanas de stock** en
+  cada uno. Marca `critico = True` si `semanas_ultimos_3m < 4`.
+  Constantes: `SEMANAS_POR_MES = 4.345`, `CRITICIDAD_SEMANAS = 4.0`.
+
+**Reglas de inventario:**
+
+- **Consolidado por SKU** (sin desglose por depósito — Contabilium UY
+  no expone endpoint de depósitos y Mariano confirmó que con
+  consolidado alcanza).
+- **Stock de combos derivado** (no el `Stock` que trae Contabilium
+  directamente). Si un combo tiene un componente faltante, el combo
+  no se puede armar aunque Contabilium diga otra cosa. Decisión
+  conservadora.
+- **Umbral crítico**: <4 semanas según el corte de **últimos 3 meses**
+  (default). Los otros 2 cortes son informativos, no disparan flag.
+- **SKUs sin venta en 3 meses** NO se marcan críticos (no hay demanda
+  que proteger). Aparecen con `semanas_... = NA`.
+- **Stock = 0 con venta positiva** → `semanas = 0` (ya se acabó, crítico).
+
+**Modo Manual**: la tab degrada con aviso (el xlsx no trae `stock`).
+
 ### Cobranzas (tab dedicada, requiere modo API)
 
 Tab nueva construida sobre el hallazgo del discovery 2026-04-18: el
@@ -606,9 +651,9 @@ sobre el export.
 
 ## Panel de salud de datos
 
-El panel vive en su propia tab dedicada (la **6ta**, después de Resumen,
-Sub-rubro, Cobertura, Análisis y Cobranzas). El usuario tiene que hacer
-click para verlo, no aparece junto al dashboard principal. **Excepción**: si hay
+El panel vive en su propia tab dedicada (la **7ma**, después de Resumen,
+Sub-rubro, Cobertura, Análisis, Cobranzas e Inventario). El usuario
+tiene que hacer click para verlo, no aparece junto al dashboard principal. **Excepción**: si hay
 alertas estructurales en rojo (vendedores sin cartera o clientes
 duplicados), arriba de las tabs aparece un banner discreto avisando
 para que no se le pase información crítica al usuario.
@@ -689,6 +734,8 @@ Estructura de carpetas y archivos del proyecto:
     locales de styling sin matplotlib (ver "Principios de código" abajo)
   - `views/cobranzas.py` — estado de deuda viva: KPIs, aging, top
     deudores, días promedio de deuda por vendedor. Solo modo API
+  - `views/inventario.py` — stock por SKU y semanas de stock bajo 3
+    cortes de venta semanal. Solo modo API con histórico 12m cargado
 - `assets/` — recursos visuales + maestros estáticos (lowercase,
   importante para Linux)
   - `assets/logo.png` — logo de grupo Suprabond para la sidebar

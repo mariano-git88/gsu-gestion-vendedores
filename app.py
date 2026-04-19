@@ -35,7 +35,7 @@ import transforms
 import tutorial
 from subrubros import RUBROS, SUBRUBROS
 from vendedores import VENDEDORES
-from views import analisis, cobertura, cobranzas, resumen, sub_rubro
+from views import analisis, cobertura, cobranzas, inventario, resumen, sub_rubro
 
 # =====================================================================
 # CONFIG
@@ -934,9 +934,13 @@ if _has_red_alerts(health_sem) or _has_red_alerts(health_mes):
     tab_cobertura,
     tab_analisis,
     tab_cobranzas,
+    tab_inventario,
     tab_salud,
 ) = st.tabs(
-    ["Resumen", "Sub-rubro", "Cobertura", "Análisis", "Cobranzas", "Salud"]
+    [
+        "Resumen", "Sub-rubro", "Cobertura", "Análisis",
+        "Cobranzas", "Inventario", "Salud",
+    ]
 )
 
 with tab_resumen:
@@ -949,6 +953,8 @@ with tab_analisis:
     analisis.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
 with tab_cobranzas:
     cobranzas.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
+with tab_inventario:
+    inventario.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
 with tab_salud:
     st.subheader("Panel de salud de datos")
     # Encabezado con fuente activa + timestamp (para trazabilidad).

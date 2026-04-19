@@ -400,14 +400,19 @@ def load_productos_api(
     Filtra conceptos con `Tipo == "Producto"`. Los combos se obtienen
     con `load_combos_api`, los servicios (si existieran) se ignoran.
 
-    Produce un DataFrame con el mismo schema que `data_loader.load_productos`:
-        columnas: [sku, nombre, sub_rubro, rubro]
+    Produce un DataFrame con las columnas:
+        sku, nombre, sub_rubro, rubro, stock, stock_minimo
+
+    Las dos últimas vienen del listado de conceptos de Contabilium
+    (discovery 2026-04-18) y se usan para la tab Inventario.
 
     Mapping de campos:
         Codigo      → sku
         Nombre      → nombre
         IdSubrubro  → sub_rubro   (via subrubros_map, fallback "ID_<n>")
         IdRubro     → rubro       (via rubros_map, fallback "ID_<n>")
+        Stock       → stock       (float, unidades en stock)
+        StockMinimo → stock_minimo (float, umbral "mínimo" del ERP)
 
     Optimización:
         Si ya se pullearon los conceptos (ej. llamando load_combos_api
@@ -438,9 +443,14 @@ def load_productos_api(
                 "nombre": str(c.get("Nombre") or "").strip(),
                 "sub_rubro": smap.get(id_sub, f"ID_{id_sub}"),
                 "rubro": rmap.get(id_rub, f"ID_{id_rub}"),
+                "stock": _safe_float(c.get("Stock")),
+                "stock_minimo": _safe_float(c.get("StockMinimo")),
             }
         )
-    df = pd.DataFrame(rows, columns=["sku", "nombre", "sub_rubro", "rubro"])
+    df = pd.DataFrame(
+        rows,
+        columns=["sku", "nombre", "sub_rubro", "rubro", "stock", "stock_minimo"],
+    )
     return session, df
 
 
@@ -448,32 +458,91 @@ def load_combos_api(
     session: ApiSession,
     conceptos_items: list[dict] | None = None,
 ) -> tuple[ApiSession, pd.DataFrame]:
-    """Carga el maestro de combos desde la API.
+    """Carga el maestro de combos desde la API, incluyendo stock derivado.
 
-    Filtra conceptos con `Tipo == "Combo"`.
+    Filtra conceptos con `Tipo == "Combo"`. Para calcular el stock del
+    combo, hace un N+1 sobre cada combo para obtener su composición
+    (`Items: [{Id, Codigo, Cantidad}]`) y aplica la fórmula:
 
-    Produce un DataFrame con el mismo schema que `data_loader.load_combos`:
-        columnas: [sku, nombre]
+        stock_combo = floor(min(stock_componente / cantidad_requerida))
 
-    A diferencia del combos.xlsx (que es una lista de materiales con una
-    fila por ítem del combo), la API devuelve UN registro por combo. No
-    hace falta deduplicar.
+    Si un componente no está en `conceptos_items` (caso raro), se lo
+    ignora para el cálculo — no debería pasar porque todos los
+    componentes son conceptos del mismo catálogo. Si la lista de
+    componentes está vacía, el stock queda en 0.
+
+    Produce un DataFrame con columnas:
+        sku, nombre, stock
+
+    `stock` es un entero (floor) — no tiene sentido decir "0.5 combos
+    armables". Discovery 2026-04-18 confirmó que combos tienen su
+    propio campo `Stock` en Contabilium, pero decidimos calcular
+    derivado desde componentes para ser conservadores (ver decisión).
+
+    N+1: 9 combos en GSU → ~1 s adicional al sync. No se paraleliza
+    (no amerita).
 
     Optimización: ver `load_productos_api`.
     """
     if conceptos_items is None:
         session, conceptos_items = _fetch_all_conceptos(session)
+
+    # Mapa concepto_id → stock disponible (para resolver componentes).
+    stock_by_id: dict[int, float] = {}
+    for c in conceptos_items:
+        cid = c.get("Id")
+        if cid is None:
+            continue
+        try:
+            stock_by_id[int(cid)] = _safe_float(c.get("Stock"))
+        except (TypeError, ValueError):
+            continue
+
     rows = []
     for c in conceptos_items:
         if c.get("Tipo") != "Combo":
             continue
+        combo_id = c.get("Id")
+        if combo_id is None:
+            continue
+
+        # Detalle del combo para obtener sus Items.
+        try:
+            session, detail = api_get(session, f"/api/conceptos/?id={combo_id}")
+        except ApiError:
+            # Si falla el detalle, caemos de vuelta al Stock del listado.
+            rows.append(
+                {
+                    "sku": str(c.get("Codigo") or "").strip(),
+                    "nombre": str(c.get("Nombre") or "").strip(),
+                    "stock": int(_safe_float(c.get("Stock"))),
+                }
+            )
+            continue
+
+        items_comp = detail.get("Items") or []
+        if not items_comp:
+            stock_derivado = 0
+        else:
+            ratios = []
+            for it in items_comp:
+                comp_id = it.get("Id")
+                cantidad_req = _safe_float(it.get("Cantidad"))
+                if comp_id is None or cantidad_req <= 0:
+                    continue
+                stock_comp = stock_by_id.get(int(comp_id), 0.0)
+                ratios.append(stock_comp / cantidad_req)
+            # floor(min(ratios)) — si no hay ratios válidos, 0.
+            stock_derivado = int(min(ratios)) if ratios else 0
+
         rows.append(
             {
                 "sku": str(c.get("Codigo") or "").strip(),
                 "nombre": str(c.get("Nombre") or "").strip(),
+                "stock": stock_derivado,
             }
         )
-    df = pd.DataFrame(rows, columns=["sku", "nombre"])
+    df = pd.DataFrame(rows, columns=["sku", "nombre", "stock"])
     return session, df
 
 
