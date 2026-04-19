@@ -86,20 +86,24 @@ def render(
     resumen = metrics.deuda_vencida_vs_corriente(df_mes)
     dpd_vendedor = metrics.dias_promedio_deuda_por_vendedor(df_mes)
 
-    col_a, col_b, col_c, col_d = st.columns(4)
-    col_a.metric(
+    # 2 filas de 2 columnas para que los montos completos de 7-8 dígitos
+    # entren sin truncarse (UYU puede dar montos grandes).
+    row1_a, row1_b = st.columns(2)
+    row1_a.metric(
         "Deuda total viva (UYU)",
         f"{resumen['total']:,.0f}",
         help="Suma del saldo de todos los comprobantes FAC con saldo > 0.",
     )
-    col_b.metric(
+    row1_b.metric(
         "Deuda vencida (UYU)",
         f"{resumen['vencida']:,.0f}",
         delta=f"{resumen['pct_vencida']:.1f}% del total",
         delta_color="inverse" if resumen["pct_vencida"] > 30 else "off",
         help="Comprobantes con fecha_vencimiento anterior a hoy.",
     )
-    col_c.metric(
+
+    row2_a, row2_b = st.columns(2)
+    row2_a.metric(
         "Deuda corriente (UYU)",
         f"{resumen['corriente']:,.0f}",
         help="Comprobantes cuyo vencimiento aún no llegó (o no tiene fecha).",
@@ -110,7 +114,7 @@ def render(
         if not dpd_vendedor.empty
         else 0.0
     )
-    col_d.metric(
+    row2_b.metric(
         "Días promedio de deuda",
         f"{dpd_global:.0f} días",
         help=(

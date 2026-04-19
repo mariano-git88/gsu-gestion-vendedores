@@ -88,11 +88,15 @@ p, div, span, li {{
 }}
 
 /* ----- Logo en la sidebar (st.logo) ----- */
+/* max-height 280px = 5x el default (56px). max-width 100% evita que
+   el logo se salga de la sidebar si la imagen es más ancha que alta. */
 [data-testid="stLogo"] img,
 [data-testid="stSidebarHeader"] img {{
-    max-height: 56px !important;
+    max-height: 280px !important;
+    max-width: 100% !important;
     width: auto !important;
-    margin: 0.25rem 0 0.5rem 0 !important;
+    height: auto !important;
+    margin: 0.5rem 0 1rem 0 !important;
 }}
 
 /* ----- Sidebar: limpio, casi blanco ----- */
