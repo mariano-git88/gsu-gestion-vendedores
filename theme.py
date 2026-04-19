@@ -99,6 +99,21 @@ p, div, span, li {{
     margin: 0.5rem 0 1rem 0 !important;
 }}
 
+/* El contenedor del logo (stSidebarHeader y stLogo) tiene una altura
+   fija heredada de Streamlit — hay que destrabarla para que el logo
+   grande no se clippee por arriba. */
+[data-testid="stSidebarHeader"],
+[data-testid="stLogo"],
+[data-testid="stSidebarHeader"] > div,
+[data-testid="stLogoSpacer"] {{
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    padding-top: 0.5rem !important;
+    padding-bottom: 0.5rem !important;
+}}
+
 /* ----- Sidebar: limpio, casi blanco ----- */
 [data-testid="stSidebar"] {{
     background-color: {LINE_SOFT};
