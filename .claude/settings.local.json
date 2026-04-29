@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git diff *)",
+      "Bash(python -c \"import ast, sys; mods=['api_loader.py','metrics.py','exports.py','app.py','views/inventario.py','views/cobranzas.py','views/cobertura.py','views/analisis.py','views/resumen.py']; [ast.parse\\(open\\(m\\).read\\(\\), filename=m\\) for m in mods]; print\\('OK syntax'\\)\")",
+      "Bash(python3 -c \"import ast; mods=['api_loader.py','metrics.py','exports.py','app.py','views/inventario.py','views/cobranzas.py','views/cobertura.py','views/analisis.py','views/resumen.py']; [ast.parse\\(open\\(m\\).read\\(\\), filename=m\\) for m in mods]; print\\('OK syntax'\\)\")",
+      "Bash(python3 -c ' *)"
+    ]
+  }
+}

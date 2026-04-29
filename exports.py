@@ -86,24 +86,36 @@ def exportar_agenda_vendedor(
     df_mes: pd.DataFrame,
     df_clientes: pd.DataFrame,
     vendedor: str,
+    df_clientes_act: pd.DataFrame | None = None,
+    df_hist12: pd.DataFrame | None = None,
 ) -> io.BytesIO:
     """
-    Genera la agenda personal de un vendedor como xlsx con 5 hojas.
+    Genera la agenda personal de un vendedor como xlsx (5 o 6 hojas).
 
     Args:
         df_sem: facturación semanal preparada (post transforms).
         df_mes: facturación mensual preparada.
-        df_clientes: maestro de clientes.
+        df_clientes: maestro de clientes (cartera completa, para "Mi
+            cartera" y "Clientes dormidos").
         vendedor: email del vendedor (debe estar en df_clientes.vendedor).
+        df_clientes_act: cartera depurada (clientes activos 12m). Se
+            usa en "Resumen" (cobertura) y "Penetración". Si es None,
+            cae a `df_clientes`.
+        df_hist12: histórico 12 meses ya procesado. Si se pasa, se
+            agrega una hoja "Clientes inactivos" con la lista del
+            vendedor; si es None, esa hoja no se crea.
 
     Devuelve un `io.BytesIO` con el xlsx generado, listo para pasar
     a `st.download_button(data=...)`.
     """
+    if df_clientes_act is None:
+        df_clientes_act = df_clientes
+
     wb = Workbook()
 
     ws1 = wb.active
     ws1.title = "Resumen"
-    _build_resumen(ws1, vendedor, df_sem, df_mes, df_clientes)
+    _build_resumen(ws1, vendedor, df_sem, df_mes, df_clientes_act)
 
     ws2 = wb.create_sheet("Mi cartera")
     _build_mi_cartera(ws2, vendedor, df_sem, df_mes, df_clientes)
@@ -112,10 +124,14 @@ def exportar_agenda_vendedor(
     _build_clientes_dormidos(ws3, vendedor, df_mes, df_clientes)
 
     ws4 = wb.create_sheet("Penetración")
-    _build_penetracion(ws4, vendedor, df_mes, df_clientes)
+    _build_penetracion(ws4, vendedor, df_mes, df_clientes_act)
 
     ws5 = wb.create_sheet("Top 80%")
     _build_top_80(ws5, vendedor, df_mes, df_clientes)
+
+    if df_hist12 is not None and not df_hist12.empty:
+        ws6 = wb.create_sheet("Clientes inactivos")
+        _build_clientes_inactivos(ws6, vendedor, df_clientes, df_hist12)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -451,3 +467,56 @@ def _build_top_80(ws, vendedor, df_mes, df_clientes):
     ws.cell(row=row, column=1, value=f"TOTAL: {len(core)} clientes en CORE 80%").font = BOLD
 
     _set_widths(ws, [14, 42, 16, 14, 14])
+
+
+# =====================================================================
+# Hoja 6 — Clientes inactivos (12m)
+# =====================================================================
+
+def _build_clientes_inactivos(ws, vendedor, df_clientes, df_hist12):
+    """Lista de clientes asignados al vendedor sin FAC en los últimos 12m
+    (de ningún vendedor). Útil para depurar cartera o gestionar baja."""
+    ws["A1"] = "Clientes inactivos (sin compra en 12 meses)"
+    ws["A1"].font = TITLE_FONT
+    ws.merge_cells("A1:E1")
+    ws["A2"] = (
+        "Clientes asignados a vos sin FAC de NINGÚN vendedor en los "
+        "últimos 12 meses. Incluye los que nunca compraron. Candidatos "
+        "a depurar o gestionar baja."
+    )
+    ws["A2"].font = LABEL_FONT
+    ws.merge_cells("A2:E2")
+
+    inactivos = metrics.clientes_inactivos_12m(df_clientes, df_hist12)
+    inactivos_v = inactivos[inactivos["vendedor_asignado"] == vendedor]
+
+    if inactivos_v.empty:
+        ws["A4"] = "Toda tu cartera tuvo al menos una compra en los últimos 12 meses."
+        ws["A4"].font = BOLD
+        return
+
+    headers = ["Documento", "Razón Social", "Última compra", "Monto 12m"]
+    _write_header_row(ws, 4, headers)
+
+    row = 5
+    for _, r in inactivos_v.iterrows():
+        ws.cell(row=row, column=1, value=r["documento"])
+        ws.cell(row=row, column=2, value=r["razon_social"])
+        if pd.isna(r["fecha_ultima_compra"]):
+            ws.cell(row=row, column=3, value="Nunca compró")
+        else:
+            ws.cell(
+                row=row, column=3,
+                value=pd.Timestamp(r["fecha_ultima_compra"]).strftime("%Y-%m-%d"),
+            )
+        c = ws.cell(row=row, column=4, value=float(r["monto_12m"]))
+        c.number_format = MONEY_FMT
+        row += 1
+
+    row += 1
+    ws.cell(
+        row=row, column=1,
+        value=f"TOTAL: {len(inactivos_v)} cliente(s) inactivo(s)",
+    ).font = BOLD
+
+    _set_widths(ws, [14, 42, 16, 16])

@@ -97,6 +97,114 @@ def _calcular_pct_cobertura(con_venta: int, asignados: int) -> float:
 # ANÁLISIS LONGITUDINAL (requieren histórico de 12 meses)
 # =====================================================================
 
+def clientes_activos_12m(
+    df_hist: pd.DataFrame,
+    hoy: pd.Timestamp | None = None,
+    ventana_dias: int = 365,
+) -> set[str]:
+    """
+    Set de `documento` de clientes con al menos una FAC en los últimos
+    `ventana_dias` días, **considerando cualquier vendedor** (no match
+    estricto: la actividad es a nivel cliente, no de la asignación).
+
+    Solo cuenta `tipo == FAC`. Si no hay histórico, devuelve set vacío.
+
+    Esta función habilita el filtro de "cartera depurada": un cliente
+    sin actividad en 12m se considera inactivo y se excluye del
+    denominador de cobertura/penetración. Ver decisión 2026-04-29.
+    """
+    if df_hist is None or df_hist.empty:
+        return set()
+    if hoy is None:
+        hoy = pd.Timestamp.today().normalize()
+    df = df_hist[df_hist["tipo"] == TIPO_FAC].copy()
+    if df.empty:
+        return set()
+    df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
+    desde = hoy - pd.Timedelta(days=ventana_dias)
+    activos = df[df["fecha"] >= desde]["documento"].dropna().astype(str)
+    return set(activos.unique())
+
+
+def clientes_inactivos_12m(
+    df_clientes: pd.DataFrame,
+    df_hist: pd.DataFrame,
+    hoy: pd.Timestamp | None = None,
+    ventana_dias: int = 365,
+) -> pd.DataFrame:
+    """
+    Lista de clientes en cartera **sin FAC de ningún vendedor** en los
+    últimos `ventana_dias` días. Incluye los que nunca compraron (en
+    cuyo caso `fecha_ultima_compra` queda como `NaT` y `monto_12m` = 0).
+
+    Devuelve DataFrame con columnas:
+      documento, razon_social, vendedor_asignado,
+      fecha_ultima_compra, monto_12m
+    Ordenado por vendedor_asignado y razon_social.
+
+    `monto_12m` suma FAC del cliente (cualquier vendedor) en los últimos
+    12 meses — siempre 0 para inactivos por construcción, se incluye por
+    consistencia con la sub-sección y el export.
+    """
+    cols = [
+        "documento", "razon_social", "vendedor_asignado",
+        "fecha_ultima_compra", "monto_12m",
+    ]
+    cartera = (
+        df_clientes[["vendedor", "documento", "razon_social"]]
+        .dropna(subset=["documento"])
+        .drop_duplicates(subset=["documento"])
+        .rename(columns={"vendedor": "vendedor_asignado"})
+    )
+    if cartera.empty:
+        return pd.DataFrame(columns=cols)
+
+    activos = clientes_activos_12m(df_hist, hoy=hoy, ventana_dias=ventana_dias)
+    inactivos = cartera[~cartera["documento"].astype(str).isin(activos)].copy()
+
+    # Última FAC y monto 12m (cualquier vendedor) — para los inactivos
+    # van a venir vacíos o casi, pero los dejamos por consistencia.
+    if df_hist is None or df_hist.empty:
+        ultima = pd.DataFrame(columns=["documento", "fecha_ultima_compra"])
+        montos = pd.DataFrame(columns=["documento", "monto_12m"])
+    else:
+        if hoy is None:
+            hoy = pd.Timestamp.today().normalize()
+        df = df_hist[df_hist["tipo"] == TIPO_FAC].copy()
+        if df.empty:
+            ultima = pd.DataFrame(columns=["documento", "fecha_ultima_compra"])
+            montos = pd.DataFrame(columns=["documento", "monto_12m"])
+        else:
+            df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
+            ultima = (
+                df.groupby("documento", as_index=False)["fecha"]
+                .max()
+                .rename(columns={"fecha": "fecha_ultima_compra"})
+            )
+            desde = hoy - pd.Timedelta(days=ventana_dias)
+            df_12m = df[df["fecha"] >= desde]
+            if df_12m.empty:
+                montos = pd.DataFrame(columns=["documento", "monto_12m"])
+            else:
+                montos = (
+                    df_12m.groupby("documento", as_index=False)["monto"]
+                    .sum()
+                    .rename(columns={"monto": "monto_12m"})
+                )
+
+    inactivos = inactivos.merge(ultima, on="documento", how="left")
+    inactivos = inactivos.merge(montos, on="documento", how="left")
+    inactivos["monto_12m"] = inactivos["monto_12m"].fillna(0).round(2)
+
+    return (
+        inactivos[cols]
+        .sort_values(
+            ["vendedor_asignado", "razon_social"], na_position="last"
+        )
+        .reset_index(drop=True)
+    )
+
+
 def clientes_dormidos(
     df_hist: pd.DataFrame,
     df_clientes: pd.DataFrame,
@@ -615,14 +723,14 @@ def inventario_semanas_stock(
 
     Args:
         df_productos: maestro de productos con columnas sku, nombre,
-            sub_rubro, rubro, stock.
-        df_combos: maestro de combos con columnas sku, nombre, stock
-            (ya calculado derivado de componentes).
+            sub_rubro, rubro, stock, precio.
+        df_combos: maestro de combos con columnas sku, nombre, stock,
+            precio (stock derivado de componentes; precio neto sin IVA).
         df_hist: histórico de 12 meses ya procesado.
         hoy: referencia temporal.
 
     Devuelve DataFrame con columnas:
-      sku, nombre, tipo, sub_rubro, stock,
+      sku, nombre, tipo, sub_rubro, stock, precio, valor_stock,
       venta_sem_ultimo_mes, venta_sem_ultimos_3m, venta_sem_mejor_mes,
       semanas_ultimo_mes, semanas_ultimos_3m, semanas_mejor_mes,
       critico   (True si semanas_ultimos_3m < CRITICIDAD_SEMANAS)
@@ -630,13 +738,14 @@ def inventario_semanas_stock(
 
     Notas:
       - `tipo` = "Producto" o "Combo".
+      - `valor_stock` = stock × precio (UYU netos sin IVA).
       - SKUs sin venta en el corte → semanas = infinito (representado
         como pd.NA). El criticidad flag usa el corte de 3 meses —
         si no hay venta, NO se marca crítico porque no tiene sentido.
       - Stock = 0 con venta positiva → semanas = 0 (ya se acabó).
     """
     cols_out = [
-        "sku", "nombre", "tipo", "sub_rubro", "stock",
+        "sku", "nombre", "tipo", "sub_rubro", "stock", "precio", "valor_stock",
         "venta_sem_ultimo_mes", "venta_sem_ultimos_3m", "venta_sem_mejor_mes",
         "semanas_ultimo_mes", "semanas_ultimos_3m", "semanas_mejor_mes",
         "critico",
@@ -644,14 +753,22 @@ def inventario_semanas_stock(
     if df_productos is None and df_combos is None:
         return pd.DataFrame(columns=cols_out)
 
-    # Unificar productos y combos con columna tipo
+    # Unificar productos y combos con columna tipo. Tolera la ausencia
+    # de `precio` (caches viejos previos a la versión que lo agregó):
+    # cae a 0 y `valor_stock` queda en 0 sin romper.
     partes = []
     if df_productos is not None and not df_productos.empty:
-        p = df_productos[["sku", "nombre", "sub_rubro", "stock"]].copy()
+        p = df_productos.copy()
+        if "precio" not in p.columns:
+            p["precio"] = 0.0
+        p = p[["sku", "nombre", "sub_rubro", "stock", "precio"]]
         p["tipo"] = "Producto"
         partes.append(p)
     if df_combos is not None and not df_combos.empty:
-        c = df_combos[["sku", "nombre", "stock"]].copy()
+        c = df_combos.copy()
+        if "precio" not in c.columns:
+            c["precio"] = 0.0
+        c = c[["sku", "nombre", "stock", "precio"]]
         c["sub_rubro"] = "COMBO"
         c["tipo"] = "Combo"
         partes.append(c)
@@ -659,6 +776,9 @@ def inventario_semanas_stock(
         return pd.DataFrame(columns=cols_out)
 
     base = pd.concat(partes, ignore_index=True)
+    base["valor_stock"] = (
+        base["stock"].astype(float) * base["precio"].astype(float)
+    ).round(2)
 
     # Trae venta semanal por sku (3 cortes)
     if df_hist is None or df_hist.empty:
@@ -1039,6 +1159,119 @@ def deuda_vencida_vs_corriente(
         "n_vencidos": int(vencidos.sum()),
         "n_corrientes": int((~vencidos).sum()),
     }
+
+
+def clientes_venta_reciente_con_deuda_vieja(
+    df_fc: pd.DataFrame,
+    hoy: pd.Timestamp | None = None,
+    ventana_venta_dias: int = 30,
+    umbral_deuda_dias: int = 90,
+) -> pd.DataFrame:
+    """
+    Cruza clientes con venta reciente y deuda vencida vieja.
+
+    Insight cruzado: clientes a los que se les sigue facturando (venta
+    en los últimos `ventana_venta_dias` días) y que **al mismo tiempo**
+    tienen comprobantes vencidos hace más de `umbral_deuda_dias` días.
+    Señala riesgo crediticio y/o falta de coordinación entre ventas y
+    cobranzas.
+
+    Args:
+        df_fc: facturación con campos de cobranzas (`saldo`,
+            `fecha_vencimiento`). Se recomienda pasar el histórico 12m
+            si está disponible — cubre todos los vencimientos viejos;
+            con `df_mes` puede haber falsos negativos (deuda emitida
+            antes del rango).
+        hoy: referencia temporal. Default = hoy.
+        ventana_venta_dias: cuántos días hacia atrás considerar como
+            "venta reciente". Default 30.
+        umbral_deuda_dias: cuántos días desde el vencimiento se
+            considera "deuda vieja". Default 90.
+
+    Devuelve DataFrame con columnas:
+      documento, razon_social, vendedor, monto_venta_reciente,
+      deuda_vieja, fecha_ultima_venta, fecha_venc_mas_vieja
+    Ordenado por deuda_vieja descendente.
+
+    `vendedor` corresponde al de la **venta más reciente** (no el
+    asignado en cartera); es informativo para identificar quién le
+    sigue vendiendo. Esto es coherente con el resto de Cobranzas, que
+    no usa el match estricto.
+    """
+    cols_out = [
+        "documento", "razon_social", "vendedor",
+        "monto_venta_reciente", "deuda_vieja",
+        "fecha_ultima_venta", "fecha_venc_mas_vieja",
+    ]
+    if df_fc is None or df_fc.empty or "saldo" not in df_fc.columns:
+        return pd.DataFrame(columns=cols_out)
+
+    if hoy is None:
+        hoy = pd.Timestamp.today().normalize()
+
+    # --- Venta reciente: FAC en los últimos `ventana_venta_dias` ---
+    df_fac = df_fc[df_fc["tipo"] == TIPO_FAC].copy()
+    if df_fac.empty:
+        return pd.DataFrame(columns=cols_out)
+
+    df_fac["fecha"] = pd.to_datetime(df_fac["fecha"], errors="coerce")
+    desde_venta = hoy - pd.Timedelta(days=ventana_venta_dias)
+    fac_reciente = df_fac[df_fac["fecha"] >= desde_venta]
+    if fac_reciente.empty:
+        return pd.DataFrame(columns=cols_out)
+
+    # Para colapsar a una fila por (documento) tomando el comprobante
+    # más reciente: nos quedamos con el vendedor de la última venta.
+    fac_reciente = fac_reciente.sort_values("fecha", ascending=False)
+    ultima_venta = (
+        fac_reciente.drop_duplicates(subset=["documento"])
+        [["documento", "vendedor", "fecha"]]
+        .rename(columns={"fecha": "fecha_ultima_venta"})
+    )
+    monto_reciente = (
+        fac_reciente.groupby("documento", as_index=False)["monto"]
+        .sum()
+        .rename(columns={"monto": "monto_venta_reciente"})
+    )
+    venta = ultima_venta.merge(monto_reciente, on="documento", how="left")
+
+    # --- Deuda vieja: comprobantes con vencimiento > umbral_deuda_dias ---
+    deuda = _deuda_viva_por_comprobante(df_fc)
+    if deuda.empty:
+        return pd.DataFrame(columns=cols_out)
+
+    deuda = deuda.copy()
+    deuda["fecha_vencimiento"] = pd.to_datetime(
+        deuda["fecha_vencimiento"], errors="coerce"
+    )
+    deuda["dias_vencido"] = (hoy - deuda["fecha_vencimiento"]).dt.days
+    deuda_vieja = deuda[deuda["dias_vencido"] > umbral_deuda_dias]
+    if deuda_vieja.empty:
+        return pd.DataFrame(columns=cols_out)
+
+    deuda_agg = (
+        deuda_vieja.groupby(["documento", "razon_social"], as_index=False)
+        .agg(
+            deuda_vieja=("saldo", "sum"),
+            fecha_venc_mas_vieja=("fecha_vencimiento", "min"),
+        )
+    )
+    deuda_agg["deuda_vieja"] = deuda_agg["deuda_vieja"].round(2)
+
+    # --- Cruce: ambos conjuntos ---
+    cruce = venta.merge(deuda_agg, on="documento", how="inner")
+    if cruce.empty:
+        return pd.DataFrame(columns=cols_out)
+
+    cruce["monto_venta_reciente"] = (
+        cruce["monto_venta_reciente"].fillna(0).round(2)
+    )
+
+    return (
+        cruce[cols_out]
+        .sort_values("deuda_vieja", ascending=False)
+        .reset_index(drop=True)
+    )
 
 
 def comparativa_temporal(

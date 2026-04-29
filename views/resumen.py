@@ -21,6 +21,7 @@ def render(
     df_clientes: pd.DataFrame,
     health_sem: dict | None = None,
     health_mes: dict | None = None,
+    df_clientes_act: pd.DataFrame | None = None,
 ) -> None:
     """
     Renderiza la vista de resumen.
@@ -34,7 +35,12 @@ def render(
             el monto de NCF descuentos no descontadas (transparencia para
             cuadrar contra Excel).
         health_mes: idem para la planilla mensual.
+        df_clientes_act: cartera depurada (clientes activos en 12m), si
+            el toggle está activo. Se usa para el cálculo de cobertura.
+            Si es None, cae a `df_clientes` (comportamiento legacy).
     """
+    if df_clientes_act is None:
+        df_clientes_act = df_clientes
     health_sem = health_sem or {}
     health_mes = health_mes or {}
 
@@ -163,7 +169,7 @@ def render(
         "al menos una venta FAC en el mes."
     )
 
-    cob = metrics.cobertura_por_vendedor(df_mes, df_clientes)
+    cob = metrics.cobertura_por_vendedor(df_mes, df_clientes_act)
     if cob.empty:
         st.info("Sin datos de cobertura para mostrar.")
     else:

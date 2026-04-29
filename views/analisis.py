@@ -105,9 +105,16 @@ def render(
     df_clientes: pd.DataFrame,
     health_sem: dict | None = None,
     health_mes: dict | None = None,
+    df_clientes_act: pd.DataFrame | None = None,
 ) -> None:
-    """Args ver views/resumen.py. health_sem y health_mes no se usan acá."""
+    """Args ver views/resumen.py. health_sem y health_mes no se usan acá.
+
+    `df_clientes_act` se usa en penetración y heatmap; los bloques de
+    retención/frecuencia siguen usando `df_clientes` (cartera completa)."""
     del health_sem, health_mes  # firma uniforme con las otras vistas
+
+    if df_clientes_act is None:
+        df_clientes_act = df_clientes
 
     st.subheader("Análisis profundo")
     st.caption(
@@ -140,12 +147,12 @@ def render(
         st.info("No hay datos para el período seleccionado.")
         return
 
-    # Bloque 1
-    _seccion_penetracion(df, df_clientes)
+    # Bloque 1 — penetración usa cartera depurada
+    _seccion_penetracion(df, df_clientes_act)
 
-    # Bloque 2
+    # Bloque 2 — heatmap usa cartera depurada
     st.divider()
-    _seccion_heatmap(df, df_clientes)
+    _seccion_heatmap(df, df_clientes_act)
 
     # Bloque 3
     st.divider()

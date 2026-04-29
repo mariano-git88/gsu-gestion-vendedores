@@ -30,6 +30,7 @@ import api_loader
 import auth
 import data_loader
 import exports
+import metrics
 import theme
 import transforms
 import tutorial
@@ -257,9 +258,14 @@ def _prepare_cached(df_fc, df_cli, df_prod, df_comb, df_fam):
 
 
 @st.cache_data(show_spinner="Generando agenda...")
-def _agenda_bytes_cached(df_sem, df_mes, df_clientes, vendedor: str) -> bytes:
+def _agenda_bytes_cached(
+    df_sem, df_mes, df_clientes, vendedor: str,
+    df_clientes_act=None, df_hist12=None,
+) -> bytes:
     return exports.exportar_agenda_vendedor(
-        df_sem, df_mes, df_clientes, vendedor
+        df_sem, df_mes, df_clientes, vendedor,
+        df_clientes_act=df_clientes_act,
+        df_hist12=df_hist12,
     ).getvalue()
 
 
@@ -800,6 +806,57 @@ st.session_state.df_hist12 = _prepare_comparativo(
 
 
 # =====================================================================
+# CARTERA DEPURADA — toggle "Excluir clientes inactivos (>12m)"
+# =====================================================================
+#
+# Cuando hay histórico cargado, ofrecemos al usuario la opción de
+# trabajar con la "cartera viva": clientes con FAC en los últimos 12
+# meses (de cualquier vendedor). Los inactivos quedan fuera del
+# denominador de cobertura/penetración pero siguen visibles en una
+# sub-sección dedicada y exportables. Ver decisión 2026-04-29.
+df_hist12 = st.session_state.get("df_hist12")
+_hay_hist12 = df_hist12 is not None and not df_hist12.empty
+
+with st.sidebar:
+    st.divider()
+    st.header("Cartera")
+    if _hay_hist12:
+        _excluir_inactivos = st.checkbox(
+            "Excluir clientes inactivos (>12m sin compra)",
+            value=True,
+            key="excluir_inactivos_12m",
+            help=(
+                "Filtra el denominador de cobertura/penetración a "
+                "clientes con FAC en los últimos 12 meses (cualquier "
+                "vendedor). NO afecta clientes dormidos / nuevos / "
+                "retención / frecuencia."
+            ),
+        )
+    else:
+        _excluir_inactivos = False
+        st.checkbox(
+            "Excluir clientes inactivos (>12m sin compra)",
+            value=False,
+            disabled=True,
+            help="Cargá el histórico de 12 meses para habilitar esta opción.",
+            key="excluir_inactivos_12m",
+        )
+        st.caption(
+            "Cargá el histórico 12m para depurar la cartera. "
+            "Mientras tanto incluye toda la cartera asignada."
+        )
+
+# Calcular cartera depurada (`df_clientes_act`) según el toggle.
+if _excluir_inactivos and _hay_hist12:
+    _activos = metrics.clientes_activos_12m(df_hist12)
+    df_clientes_act = df_clientes[
+        df_clientes["documento"].astype(str).isin(_activos)
+    ].copy()
+else:
+    df_clientes_act = df_clientes
+
+
+# =====================================================================
 # SIDEBAR — bloque de exportar agenda (necesita datos ya cargados)
 # =====================================================================
 
@@ -823,7 +880,9 @@ with st.sidebar:
             key="export_vendedor_sel",
         )
         _agenda_bytes = _agenda_bytes_cached(
-            df_sem, df_mes, df_clientes, _v_export
+            df_sem, df_mes, df_clientes, _v_export,
+            df_clientes_act=df_clientes_act,
+            df_hist12=df_hist12,
         )
         _nombre_archivo = f"agenda_{_v_export.split('@')[0].lower()}.xlsx"
         st.download_button(
@@ -944,13 +1003,22 @@ if _has_red_alerts(health_sem) or _has_red_alerts(health_mes):
 )
 
 with tab_resumen:
-    resumen.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
+    resumen.render(
+        df_sem, df_mes, df_clientes, health_sem, health_mes,
+        df_clientes_act=df_clientes_act,
+    )
 with tab_sub_rubro:
     sub_rubro.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
 with tab_cobertura:
-    cobertura.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
+    cobertura.render(
+        df_sem, df_mes, df_clientes, health_sem, health_mes,
+        df_clientes_act=df_clientes_act,
+    )
 with tab_analisis:
-    analisis.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
+    analisis.render(
+        df_sem, df_mes, df_clientes, health_sem, health_mes,
+        df_clientes_act=df_clientes_act,
+    )
 with tab_cobranzas:
     cobranzas.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
 with tab_inventario:

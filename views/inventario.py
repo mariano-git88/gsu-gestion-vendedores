@@ -47,7 +47,9 @@ def render(
         "de stock** bajo 3 cortes de venta semanal promedio. El stock de "
         "combos se calcula derivando de sus componentes — lo que permite "
         "armar efectivamente. Los SKUs con **menos de 4 semanas** de stock "
-        "según el corte de 3 meses se marcan **críticos** (en rojo)."
+        "según el corte de 3 meses se marcan **críticos** (en rojo). El "
+        "**valor de stock** está en **UYU netos sin IVA** (precio de "
+        "venta dividido 1.22), comparable con los montos del Resumen."
     )
 
     # Degradación — Modo Manual no tiene stock
@@ -100,7 +102,8 @@ def render(
     n_total = len(inv)
     n_criticos = int(inv["critico"].sum())
     stock_total_unidades = float(inv["stock"].sum())
-    col_a, col_b, col_c = st.columns(3)
+    valor_total = float(inv["valor_stock"].sum()) if "valor_stock" in inv.columns else 0.0
+    col_a, col_b, col_c, col_d = st.columns(4)
     col_a.metric(
         "SKUs totales",
         f"{n_total:,}",
@@ -118,9 +121,17 @@ def render(
         ),
     )
     col_c.metric(
-        "Unidades en stock (total)",
+        "Unidades en stock",
         f"{stock_total_unidades:,.0f}",
         help="Suma de unidades en stock de todos los SKUs.",
+    )
+    col_d.metric(
+        "Valor de stock (UYU)",
+        f"{valor_total:,.0f}",
+        help=(
+            "Suma de stock × precio neto de cada SKU. UYU sin IVA "
+            "(PrecioFinal / 1.22). Comparable con los montos del Resumen."
+        ),
     )
 
     # ===== Filtros =====
@@ -170,11 +181,15 @@ def render(
 
     # Formato y orden de columnas para display
     display_cols = [
-        "sku", "nombre", "tipo", "sub_rubro", "stock",
+        "sku", "nombre", "tipo", "sub_rubro", "stock", "valor_stock",
         "venta_sem_ultimo_mes", "venta_sem_ultimos_3m", "venta_sem_mejor_mes",
         "semanas_ultimo_mes", "semanas_ultimos_3m", "semanas_mejor_mes",
         "critico",
     ]
+    # Caches viejos previos a la versión que agregó `valor_stock` no
+    # tienen la columna; degradar elegantemente.
+    if "valor_stock" not in vista.columns:
+        display_cols = [c for c in display_cols if c != "valor_stock"]
 
     # Styling: filas críticas con fondo rojo muy suave
     def _highlight_critico(row: pd.Series) -> list[str]:
@@ -189,6 +204,7 @@ def render(
         .format(
             {
                 "stock": "{:,.0f}",
+                "valor_stock": "{:,.0f}",
                 "venta_sem_ultimo_mes": "{:,.1f}",
                 "venta_sem_ultimos_3m": "{:,.1f}",
                 "venta_sem_mejor_mes": "{:,.1f}",
@@ -209,6 +225,10 @@ def render(
             "tipo": st.column_config.TextColumn("Tipo", width="small"),
             "sub_rubro": st.column_config.TextColumn("Sub-rubro", width="small"),
             "stock": st.column_config.NumberColumn("Stock"),
+            "valor_stock": st.column_config.NumberColumn(
+                "Valor (UYU)",
+                help="Stock × precio neto sin IVA.",
+            ),
             "venta_sem_ultimo_mes": st.column_config.NumberColumn(
                 "Vta/sem ú.mes",
                 help="Venta semanal promedio últimos 30 días.",

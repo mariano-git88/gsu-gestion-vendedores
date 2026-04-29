@@ -424,11 +424,15 @@ endpoint adicional** — los campos se agregan al pull de maestros.
 
 **Schema enriquecido del maestro:**
 
-- `df_productos` ahora incluye columnas `stock` (float, unidades) y
-  `stock_minimo` (float, umbral que GSU setea en el ERP).
+- `df_productos` ahora incluye columnas `stock` (float, unidades),
+  `stock_minimo` (float, umbral que GSU setea en el ERP) y `precio`
+  (float, **PrecioFinal / 1.22** — neto sin IVA básico UY).
 - `df_combos` incluye columna `stock` **derivada de componentes**:
   `stock_combo = floor(min(stock_componente / cantidad_requerida))`.
+  También trae `precio` (PrecioFinal del combo, neto sin IVA).
   Requiere N+1 sobre los combos (9 en GSU ≈ 1 s adicional).
+- Constante `IVA_BASICO_UY = 1.22` en `api_loader.py`. Helper
+  `_precio_neto(v)` tolera tanto número directo como string locale UY.
 
 **Funciones de cálculo** (`metrics.py`):
 
@@ -445,6 +449,10 @@ endpoint adicional** — los campos se agregan al pull de maestros.
 
 **Reglas de inventario:**
 
+- **Stock valorizado** (KPI + columna `valor_stock` = `stock × precio`,
+  UYU netos sin IVA). Visible en la tab Inventario como cuarto KPI
+  arriba y como columna en la tabla. Comparable con los montos del
+  Resumen (que también son netos). Ver decisión 2026-04-29.
 - **Consolidado por SKU** (sin desglose por depósito — Contabilium UY
   no expone endpoint de depósitos y Mariano confirmó que con
   consolidado alcanza).
@@ -496,6 +504,15 @@ a una fila por comprobante vía `_deuda_viva_por_comprobante`):
   saldo > 0. Proxy de DSO sin necesitar el endpoint de cobranzas.
 - `deuda_vencida_vs_corriente(df, hoy)` → dict con total, vencida,
   corriente, pct_vencida, n_vencidos, n_corrientes.
+- `clientes_venta_reciente_con_deuda_vieja(df, hoy,
+  ventana_venta_dias=30, umbral_deuda_dias=90)` → cruce: clientes a
+  los que se les facturó (FAC) en los últimos 30 días Y al mismo
+  tiempo tienen comprobantes vencidos hace >90 días con saldo. Bloque
+  visible al final de la tab Cobranzas. Ventanas fijas (no respetan
+  el período seleccionado). Fuente con preferencia df_hist12 →
+  df_tri → df_mes (la tab elige la mejor disponible). Vendedor
+  reportado = el de la venta más reciente (no el asignado). Ver
+  decisión 2026-04-29.
 
 **Reglas de cobranzas:**
 
@@ -557,6 +574,50 @@ de `cobertura_pct` muestra dos columnas derivadas que dan señal de
 
 Ambas se calculan sobre FAC en cartera propia (match estricto), igual
 que `cobertura_pct`. NCF no cuentan.
+
+### Cartera depurada por actividad 12m (toggle ON con histórico)
+
+Cuando hay histórico 12m cargado, la sidebar muestra un checkbox
+**"Excluir clientes inactivos (>12m sin compra)"** (default ON,
+deshabilitado si no hay histórico). Cuando el toggle está activo,
+los clientes **sin FAC de ningún vendedor en los últimos 365 días**
+quedan **fuera del denominador** de:
+
+- Cobertura general / por sub-rubro / por SKU.
+- "Clientes que NO compraron este SKU en el mes".
+- Penetración por sub-rubro (matriz pivot).
+- Heatmap cliente × sub-rubro.
+
+NO afecta: Pareto, concentración 80, mix top-3 (operan sobre venta);
+Clientes dormidos / Nuevos / Retención / Frecuencia (operan sobre
+comportamiento, usan cartera completa).
+
+**Helpers en `metrics.py`:**
+
+- `clientes_activos_12m(df_hist, hoy, ventana_dias=365) -> set[str]`
+  — set de documentos con FAC de **cualquier vendedor** en la
+  ventana. Match a nivel cliente, no a la asignación.
+- `clientes_inactivos_12m(df_clientes, df_hist, hoy) -> DataFrame`
+  — cartera asignada menos los activos, con `documento`,
+  `razon_social`, `vendedor_asignado`, `fecha_ultima_compra` (NaT
+  si nunca), `monto_12m` (siempre 0 por construcción).
+
+**Definición de actividad**: solo `tipo == FAC`, cualquier vendedor
+cuenta, ventana 365 días absolutos (no calendario).
+
+**Convivencia con "Cliente dormido"**: son **dos conceptos distintos**.
+Dormido (>90d) sigue en cartera, alertable; aparece en la sub-sección
+existente. Inactivo (>365d, incluye los que nunca compraron) queda
+fuera del denominador y aparece en la nueva sub-sección.
+
+**Sub-sección nueva** "Clientes inactivos (12m)" al final de
+`views/cobertura.py` con tabla, filtro por vendedor asignado y
+botón **Descargar inactivos.csv**. También se agrega como **hoja
+"Clientes inactivos"** en el export de agenda personal cuando
+`df_hist12` está disponible.
+
+Ver entrada 2026-04-29 en `_learning/decisions.md` para el racional
+y las alternativas descartadas.
 
 ### Cobertura de clientes
 

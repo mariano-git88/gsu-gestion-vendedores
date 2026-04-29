@@ -1262,3 +1262,189 @@ Smoke test in-memory con 5 productos + 1 combo:
   como "Combo" en el ERP).
 
 **Confirmado por:** Mariano, sesión 2026-04-18.
+
+---
+
+## 2026-04-29 — Stock valorizado en tab Inventario (precio neto)
+
+### Decisión
+
+Agregar **stock valorizado** a la tab Inventario:
+
+- **Precio**: `PrecioFinal` del concepto en Contabilium, dividido por
+  1.22 (IVA básico UY 22%) para que sea **neto sin IVA** y comparable
+  con el `monto` del Resumen/Sub-rubro/Análisis.
+- **Schema enriquecido**: nueva columna `precio` (float) en
+  `df_productos` y en `df_combos` (`api_loader.py`). Helper
+  `_precio_neto(v)` tolera tanto número directo como string locale UY.
+  Constante `IVA_BASICO_UY = 1.22` al tope del módulo.
+- **Métricas**: `metrics.inventario_semanas_stock` agrega columna
+  `valor_stock = stock × precio` (UYU netos sin IVA).
+- **UI** (`views/inventario.py`):
+  - Cuarto KPI arriba "Valor de stock (UYU)".
+  - Columna `valor_stock` en la tabla, después de `stock`.
+  - Caption explica neto sin IVA.
+  - Modo Manual: valor_stock = 0 (xlsx no trae precio); columna se
+    oculta elegantemente si falta.
+
+### Alternativas descartadas
+
+- **Bruto con IVA** (precio de lista directo, sin dividir). Más
+  simple pero rompe la comparabilidad con los montos del resto del
+  dashboard. Mariano eligió neto explícitamente.
+- **Valorizar a costo** (lectura CFO). Útil pero requiere otro pull
+  o campo (`PrecioCompra`) y la lectura comercial es el caso
+  primario para la reunión semanal.
+- **No valorizar combos**. Si el inventario incluye combos en
+  unidades, omitirlos del valor da una foto incompleta. Combos usan
+  su `PrecioFinal` propio (no la suma de componentes — Contabilium
+  ya lo gestiona).
+- **Hardcodear el factor IVA en los views**. Centralización: la
+  división vive en `_precio_neto` del loader y el resto del
+  pipeline trabaja siempre con netos.
+
+### Cache caveat
+
+Cambia el schema del maestro de productos/combos. Después del
+deploy hay que tocar **'Resync forzado'** + 'Sincronizar' para que
+aparezca `precio` (mismo patrón que con Cobranzas e Inventario).
+
+**Confirmado por:** Mariano, sesión 2026-04-29.
+
+---
+
+## 2026-04-29 — Insight cruzado: venta 30d + deuda >90d en Cobranzas
+
+### Decisión
+
+Bloque nuevo al final de la tab Cobranzas: **"Clientes con venta
+reciente y deuda vieja"**. Lista los clientes a los que se les
+facturó en los **últimos 30 días** (FAC) y al mismo tiempo tienen
+comprobantes vencidos hace **más de 90 días** con saldo > 0.
+
+- **Ventanas fijas**, no respetan el período seleccionado: 30 días
+  de venta y 90 días de vencimiento son umbrales operativos, no
+  derivados del rango de sync. Mantenerlos fijos hace el insight
+  comparable entre semanas.
+- **Función nueva** `metrics.clientes_venta_reciente_con_deuda_vieja(
+  df_fc, hoy, ventana_venta_dias=30, umbral_deuda_dias=90)`. Reutiliza
+  `_deuda_viva_por_comprobante` para la parte de saldos.
+- **Vendedor reportado** = el de la **venta más reciente** (no el
+  asignado en cartera). Coherente con el resto de Cobranzas.
+- **Fuente con preferencia**: `df_hist12 > df_tri > df_mes`. La tab
+  elige la mejor disponible y avisa en caption. Con histórico 12m
+  se ven todos los vencimientos viejos; con `df_mes` se pueden
+  perder facturas emitidas hace >120 días.
+- **NCF no cuentan como deuda** (consistente con el resto de
+  Cobranzas).
+- **UI**: tabla con razón social, vendedor, monto venta 30d, deuda
+  vieja, fechas. Filtro opcional por vendedor.
+
+### Alternativas descartadas
+
+- **Respetar el período seleccionado** (Mes/Semana/Trimestre). El
+  insight tiene umbrales semánticos propios; la ventana del sync
+  no debería moverlos.
+- **Solo histórico 12m obligatorio**. Degrada elegante a trimestre
+  o mes con caption explicativo.
+- **Match estricto vendedor=asignado**. El insight es "el cliente
+  debe Y le seguimos vendiendo", no es de cobertura.
+- **Mostrar comprobantes individuales** en lugar de agregar por
+  cliente. Más detalle pero menos accionable. Drill-down si Mariano
+  lo pide.
+
+### Validación
+
+Smoke test sintético con 7 comprobantes (4 clientes en estados
+mixtos): solo D1 (venta 10d + deuda 120d) cae en el cruce. ✓
+
+**Confirmado por:** Mariano, sesión 2026-04-29.
+
+---
+
+## 2026-04-29 — Cartera depurada por actividad 12m (toggle ON default)
+
+### Decisión
+
+Filtro de "cartera viva" para Cobertura y Análisis: cuando hay
+histórico 12m cargado, los clientes **sin FAC de ningún vendedor en
+los últimos 365 días** se excluyen del **denominador** de
+cobertura, sub-rubro y SKU. Convive con el concepto "Cliente
+dormido" (90d, alertable):
+
+- **Dormido (>90d)**: sigue en cartera, alertable. Sub-sección
+  Cobertura → Clientes dormidos. **No se toca.**
+- **Inactivo (>365d, incluye los que nunca compraron)**: fuera del
+  denominador. Sub-sección nueva → Clientes inactivos. Exportable.
+
+### Implementación
+
+- **Helpers nuevos en `metrics.py`**:
+  - `clientes_activos_12m(df_hist, hoy, ventana_dias=365) -> set[str]`
+    — set de documentos con FAC de **cualquier vendedor** en la
+    ventana. Match a nivel cliente, no a la asignación.
+  - `clientes_inactivos_12m(df_clientes, df_hist, hoy) -> DataFrame`
+    — cartera asignada menos los activos, con `documento`,
+    `razon_social`, `vendedor_asignado`, `fecha_ultima_compra` (NaT
+    si nunca), `monto_12m` (siempre 0 por construcción).
+- **Toggle en sidebar** (`app.py`): checkbox **"Excluir clientes
+  inactivos (>12m sin compra)"**, default **ON** cuando hay
+  histórico, deshabilitado con caption si no hay. Cuando se activa,
+  `df_clientes_act = df_clientes[documento ∈ activos]`.
+- **Propagación**: nuevo kwarg `df_clientes_act` (default = None →
+  cae a `df_clientes`) en las firmas de:
+  - `views/resumen.py` (cobertura general).
+  - `views/cobertura.py` (cobertura general / sub-rubro / SKU /
+    no compraron SKU).
+  - `views/analisis.py` (penetración, heatmap).
+  - `exports.exportar_agenda_vendedor` (Resumen y Penetración).
+- **NO se toca**: Pareto, concentración 80, mix top-3 (operan sobre
+  venta, no cartera); Clientes dormidos, Nuevos, Retención,
+  Frecuencia (operan sobre comportamiento, usan cartera completa).
+- **Sub-sección nueva** "Clientes inactivos (12m)" al final de
+  `views/cobertura.py` con tabla, filtro por vendedor asignado y
+  botón **Descargar inactivos.csv**.
+- **Hoja nueva "Clientes inactivos"** en
+  `exports.exportar_agenda_vendedor` cuando se pasa `df_hist12`.
+  Solo lista los del vendedor.
+
+### Definición de "actividad"
+
+- **Cualquier vendedor cuenta** (no match estricto). El objetivo es
+  limpiar clientes muertos del denominador, no penalizar al
+  asignado por una venta cruzada que no controla. Es diferente del
+  cálculo de cobertura, que SÍ usa match estricto.
+- **Solo FAC** (NCF no cuenta como actividad).
+- **Ventana 365 días**, no calendario (12 meses) — más predecible y
+  sin bordes raros con meses de distinta longitud.
+
+### Alternativas descartadas
+
+- **Match estricto vendedor=asignado para definir actividad**.
+  Penalizaría al asignado por una venta cruzada que no controla.
+- **Auto-aplicar siempre que haya histórico** (sin toggle). Deja al
+  usuario comparar contra el comportamiento histórico si lo
+  necesita y evita confusión.
+- **Unificar dormido e inactivo bajo un solo umbral configurable**.
+  Son dos conceptos distintos: dormido (90d) es "alertable, hay que
+  reactivar", inactivo (>12m) es "candidato a baja".
+- **Bloquear cobertura/penetración si no hay histórico**. Degrada
+  con cartera completa + caption.
+
+### Validación
+
+Smoke test sintético:
+- 4 clientes en cartera (1 nunca compró, 1 hace 400d, 1 hace 60d,
+  1 hace 300d a otro vendedor).
+- `clientes_activos_12m` = {D1, D3} ✓ (D3 contó pese a venta cruzada).
+- `clientes_inactivos_12m` lista D2 y D4 ✓.
+- Cobertura V1: 33.3% (3/3 asignados, 1 con venta) → con cartera
+  depurada D2 fuera → 50% (2 asignados, 1 con venta) ✓.
+
+### Cache caveat
+
+`@st.cache_data` de `_agenda_bytes_cached` ahora incluye
+`df_clientes_act` y `df_hist12` en la key — al cambiar el toggle o
+al cargar histórico, la agenda se regenera.
+
+**Confirmado por:** Mariano, sesión 2026-04-29.

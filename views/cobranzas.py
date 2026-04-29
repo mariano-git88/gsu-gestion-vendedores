@@ -235,3 +235,98 @@ def render(
             use_container_width=True,
             hide_index=True,
         )
+
+    # ===== Bloque 5: Venta reciente + deuda vieja =====
+    st.divider()
+    st.markdown("### Clientes con venta reciente y deuda vieja")
+    st.caption(
+        "Clientes a los que se les facturó en los **últimos 30 días** y "
+        "que al mismo tiempo tienen comprobantes vencidos hace **más de "
+        "90 días**. Señal de riesgo crediticio: se les sigue vendiendo "
+        "pese a que la cobranza está retrasada. **Vendedor** = el que "
+        "hizo la venta más reciente."
+    )
+
+    # Para cubrir bien la deuda vieja >90d necesitamos un rango amplio.
+    # Preferimos histórico 12m, después trimestre, sino df_mes.
+    df_hist12 = st.session_state.get("df_hist12")
+    df_tri = st.session_state.get("df_tri")
+    if df_hist12 is not None and not df_hist12.empty:
+        fuente_cruce = df_hist12
+        fuente_label = "histórico de 12 meses"
+    elif df_tri is not None and not df_tri.empty:
+        fuente_cruce = df_tri
+        fuente_label = "trimestre (3 meses)"
+    else:
+        fuente_cruce = df_mes
+        fuente_label = "mes en curso"
+
+    cruce = metrics.clientes_venta_reciente_con_deuda_vieja(fuente_cruce)
+    st.caption(
+        f"Fuente: **{fuente_label}**. "
+        + (
+            "Cargá el histórico 12m desde la sidebar para máxima cobertura."
+            if fuente_label != "histórico de 12 meses"
+            else "Máxima cobertura."
+        )
+    )
+
+    if cruce.empty:
+        st.success(
+            "No hay clientes con venta reciente y deuda vieja en la "
+            "fuente disponible."
+        )
+    else:
+        # Filtro opcional por vendedor (vendedor de la venta reciente)
+        _vend_cruce = sorted(
+            cruce["vendedor"].dropna().astype(str).unique().tolist()
+        )
+        _sel_cruce = st.selectbox(
+            "Filtrar por vendedor",
+            options=["(Todos)"] + _vend_cruce,
+            key="cruce_venta_deuda_vendedor",
+        )
+        vista_cruce = (
+            cruce
+            if _sel_cruce == "(Todos)"
+            else cruce[cruce["vendedor"] == _sel_cruce]
+        )
+
+        vista_cruce = vista_cruce.copy()
+        vista_cruce["fecha_ultima_venta"] = vista_cruce[
+            "fecha_ultima_venta"
+        ].apply(
+            lambda d: "—" if pd.isna(d) else pd.Timestamp(d).strftime("%Y-%m-%d")
+        )
+        vista_cruce["fecha_venc_mas_vieja"] = vista_cruce[
+            "fecha_venc_mas_vieja"
+        ].apply(
+            lambda d: "—" if pd.isna(d) else pd.Timestamp(d).strftime("%Y-%m-%d")
+        )
+        st.dataframe(
+            vista_cruce.style.format(
+                {
+                    "monto_venta_reciente": "{:,.0f}",
+                    "deuda_vieja": "{:,.0f}",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "monto_venta_reciente": st.column_config.NumberColumn(
+                    "Venta 30d (UYU)",
+                    help="Suma de FAC al cliente en los últimos 30 días (neto).",
+                ),
+                "deuda_vieja": st.column_config.NumberColumn(
+                    "Deuda >90d (UYU)",
+                    help="Saldo bruto con IVA de comprobantes vencidos hace >90 días.",
+                ),
+                "fecha_ultima_venta": st.column_config.TextColumn(
+                    "Última venta",
+                ),
+                "fecha_venc_mas_vieja": st.column_config.TextColumn(
+                    "Venc. más viejo",
+                ),
+            },
+        )
+        st.caption(f"Total: {len(vista_cruce)} cliente(s) en el cruce.")

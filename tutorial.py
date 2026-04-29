@@ -276,6 +276,15 @@ def render() -> None:
              vendedor distinto al asignado, igual aparece — porque la
              oportunidad de venta para el vendedor asignado sigue
              abierta.
+
+        7. **Clientes inactivos (12m)** (requiere histórico 12m) —
+           clientes en cartera **sin FAC de ningún vendedor en los
+           últimos 12 meses** (incluye los que nunca compraron).
+           Candidatos a depurar. **Toggle en sidebar "Excluir clientes
+           inactivos"** (default ON con histórico): cuando está activo,
+           los inactivos quedan **fuera del denominador** de cobertura
+           y penetración. Tiene su propio botón **Descargar
+           inactivos.csv** y aparece como hoja en la agenda personal.
         """
     )
 
@@ -362,6 +371,15 @@ def render() -> None:
            hoy. Valores altos = cartera que envejece. Útil para
            complementar las métricas de venta con una lectura de
            calidad de cobranza.
+
+        5. **Clientes con venta reciente y deuda vieja** — el cruce
+           accionable: clientes a los que **se les facturó en los
+           últimos 30 días** y que al mismo tiempo tienen
+           **comprobantes vencidos hace más de 90 días** con saldo.
+           Señal de riesgo: se les sigue vendiendo pese a deuda
+           crónica. Vendedor reportado = el de la venta más reciente.
+           Para máxima cobertura cargá el **histórico 12m** (sin él
+           se puede perder deuda emitida hace más de 4 meses).
         """
     )
 
@@ -391,9 +409,15 @@ def render() -> None:
           demanda activa que proteger).
 
         **KPIs arriba**: SKUs totales, SKUs críticos (con % del total),
-        unidades totales en stock.
+        unidades totales en stock, **valor de stock (UYU netos sin
+        IVA)** — `stock × precio` sumado en todos los SKUs. Es
+        comparable con los montos del Resumen.
 
         **Filtros**: Tipo (Producto / Combo), Sub-rubro, Solo críticos.
+
+        La tabla incluye columna **"Valor (UYU)"** = stock × precio
+        del SKU. El precio viene de `PrecioFinal` de Contabilium
+        dividido por 1.22 para que sea neto sin IVA.
         """
     )
 

@@ -25,14 +25,21 @@ def render(
     df_clientes: pd.DataFrame,
     health_sem: dict | None = None,
     health_mes: dict | None = None,
+    df_clientes_act: pd.DataFrame | None = None,
 ) -> None:
     """
     Args:
         df_sem, df_mes, df_clientes: ver views/resumen.py.
         health_sem, health_mes: por consistencia de firma con resumen.py.
             Esta vista no los usa actualmente.
+        df_clientes_act: cartera depurada (clientes activos 12m). Se usa
+            para todas las métricas de cobertura/penetración. La sub-
+            sección "Clientes inactivos" usa la cartera completa.
     """
     del health_sem, health_mes  # actualmente no se usan acá
+
+    if df_clientes_act is None:
+        df_clientes_act = df_clientes
 
     st.subheader("Cobertura de clientes")
 
@@ -74,7 +81,7 @@ def render(
         "riesgo). **Mix top-3**: los 3 sub-rubros con mayor participación "
         "en la venta del vendedor."
     )
-    cob = metrics.cobertura_por_vendedor(df, df_clientes)
+    cob = metrics.cobertura_por_vendedor(df, df_clientes_act)
     if cob.empty:
         st.info("Sin datos de cobertura general.")
     else:
@@ -101,7 +108,7 @@ def render(
         "Para cada (vendedor, sub-rubro), cuántos clientes asignados al "
         "vendedor compraron al menos un producto de ese sub-rubro."
     )
-    cob_sr = metrics.cobertura_por_sub_rubro(df, df_clientes)
+    cob_sr = metrics.cobertura_por_sub_rubro(df, df_clientes_act)
     if cob_sr.empty:
         st.info("Sin datos de cobertura por sub-rubro.")
     else:
@@ -129,7 +136,7 @@ def render(
         options=skus,
         key="cobertura_sku_sel",
     )
-    cob_sku = metrics.cobertura_por_sku(df, df_clientes, sku_sel)
+    cob_sku = metrics.cobertura_por_sku(df, df_clientes_act, sku_sel)
     if cob_sku.empty:
         st.info("Sin datos de cobertura para el SKU seleccionado.")
     else:
@@ -162,7 +169,7 @@ def render(
             "No se puede calcular la lista de no-compradores sobre el mes."
         )
     else:
-        no_compradores = metrics.clientes_sin_compra_sku(df_mes, df_clientes, sku_sel)
+        no_compradores = metrics.clientes_sin_compra_sku(df_mes, df_clientes_act, sku_sel)
         if no_compradores.empty:
             st.success(
                 "Todos los clientes en cartera ya compraron este SKU "
@@ -287,3 +294,74 @@ def _render_secciones_historicas(
                 hide_index=True,
             )
             st.caption(f"Total: {len(vista_nuevos)} cliente(s) nuevo(s).")
+
+    # ----- Bloque 7: Clientes inactivos (12m, requiere histórico) -----
+    st.divider()
+    st.markdown("### Clientes inactivos (sin compra en 12m)")
+    st.caption(
+        "Clientes en cartera **sin FAC de ningún vendedor en los últimos "
+        "12 meses** (incluye los que nunca compraron). El toggle de la "
+        "sidebar **'Excluir clientes inactivos'** los saca del denominador "
+        "de cobertura/penetración. Útil para depurar cartera o exportar "
+        "una lista para revisar baja."
+    )
+    if df_hist12 is None or df_hist12.empty:
+        st.info(
+            "Para ver esta sección, cargá el **histórico de 12 meses** "
+            "desde la sidebar."
+        )
+        return
+
+    inactivos = metrics.clientes_inactivos_12m(df_clientes, df_hist12)
+    if inactivos.empty:
+        st.success(
+            "No hay clientes inactivos — toda la cartera tuvo al menos "
+            "una FAC en los últimos 12 meses."
+        )
+        return
+
+    _vendedores_inact = sorted(
+        inactivos["vendedor_asignado"].dropna().astype(str).unique().tolist()
+    )
+    _sel_inact = st.selectbox(
+        "Filtrar por vendedor asignado",
+        options=["(Todos)"] + _vendedores_inact,
+        key="inactivos_vendedor_sel",
+    )
+    vista_inact = (
+        inactivos
+        if _sel_inact == "(Todos)"
+        else inactivos[inactivos["vendedor_asignado"] == _sel_inact]
+    )
+    vista_inact = vista_inact.copy()
+    vista_inact["fecha_ultima_compra"] = vista_inact[
+        "fecha_ultima_compra"
+    ].apply(
+        lambda d: "Nunca compró" if pd.isna(d) else pd.Timestamp(d).strftime("%Y-%m-%d")
+    )
+    st.dataframe(
+        vista_inact.style.format({"monto_12m": "{:,.0f}"}),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "documento": st.column_config.TextColumn("Documento"),
+            "razon_social": st.column_config.TextColumn("Razón Social"),
+            "vendedor_asignado": st.column_config.TextColumn("Vendedor asignado"),
+            "fecha_ultima_compra": st.column_config.TextColumn("Última compra"),
+            "monto_12m": st.column_config.NumberColumn(
+                "Monto 12m (UYU)",
+                help="Suma de FAC del cliente en los últimos 12 meses (debería ser 0).",
+            ),
+        },
+    )
+    st.caption(f"Total: {len(vista_inact)} cliente(s) inactivo(s).")
+
+    # Export del listado de inactivos como xlsx
+    csv_buf = vista_inact.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Descargar inactivos.csv",
+        data=csv_buf,
+        file_name="clientes_inactivos_12m.csv",
+        mime="text/csv",
+        use_container_width=False,
+    )

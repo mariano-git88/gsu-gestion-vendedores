@@ -51,6 +51,11 @@ DEFAULT_TIMEOUT = 30  # segundos por request
 MAX_RETRIES = 3       # para errores transitorios (429, 5xx, red)
 EXPIRY_MARGIN = 60    # regenerar token 60s antes de que venza
 
+# IVA básico UY 22%. `PrecioFinal` de Contabilium viene bruto con IVA;
+# para que el "valor de stock" sea comparable con el `monto` neto del
+# resto del dashboard, dividimos por este factor al cargar el maestro.
+IVA_BASICO_UY = 1.22
+
 
 # =====================================================================
 # Excepciones
@@ -401,10 +406,11 @@ def load_productos_api(
     con `load_combos_api`, los servicios (si existieran) se ignoran.
 
     Produce un DataFrame con las columnas:
-        sku, nombre, sub_rubro, rubro, stock, stock_minimo
+        sku, nombre, sub_rubro, rubro, stock, stock_minimo, precio
 
-    Las dos últimas vienen del listado de conceptos de Contabilium
-    (discovery 2026-04-18) y se usan para la tab Inventario.
+    Las cuatro últimas vienen del listado de conceptos de Contabilium
+    (discovery 2026-04-18) y se usan para la tab Inventario y el
+    cálculo de stock valorizado.
 
     Mapping de campos:
         Codigo      → sku
@@ -413,6 +419,7 @@ def load_productos_api(
         IdRubro     → rubro       (via rubros_map, fallback "ID_<n>")
         Stock       → stock       (float, unidades en stock)
         StockMinimo → stock_minimo (float, umbral "mínimo" del ERP)
+        PrecioFinal → precio      (float, neto sin IVA — bruto / 1.22)
 
     Optimización:
         Si ya se pullearon los conceptos (ej. llamando load_combos_api
@@ -445,11 +452,15 @@ def load_productos_api(
                 "rubro": rmap.get(id_rub, f"ID_{id_rub}"),
                 "stock": _safe_float(c.get("Stock")),
                 "stock_minimo": _safe_float(c.get("StockMinimo")),
+                "precio": _precio_neto(c.get("PrecioFinal")),
             }
         )
     df = pd.DataFrame(
         rows,
-        columns=["sku", "nombre", "sub_rubro", "rubro", "stock", "stock_minimo"],
+        columns=[
+            "sku", "nombre", "sub_rubro", "rubro",
+            "stock", "stock_minimo", "precio",
+        ],
     )
     return session, df
 
@@ -472,12 +483,16 @@ def load_combos_api(
     componentes está vacía, el stock queda en 0.
 
     Produce un DataFrame con columnas:
-        sku, nombre, stock
+        sku, nombre, stock, precio
 
     `stock` es un entero (floor) — no tiene sentido decir "0.5 combos
     armables". Discovery 2026-04-18 confirmó que combos tienen su
     propio campo `Stock` en Contabilium, pero decidimos calcular
     derivado desde componentes para ser conservadores (ver decisión).
+
+    `precio` viene de `PrecioFinal` del listado de conceptos, neto
+    sin IVA (bruto / 1.22). Se usa para valorizar el stock del combo
+    en la tab Inventario.
 
     N+1: 9 combos en GSU → ~1 s adicional al sync. No se paraleliza
     (no amerita).
@@ -506,6 +521,8 @@ def load_combos_api(
         if combo_id is None:
             continue
 
+        precio_combo = _precio_neto(c.get("PrecioFinal"))
+
         # Detalle del combo para obtener sus Items.
         try:
             session, detail = api_get(session, f"/api/conceptos/?id={combo_id}")
@@ -516,6 +533,7 @@ def load_combos_api(
                     "sku": str(c.get("Codigo") or "").strip(),
                     "nombre": str(c.get("Nombre") or "").strip(),
                     "stock": int(_safe_float(c.get("Stock"))),
+                    "precio": precio_combo,
                 }
             )
             continue
@@ -540,9 +558,10 @@ def load_combos_api(
                 "sku": str(c.get("Codigo") or "").strip(),
                 "nombre": str(c.get("Nombre") or "").strip(),
                 "stock": stock_derivado,
+                "precio": precio_combo,
             }
         )
-    df = pd.DataFrame(rows, columns=["sku", "nombre", "stock"])
+    df = pd.DataFrame(rows, columns=["sku", "nombre", "stock", "precio"])
     return session, df
 
 
@@ -878,6 +897,20 @@ def _safe_float(v) -> float:
         return 0.0
 
 
+def _precio_neto(v) -> float:
+    """Devuelve `PrecioFinal` neto sin IVA básico UY (22%).
+
+    Tolerante: el campo puede venir como número directo o como string
+    locale UY ("1.260,00"). Devuelve 0.0 si no se puede parsear.
+    """
+    if v is None or v == "":
+        return 0.0
+    if isinstance(v, (int, float)):
+        return float(v) / IVA_BASICO_UY
+    bruto = parse_monto_uy(v)
+    return bruto / IVA_BASICO_UY
+
+
 # =====================================================================
 # Self-test — correr con `python api_loader.py`
 # =====================================================================
@@ -967,7 +1000,10 @@ def _self_test() -> None:
     print(f"    ({len(conceptos)} conceptos totales, se reutilizan abajo)")
 
     session, df_prod = load_productos_api(session, conceptos_items=conceptos)
-    assert list(df_prod.columns) == ["sku", "nombre", "sub_rubro", "rubro"], (
+    assert list(df_prod.columns) == [
+        "sku", "nombre", "sub_rubro", "rubro",
+        "stock", "stock_minimo", "precio",
+    ], (
         f"productos columns: {list(df_prod.columns)}"
     )
     assert len(df_prod) > 400, f"productos: esperaba >400, obtuve {len(df_prod)}"
@@ -978,7 +1014,7 @@ def _self_test() -> None:
     print(f"OK  load_productos_api ({len(df_prod)} filas, schema correcto)")
 
     session, df_combos = load_combos_api(session, conceptos_items=conceptos)
-    assert list(df_combos.columns) == ["sku", "nombre"], (
+    assert list(df_combos.columns) == ["sku", "nombre", "stock", "precio"], (
         f"combos columns: {list(df_combos.columns)}"
     )
     # En UY sabemos que hay ~9 combos en marzo 2026. Toleramos rango amplio.
