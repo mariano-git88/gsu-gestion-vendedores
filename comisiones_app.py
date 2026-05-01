@@ -286,12 +286,15 @@ tab_calcular, tab_historico = st.tabs(["Calcular", "Histórico"])
 # ---------------------------------------------------------------------
 
 with tab_calcular:
-    if st.button(
-        "Calcular comisiones",
-        type="primary",
-        use_container_width=False,
-        key="btn_calcular",
-    ):
+    _btn_col, _ = st.columns([1, 3])
+    with _btn_col:
+        _do_calcular = st.button(
+            "Calcular comisiones",
+            type="primary",
+            use_container_width=True,
+            key="btn_calcular",
+        )
+    if _do_calcular:
         try:
             resultado = _calcular_periodo(fecha_desde, fecha_hasta)
 
@@ -394,27 +397,39 @@ with tab_calcular:
                 int(r.get("comision_neta_con_ajuste", r["comision_neta"]))
                 for r in resumen_eff
             )
-            col_a, col_b, col_c, col_d, col_e = st.columns(5)
-            col_a.metric("Ventas brutas", f"{total_ventas_brutas:,.0f}")
-            col_b.metric("Cobranzas", f"{total_cobranzas:,.0f}")
-            col_c.metric("Comisión normal", f"{total_neto_normal:,.0f}")
-            col_d.metric(
-                f"Ajuste {prev_label}",
+            # Fila 1: tres KPIs anchos para que las cifras grandes
+            # entren completas (no se trunquen con "...").
+            r1a, r1b, r1c = st.columns(3)
+            r1a.metric("Ventas brutas (UYU)", f"{total_ventas_brutas:,.0f}")
+            r1b.metric("Cobranzas (UYU)", f"{total_cobranzas:,.0f}")
+            r1c.metric("Comisión del mes (UYU)", f"{total_neto_normal:,.0f}")
+
+            # Fila 2: ajuste retroactivo y total a pagar.
+            r2a, r2b = st.columns(2)
+            r2a.metric(
+                f"Ajuste {prev_label} (UYU)",
                 f"{total_ajuste:,.0f}",
-                help="Solo positivos (tardías). Ajustes negativos no se descuentan.",
+                help="Cobranzas tardías de M-1 × 3%. Ajustes "
+                     "negativos quedan en alerta, no se descuentan.",
             )
-            col_e.metric(
-                "TOTAL a pagar",
+            r2b.metric(
+                "TOTAL a pagar (UYU)",
                 f"{total_final:,.0f}",
-                delta=f"+{total_ajuste:,.0f} ajuste",
+                delta=(
+                    f"+{total_ajuste:,.0f} por ajuste"
+                    if total_ajuste > 0 else None
+                ),
                 delta_color="off",
             )
         else:
-            col_a, col_b, col_c, col_d = st.columns(4)
-            col_a.metric("Vendedores con comisión", f"{n_con_comision:,}")
-            col_b.metric("Ventas brutas (UYU)", f"{total_ventas_brutas:,.0f}")
-            col_c.metric("Cobranzas (UYU)", f"{total_cobranzas:,.0f}")
-            col_d.metric("TOTAL a pagar (UYU)", f"{total_neto_normal:,.0f}")
+            r1a, r1b, r1c = st.columns(3)
+            r1a.metric("Ventas brutas (UYU)", f"{total_ventas_brutas:,.0f}")
+            r1b.metric("Cobranzas (UYU)", f"{total_cobranzas:,.0f}")
+            r1c.metric(
+                "TOTAL a pagar (UYU)",
+                f"{total_neto_normal:,.0f}",
+                help=f"{n_con_comision} vendedor(es) con comisión.",
+            )
             if ajuste_msg:
                 st.caption(ajuste_msg)
 
@@ -620,13 +635,16 @@ with tab_calcular:
                 ventas, cobranzas, periodo_label,
                 ajuste=ajuste,
             )
-            st.download_button(
-                label="Descargar liquidacion.xlsx",
-                data=xlsx_buf.getvalue(),
-                file_name=f"liquidacion_{periodo_label}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=False,
-            )
+            _dl_col, _ = st.columns([1, 3])
+            with _dl_col:
+                st.download_button(
+                    label="Descargar liquidación.xlsx",
+                    data=xlsx_buf.getvalue(),
+                    file_name=f"liquidacion_{periodo_label}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    type="primary",
+                )
         except Exception as e:  # noqa: BLE001
             st.error(f"Error generando xlsx: {e}")
 
@@ -638,13 +656,18 @@ with tab_calcular:
             f"**{periodo_label}**. Si el período ya está, hay que activar "
             "la sobreescritura explícitamente para que no duplique."
         )
-        col_s1, col_s2 = st.columns([1, 3])
+        col_s1, col_s2, _ = st.columns([1, 1, 2])
         with col_s1:
             sobreescribir = st.checkbox(
                 "Sobreescribir si ya existe", value=False, key="sobreescribir"
             )
         with col_s2:
-            if st.button("Guardar en histórico", key="btn_guardar"):
+            _do_guardar = st.button(
+                "Guardar en histórico",
+                key="btn_guardar",
+                use_container_width=True,
+            )
+        if _do_guardar:
                 try:
                     secrets_g = dict(st.secrets["gsheets"])
 

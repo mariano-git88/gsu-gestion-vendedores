@@ -24,7 +24,8 @@
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('comisiones_ajuste.py'\\).read\\(\\)\\); print\\('OK comisiones_ajuste.py'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('comisiones_app.py'\\).read\\(\\)\\); print\\('OK comisiones_app.py'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('comisiones_ajuste.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/json_to_streamlit_secret.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/json_to_streamlit_secret.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('comisiones_app.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }
