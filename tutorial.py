@@ -137,12 +137,22 @@ def render() -> None:
         1. **Sincronizar desde Contabilium** (primario): selectores
            de mes / semana / trimestre + botón Sincronizar + botón
            Resync forzado.
-        2. **Modo Manual Secundario** (expander colapsado): los 5
+        2. **Cargar histórico (12 meses)**: botón opt-in para pullear
+           los últimos 12 meses; tarda ~11-18 min la primera vez y
+           cachea 24 h. Habilita análisis longitudinal y la cartera
+           depurada.
+        3. **Cartera** — *NUEVO*. Toggle **"Excluir clientes inactivos
+           (>12m sin compra)"** (default ON cuando hay histórico
+           cargado). Cuando está activo, los clientes sin FAC en los
+           últimos 12 meses salen del denominador de cobertura y
+           penetración. Si no hay histórico, el toggle aparece
+           deshabilitado con un caption explicativo.
+        4. **Modo Manual Secundario** (expander colapsado): los 5
            file uploaders de siempre, como fallback.
-        3. **Exportar agenda** (aparece cuando ya hay datos): permite
+        5. **Exportar agenda** (aparece cuando ya hay datos): permite
            descargar la agenda personal de cualquier vendedor
            (más detalle abajo).
-        4. **Cerrar sesión**: todo abajo. La próxima vez que entres
+        6. **Cerrar sesión**: todo abajo. La próxima vez que entres
            tenés que volver a poner la contraseña.
         """
     )
@@ -240,7 +250,7 @@ def render() -> None:
           comprar. Si el mes final es el mes en curso, el rango se
           recorta a hoy.
 
-        Y **4 bloques** de datos uno debajo del otro:
+        Y **siete bloques** de datos uno debajo del otro:
 
         1. **Cobertura general por vendedor** — cuántos clientes
            asignados recibieron al menos una venta tipo factura en el
@@ -256,17 +266,7 @@ def render() -> None:
            un producto específico, y ves para cada vendedor cuántos
            de sus clientes lo compraron este período.
 
-        4. **Clientes dormidos** (requiere histórico 12m) — clientes
-           en cartera que no reciben una FAC de su vendedor desde hace
-           más de 90 días. Los que nunca compraron aparecen con
-           "Nunca". Filtro por vendedor.
-
-        5. **Clientes nuevos del mes** (requiere histórico 12m) —
-           clientes con primera FAC este mes y sin compras en los 12
-           meses anteriores. Indica captaciones reales (no solo
-           clientes que retornan después de un rato).
-
-        6. **Clientes que NO compraron este SKU en el mes** — la lista
+        4. **Clientes que NO compraron este SKU en el mes** — la lista
            detallada de los huecos para el SKU seleccionado arriba.
            Te muestra la razón social y el vendedor de cada uno, para
            que puedas asignar visitas.
@@ -277,14 +277,32 @@ def render() -> None:
              oportunidad de venta para el vendedor asignado sigue
              abierta.
 
+        5. **Clientes dormidos** (requiere histórico 12m) — clientes
+           en cartera que no reciben una FAC de su vendedor desde hace
+           más de 90 días. Los que nunca compraron aparecen con
+           "Nunca". Filtro por vendedor.
+
+        6. **Clientes nuevos del mes** (requiere histórico 12m) —
+           clientes con primera FAC este mes y sin compras en los 12
+           meses anteriores. Indica captaciones reales (no solo
+           clientes que retornan después de un rato).
+
         7. **Clientes inactivos (12m)** (requiere histórico 12m) —
-           clientes en cartera **sin FAC de ningún vendedor en los
-           últimos 12 meses** (incluye los que nunca compraron).
-           Candidatos a depurar. **Toggle en sidebar "Excluir clientes
-           inactivos"** (default ON con histórico): cuando está activo,
-           los inactivos quedan **fuera del denominador** de cobertura
-           y penetración. Tiene su propio botón **Descargar
-           inactivos.csv** y aparece como hoja en la agenda personal.
+           **NUEVO**. Clientes en cartera **sin FAC de ningún vendedor
+           en los últimos 12 meses** (incluye los que nunca
+           compraron). Candidatos a depurar o gestionar baja. Tiene
+           filtro por vendedor asignado y un botón **"Descargar
+           inactivos.csv"**.
+           - Está vinculado al **toggle "Excluir clientes inactivos"**
+             de la sidebar (default ON con histórico cargado): cuando
+             está activo, esos clientes salen del **denominador** de
+             todas las métricas de cobertura y penetración (incluye
+             la matriz de penetración por sub-rubro y el heatmap
+             cliente × sub-rubro de la tab Análisis). Apagalo si
+             querés ver la cobertura sobre la cartera completa.
+           - **Convive con "Clientes dormidos"**: dormido (>90d) sigue
+             siendo alertable y queda en cartera; inactivo (>12m)
+             quedó fuera del denominador.
         """
     )
 
@@ -474,8 +492,9 @@ def render() -> None:
           vacíos se filtran automáticamente).
         - Un botón **"Descargar agenda.xlsx"**.
 
-        Al hacer click, descargás un archivo Excel con **5 hojas** para
-        que ese vendedor se lleve "su agenda" después de la reunión:
+        Al hacer click, descargás un archivo Excel con **5 o 6 hojas**
+        (la 6ta solo si hay histórico 12m cargado) para que ese
+        vendedor se lleve "su agenda" después de la reunión:
 
         | Hoja | Contenido |
         |---|---|
@@ -484,6 +503,12 @@ def render() -> None:
         | **Clientes dormidos** | Solo los clientes que no compraron este mes |
         | **Penetración** | El % de su cartera por sub-rubro (sus huecos de cross-sell) |
         | **Top 80%** | Los pocos clientes que generan el 80% de su venta — los que tiene que blindar |
+        | **Clientes inactivos** *(NUEVO, requiere histórico 12m)* | Los clientes asignados que no le compraron a NADIE en los últimos 12 meses — candidatos a depurar |
+
+        > La **hoja de Resumen** y la **Penetración** respetan el toggle
+        > **"Excluir clientes inactivos"** de la sidebar: si está
+        > activo, los % de cobertura del vendedor se calculan sobre la
+        > cartera depurada (más limpio para mostrar al equipo).
         """
     )
 

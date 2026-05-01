@@ -72,3 +72,13 @@ htmlcov/
 .env.local
 *.pem
 *.key
+
+# ----- Carpeta de discovery / exploración API (no commitear) -----
+# Scripts de smoke test contra la API de Contabilium o de Google Sheets,
+# y cualquier output con datos reales de la cuenta UY.
+_exploracion-api-contabilium/
+
+# ----- Service Account JSON de Google Sheets (NUNCA commitear) -----
+# El archivo descargado de Google Cloud para autenticar gspread.
+.gsheets/
+*-service-account.json

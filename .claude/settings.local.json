@@ -5,7 +5,26 @@
       "Bash(python -c \"import ast, sys; mods=['api_loader.py','metrics.py','exports.py','app.py','views/inventario.py','views/cobranzas.py','views/cobertura.py','views/analisis.py','views/resumen.py']; [ast.parse\\(open\\(m\\).read\\(\\), filename=m\\) for m in mods]; print\\('OK syntax'\\)\")",
       "Bash(python3 -c \"import ast; mods=['api_loader.py','metrics.py','exports.py','app.py','views/inventario.py','views/cobranzas.py','views/cobertura.py','views/analisis.py','views/resumen.py']; [ast.parse\\(open\\(m\\).read\\(\\), filename=m\\) for m in mods]; print\\('OK syntax'\\)\")",
       "Bash(python3 -c ' *)",
-      "Bash(xxd)"
+      "Bash(xxd)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('tutorial.py'\\).read\\(\\)\\); print\\('OK syntax tutorial.py'\\)\")",
+      "Bash(python3 -c \"import ast; [ast.parse\\(open\\(f\\).read\\(\\), filename=f\\) for f in ['_exploracion-api-contabilium/smoke_gsheets.py', '_exploracion-api-contabilium/smoke_ordenes_y_cobranzas.py']]; print\\('OK syntax both scripts'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/smoke_gsheets.py'\\).read\\(\\)\\); print\\('OK syntax'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/smoke_ordenes_y_cobranzas_2.py'\\).read\\(\\)\\); print\\('OK syntax'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/smoke_cobranzas_3.py'\\).read\\(\\)\\); print\\('OK syntax'\\)\")",
+      "Bash(cp \"/mnt/c/Users/MarianoPappalardo/OneDrive - suprabond.com.uy/Claude + GSU/Liquidación de Comisiones - Claude + GSU/webapp/commissions.py\" \"/mnt/c/Users/MarianoPappalardo/OneDrive - suprabond.com.uy/Claude + GSU/Gestión de Vendedores - Claude + GSU/commissions.py\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('commissions.py'\\).read\\(\\)\\); print\\('OK syntax'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('comisiones_data.py'\\).read\\(\\)\\); print\\('OK syntax comisiones_data.py'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('gsheets.py'\\).read\\(\\)\\); print\\('OK syntax gsheets.py'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('comisiones_app.py'\\).read\\(\\)\\); print\\('OK syntax comisiones_app.py'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('comisiones_data.py'\\).read\\(\\)\\); print\\('OK syntax'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/smoke_cobranzas_paginacion_4.py'\\).read\\(\\)\\); print\\('OK syntax'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/smoke_cobranzas_chunks_5.py'\\).read\\(\\)\\); print\\('OK syntax'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/diff_cobranzas_api_vs_xlsx.py'\\).read\\(\\)\\); print\\('OK syntax'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('gsheets.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('comisiones_ajuste.py'\\).read\\(\\)\\); print\\('OK comisiones_ajuste.py'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('comisiones_app.py'\\).read\\(\\)\\); print\\('OK comisiones_app.py'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('comisiones_ajuste.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/json_to_streamlit_secret.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }
