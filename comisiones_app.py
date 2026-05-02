@@ -49,6 +49,34 @@ st.set_page_config(
 )
 theme.apply_theme()
 
+# Override local de botones: naranja (ACCENT del theme) en lugar de INK,
+# y notably más compactos. Solo aplica al app de Comisiones; el dashboard
+# principal mantiene los botones oscuros del theme original.
+st.markdown(
+    """
+    <style>
+    .stButton > button,
+    .stDownloadButton > button,
+    [data-testid="stFormSubmitButton"] > button {
+        background-color: #C8552F !important;
+        color: #FFFFFF !important;
+        border-color: #C8552F !important;
+        padding: 0.35rem 0.9rem !important;
+        font-size: 0.78rem !important;
+        letter-spacing: 0.03em;
+    }
+    .stButton > button:hover,
+    .stDownloadButton > button:hover,
+    [data-testid="stFormSubmitButton"] > button:hover {
+        background-color: #A8451F !important;
+        border-color: #A8451F !important;
+        color: #FFFFFF !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 # =====================================================================
 # Auth gate
