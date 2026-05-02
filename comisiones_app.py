@@ -290,7 +290,6 @@ with tab_calcular:
     with _btn_col:
         _do_calcular = st.button(
             "Calcular comisiones",
-            type="primary",
             use_container_width=True,
             key="btn_calcular",
         )
@@ -643,7 +642,6 @@ with tab_calcular:
                     file_name=f"liquidacion_{periodo_label}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
-                    type="primary",
                 )
         except Exception as e:  # noqa: BLE001
             st.error(f"Error generando xlsx: {e}")
