@@ -249,7 +249,7 @@ p, div, span, li {{
     border-bottom: 1px solid {LINE};
     margin-bottom: 1.5rem;
 }}
-[data-testid="stTabs"] button {{
+[data-testid="stTabs"] button[role="tab"] {{
     padding: 0.7rem 1.4rem !important;
     background-color: transparent !important;
     border-radius: 0 !important;
@@ -261,11 +261,11 @@ p, div, span, li {{
     border-bottom: 2px solid transparent !important;
     margin-bottom: -1px;
 }}
-[data-testid="stTabs"] button:hover {{
+[data-testid="stTabs"] button[role="tab"]:hover {{
     color: {INK} !important;
     background-color: transparent !important;
 }}
-[data-testid="stTabs"] button[aria-selected="true"] {{
+[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {{
     color: {INK} !important;
     border-bottom: 2px solid {ACCENT} !important;
     background-color: transparent !important;
