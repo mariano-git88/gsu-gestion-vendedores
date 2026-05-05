@@ -385,9 +385,6 @@ with st.sidebar:
     inventario_id = invs_options[inv_label]
 
     st.markdown("---")
-    if st.button("📖 Tutorial", use_container_width=True):
-        _tutorial_dialog()
-
     if st.button("Buscar pendientes", use_container_width=True, type="primary"):
         st.session_state.pop("emision_resultados", None)
         st.session_state.pop("seleccion_ids", None)
@@ -409,12 +406,17 @@ with st.sidebar:
 # Main — pendientes + selección + emisión
 # =====================================================================
 
-st.title("🧾 Facturación Masiva")
-st.caption(
-    "Emite facturas electrónicas masivamente desde órdenes de venta pendientes. "
-    "El run es secuencial, respeta el throttling UY (15 req/10s) y descarta "
-    "automáticamente las órdenes ya facturadas vía API."
-)
+_col_title, _col_btn = st.columns([5, 1], vertical_alignment="center")
+with _col_title:
+    st.title("🧾 Facturación Masiva")
+    st.caption(
+        "Emite facturas electrónicas masivamente desde órdenes de venta pendientes. "
+        "El run es secuencial, respeta el throttling UY (15 req/10s) y descarta "
+        "automáticamente las órdenes ya facturadas vía API."
+    )
+with _col_btn:
+    if st.button("Tutorial", use_container_width=True, key="btn_tutorial"):
+        _tutorial_dialog()
 
 if "last_search" not in st.session_state:
     st.info(
