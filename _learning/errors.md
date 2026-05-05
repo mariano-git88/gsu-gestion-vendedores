@@ -349,3 +349,126 @@ defensiva y evita que el usuario tenga que pensar en limpiar caché.
 - **Si aparece una 3ra vez**, implementar el schema-signature check
   en vez de solo el mensaje — el patrón se vuelve costoso de explicar
   al usuario cada vez que se agregan columnas.
+
+---
+
+## 2026-05-01 — gspread requiere Google Drive API además de Google Sheets API
+
+**Qué pasó:** durante el discovery de Sprint B (Comisiones, persistencia
+en Google Sheet), creé el Service Account, le di permiso al Sheet,
+habilité Google Sheets API y corrí el smoke. Falló con
+`PermissionError`/`403` que el mensaje no era obvio.
+
+La mayoría de tutoriales de `gspread` listan solo "Google Sheets API"
+como prerequisito. **Pero `gspread` también necesita Google Drive API
+habilitada** porque internamente lista archivos para resolver el sheet
+por nombre o URL. Sin Drive API, falla aunque Sheets API esté OK.
+
+**Fix:** habilitar Google Drive API en la consola del proyecto GCP.
+
+**Lección:** cuando arranque un nuevo proyecto Google con Service Account
+para Sheets, habilitar **ambas APIs de entrada**: Sheets API + Drive API.
+No esperar al PermissionError para descubrirlo.
+
+---
+
+## 2026-05-05 — Schema desactualizado en doc Postman pública: el JSON exportado miente
+
+**Qué pasó:** Sprint C (facturación masiva) pasó por 3 planes hasta cerrar:
+descartamos API REST en discovery por endpoints inventados que no existían,
+luego diseñamos un userscript Tampermonkey leyendo el HAR del backoffice
+(*plan B*), y por último Contabilium nos linkeó la doc oficial Postman.
+Probamos el workflow oficial `POST /api/comprobantes/crear` →
+`GET /api/comprobantes/emitirFE` y respondía **HTTP 500
+NullReferenceException** persistente con cualquier orden y con cualquier
+combinación de campos.
+
+Iteré 6 veces ajustando el body sin progreso (TipoConcepto, FechaVencimiento,
+TipoDeCambio, IdComprobanteAsociado, IdConcepto null vs "", TipoFc FAC vs
+FCE) hasta que Mariano me pasó el **PDF oficial** de la API. Ahí descubrí
+que **el JSON exportado de la colección Postman pública dice
+`"IDCondicionVenta": 249618` (integer), pero el PDF dice
+`"CondicionVenta": "<nombre del combo>"` (string)**. Cambié el campo y el
+endpoint respondió 200 al primer intento.
+
+**Fix:** mandar `"CondicionVenta"` (string nombre) en lugar de
+`"IDCondicionVenta"` (integer ID). Resolver el nombre con un GET previo
+a `/api/usuarios/condicionesVenta` y matchear por ID.
+
+**Lección operativa:**
+1. **No confiar en el JSON exportado de una colección Postman pública** como
+   fuente de verdad cuando exista una doc oficial paralela (PDF, Swagger,
+   página web). El JSON puede arrastrar bugs viejos que la doc humana ya
+   corrigió. Si hay conflicto entre formatos de la misma doc, el formato
+   más curado por humanos suele ser el correcto.
+2. **HTTP 500 con NullReferenceException** en una API .NET sugiere que el
+   handler intenta leer un campo del body con un tipo que no encuentra
+   (probablemente un cast o una llamada a método sobre null). Cuando aparece,
+   sospechar de **diferencia de tipo en algún campo** (string esperado /
+   integer enviado, etc.) antes de seguir variando valores.
+3. **Si una iteración de body falla persistentemente con error genérico
+   .NET**, parar después de 2-3 iteraciones y buscar otra fuente de
+   documentación antes de seguir adivinando. Cada iteración con error
+   genérico es información casi cero — el budget de iteraciones se quema
+   sin progreso.
+
+**Aplicación general:** vale para cualquier integración con API .NET donde
+el handler abstraiga errores en un mensaje genérico. Y para Contabilium
+específicamente: **el PDF oficial es la fuente de verdad por encima del
+Postman público**.
+
+---
+
+## 2026-05-05 — Subpaths decorativos en API .NET: probar paths idénticos antes de confiar en un endpoint
+
+**Qué pasó:** validado el workflow de emisión vía API REST, quedaba el
+caveat de que la orden de venta nunca se vincula al comprobante (sigue
+con `Estado: Pendiente` e `IDComprobante: 0` después de emitir). Hice un
+discovery probando endpoints inventados con nombres lógicos:
+
+- `POST /api/ordenesventa/marcarFacturada?id=&idComprobante=`
+- `POST /api/ordenesventa/facturar?id=&idComprobante=`
+- `POST /api/ordenesventa/vincular?id=&idComprobante=`
+- `POST /api/ordenesventa/asociarComprobante?id=&idComprobante=`
+
+Probados primero con id falso (999999999), los 4 respondieron exactamente
+el mismo mensaje: HTTP 400 "La orden de venta no existe". **Esa señal de
+que las 4 daban el mismo response debió haberme alertado** — si fueran
+endpoints distintos, las respuestas variarían. Pero asumí que cada uno
+podía ser un endpoint propio con misma validación inicial.
+
+Avancé con `POST .../marcarFacturada?id=2023292&idComprobante=2268948`
+contra la orden real. **Respondió HTTP 200 con body `true` y CANCELÓ la
+orden silenciosamente.** Los siguientes 3 fallaron con "La orden ya se
+encuentra cancelada", confirmando que el primero ya había hecho daño.
+
+**Diagnóstico:** el handler de `/api/ordenesventa/<cualquier-cosa>?id=` es
+un **alias genérico de `POST /api/ordenesventa/Cancel?id=`**. El subpath
+después de `/ordenesventa/` se descarta. Los nombres son decorativos.
+
+**Lección operativa:**
+1. **Cuando dos paths con nombres distintos producen exactamente la misma
+   respuesta**, no son endpoints distintos — es un handler genérico que
+   ignora el subpath. **Antes de hacer escritura real**, probar 2-3 nombres
+   absurdos (ej. `/api/ordenesventa/asdfasdf?id=`) y comparar. Si dan el
+   mismo response, es fallback handler.
+2. **APIs .NET con MVC routing por defecto** mapean cualquier
+   `/api/<recurso>/<algo>` al action principal del controller. El `<algo>`
+   se interpreta como parámetro de ruta o se descarta. No es endpoint
+   propio salvo que esté explícitamente declarado.
+3. **El historial de Contabilium con este patrón ya estaba documentado**:
+   sesión 12 ya había encontrado que `POST /api/ordenesventa/facturar`
+   cancela la orden. **Releer las memorias de discovery anterior antes de
+   probar endpoints nuevos** evita recaer en el mismo error.
+
+**Daño causado:** orden 2023292 (FERRETERIA, $7903 UYU) quedó cancelada
+en Contabilium. La factura FAC A-00033656 con CAE válido sigue legal
+(la cancelación de la orden no afecta al comprobante ya emitido), pero
+la orden de origen tiene estado inconsistente. Reversible solo desde
+la UI Contabilium si esa permite reactivar — sino queda así.
+
+**Aplicación general:** este patrón (handler genérico con subpaths
+decorativos) NO es exclusivo de Contabilium — es común en cualquier API
+.NET MVC que no tenga rutas explícitas. Antes de confiar en un endpoint
+no documentado, **el primer test es probar un nombre absurdo y ver si
+responde igual**.

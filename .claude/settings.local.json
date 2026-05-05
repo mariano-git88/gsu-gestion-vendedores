@@ -26,7 +26,25 @@
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('comisiones_ajuste.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/json_to_streamlit_secret.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('comisiones_app.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('theme.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('theme.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/smoke_facturacion_post_6.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/smoke_facturacion_post_7.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/smoke_facturacion_post_8.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3)",
+      "WebFetch(domain:documenter.getpostman.com)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/smoke_emision_oficial_9.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(python3 _exploracion-api-contabilium/smoke_emision_oficial_9.py --help)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('_exploracion-api-contabilium/smoke_emision_oficial_9.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(pdftotext -l 5 \"API Contabilium.pdf\" -)",
+      "Bash(pip install *)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('facturador.py'\\).read\\(\\)\\); ast.parse\\(open\\('_exploracion-api-contabilium/smoke_facturador_modulo.py'\\).read\\(\\)\\); print\\('OK ambos'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('facturador_app.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(grep -iE \"\\\\.\\(har|pdf\\)$\")",
+      "Bash(git rm *)",
+      "Bash(printf '\\\\n# Discovery local — no commitear \\(HAR tiene metadata de sesión, PDF pesa\\)\\\\n*.har\\\\nAPI Contabilium.pdf\\\\n')",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ]
   }
 }

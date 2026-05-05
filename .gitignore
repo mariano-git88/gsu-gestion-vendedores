@@ -82,3 +82,8 @@ _exploracion-api-contabilium/
 # El archivo descargado de Google Cloud para autenticar gspread.
 .gsheets/
 *-service-account.json
+
+# Discovery local — no commitear (HAR tiene metadata de sesión, PDF pesa)
+*.har
+API Contabilium.pdf
+*.postman_collection.json

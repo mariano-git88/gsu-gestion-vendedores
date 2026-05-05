@@ -897,11 +897,36 @@ Estructura de carpetas y archivos del proyecto:
 - No calcular monto con otra columna que no sea `Subo Total Bonif`
   (en xlsx) / `PrecioUnitario × Cantidad × (1 − Bonif/100) × signo`
   (en API — signo viene de `TIPOS_NEGATIVOS`).
-- **No llamar endpoints de escritura de la API de Contabilium**
-  (`PUT /UpdateComprobante`, `DEL /DeleteComprobante`,
-  `POST /AnularComprobante*`, etc). El `api_loader` solo expone
-  funciones que hacen GET. El `client_secret` tiene permisos de
-  escritura — tratarlo con el mismo cuidado que una password admin.
+- **Endpoints de escritura de la API de Contabilium: prohibidos por
+  defecto, una excepción explícita.** El `client_secret` tiene
+  permisos de escritura, tratarlo con el mismo cuidado que una
+  password admin. La regla general sigue siendo: el dashboard
+  principal (`app.py`, `data_loader`, `api_loader`, vistas) **solo
+  hace GET**. NO usar `PUT /UpdateComprobante`, `DEL /DeleteComprobante`,
+  `POST /AnularComprobante*`, etc. desde flujos de lectura.
+
+  **Excepción**: el módulo de **facturación masiva** (Sprint C parte 2,
+  workflow `POST /api/comprobantes/crear` → `GET /api/comprobantes/emitirFE`
+  → `GET /api/comprobantes/obtenerPdf/`) sí escribe sobre el ERP
+  como naturaleza del feature. Debe vivir aislado del flujo de lectura
+  (módulo separado, idealmente segundo entry point Streamlit como hicimos
+  con Comisiones), con las siguientes garantías obligatorias:
+    - **Gate explícito** antes de cada lote (tipear `FACTURAR`).
+    - **Confirmación visual** del lote y total antes de disparar.
+    - **Run estrictamente secuencial** (la API no admite concurrencia en
+      facturación electrónica) y respetando throttling UY (15 req/10s).
+    - **Trazabilidad persistente** (Google Sheet) con mapeo
+      `idOrden → idComprobante → CAE → FiscalUrl` por cada emisión, para
+      auditar y para evitar doble facturación. La API NO vincula la
+      orden con el comprobante automáticamente.
+    - **Limpieza de borradores colgados**: si el flujo se interrumpe entre
+      `crear` y `emitirFE`, llamar a `DELETE /api/comprobantes/?id=` para
+      revertir movimientos de stock + asientos.
+    - **Esta excepción NO autoriza usar otros endpoints de escritura**
+      (`UpdateComprobante`, `DeleteComprobante` fuera de la limpieza de
+      borradores propios, `AnularComprobante*`, etc.). Si surge un
+      requerimiento nuevo de escritura, vuelve a discusión arquitectónica
+      antes de codear.
 - No pegar `contabilium_client_secret` ni el `access_token` en el
   chat, logs o commit. Vivir exclusivamente en
   `.streamlit/secrets.toml` (local, gitignored) y en Streamlit
