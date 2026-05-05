@@ -44,7 +44,12 @@
       "Bash(printf '\\\\n# Discovery local — no commitear \\(HAR tiene metadata de sesión, PDF pesa\\)\\\\n*.har\\\\nAPI Contabilium.pdf\\\\n')",
       "Bash(git add *)",
       "Bash(git commit *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(git reset *)",
+      "Bash(GIT_AUTHOR_NAME=\"mariano-git88\" GIT_AUTHOR_EMAIL=\"mariano@crafters.com.ar\" GIT_COMMITTER_NAME=\"mariano-git88\" GIT_COMMITTER_EMAIL=\"mariano@crafters.com.ar\" git commit -m \"Facturador \\(módulo de facturación masiva\\)\")",
+      "Bash(grep -iE \"\\\\.\\(har|pdf|xlsx|xls|csv\\)$\")",
+      "Bash(GIT_AUTHOR_NAME=\"mariano-git88\" GIT_AUTHOR_EMAIL=\"mariano@crafters.com.ar\" GIT_COMMITTER_NAME=\"mariano-git88\" GIT_COMMITTER_EMAIL=\"mariano@crafters.com.ar\" git commit --amend --no-edit)",
+      "Bash(grep -iE \"\\(postman|\\\\.har$|\\\\.pdf$\\)\")"
     ]
   }
 }
