@@ -37,9 +37,7 @@ Caveats heredados de facturador.py (ver docstring del módulo):
 from __future__ import annotations
 
 import hmac
-import io
-from calendar import monthrange
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 import streamlit as st
@@ -47,6 +45,18 @@ import streamlit as st
 import api_loader
 import facturador
 import theme
+import tutorial_facturador
+
+try:
+    import gsheets  # opcional: solo si está configurado [gsheets_facturacion].
+except ImportError:
+    gsheets = None  # log a Sheet queda deshabilitado.
+
+
+# Modal del tutorial. Se abre desde la sidebar.
+@st.dialog("Tutorial — Facturación masiva", width="large")
+def _tutorial_dialog():
+    tutorial_facturador.render()
 
 
 # =====================================================================
@@ -375,6 +385,9 @@ with st.sidebar:
     inventario_id = invs_options[inv_label]
 
     st.markdown("---")
+    if st.button("📖 Tutorial", use_container_width=True):
+        _tutorial_dialog()
+
     if st.button("Buscar pendientes", use_container_width=True, type="primary"):
         st.session_state.pop("emision_resultados", None)
         st.session_state.pop("seleccion_ids", None)
@@ -643,7 +656,54 @@ else:
             progreso.empty()
             st.session_state["emision_resultados"] = resultados
             st.cache_data.clear()  # invalidar cache de pendientes
-            st.success(f"Run completado. {n_sel} órdenes procesadas.")
+
+            # Persistir log en Google Sheet (opcional, best-effort).
+            # Si falla no rompe el run — la verdad fiscal vive en el
+            # comprobante emitido, no en el log auditable. Lee de
+            # `[gsheets_facturacion]` (Sheet propio del facturador, NO
+            # el de Comisiones — se separan dominios). Ver tutorial
+            # dentro del app para el setup paso a paso.
+            if gsheets is not None and "gsheets_facturacion" in st.secrets:
+                try:
+                    ts = datetime.now().isoformat(timespec="seconds")
+                    filas_log = [
+                        {
+                            "timestamp": ts,
+                            "id_orden": r["id_orden"],
+                            "numero_orden": r["numero_orden"],
+                            "comprador": r["comprador"],
+                            "total_uyu": r["total"],
+                            "status": r["status"],
+                            "id_comprobante": r["id_comprobante"],
+                            "numero_factura": r["numero_factura"],
+                            "cae": r["cae"],
+                            "fiscal_url": r["fiscal_url"],
+                            "error": r["error"],
+                        }
+                        for r in resultados
+                    ]
+                    n_log = gsheets.append_log_facturacion(
+                        dict(st.secrets["gsheets_facturacion"]),
+                        filas_log,
+                    )
+                    st.success(
+                        f"Run completado. {n_sel} órdenes procesadas. "
+                        f"Log guardado en Google Sheet ({n_log} filas)."
+                    )
+                except Exception as exc:
+                    st.warning(
+                        f"Run completado ({n_sel} órdenes), pero NO pude "
+                        f"guardar el log en Sheet: {exc}. "
+                        "Los resultados quedan en el reporte de abajo y "
+                        "se pueden descargar como CSV. Tip: abrir el "
+                        "tutorial desde la sidebar para revisar el setup."
+                    )
+            else:
+                st.success(
+                    f"Run completado. {n_sel} órdenes procesadas. "
+                    "(Log en Sheet deshabilitado — `[gsheets_facturacion]` "
+                    "no configurado en secrets. Abrir el tutorial para setup.)"
+                )
             st.rerun()
 
 

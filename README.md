@@ -91,6 +91,35 @@ Ver el `claude.md.txt` para el detalle completo.
 
 ## Deploy
 
-GitHub privado + Streamlit Community Cloud. Ver sección "Deploy" del
-`claude.md.txt`. La password de producción se configura en
-Streamlit Cloud → Settings → Secrets, no en el repo.
+GitHub público + Streamlit Community Cloud. Las passwords y credenciales
+de producción se configuran en Streamlit Cloud → Settings → Secrets,
+no en el repo.
+
+## Apps adicionales del mismo repo
+
+El repo expone tres apps Streamlit independientes que comparten codebase
+(`api_loader.py`, `theme.py`, etc.) pero se deployan por separado con
+URLs y passwords distintas:
+
+| Entry point | Rol | Password en secrets |
+|---|---|---|
+| `app.py` | Dashboard semanal del Jefe de Ventas (read-only) | `app_password` |
+| `comisiones_app.py` | Liquidación mensual de Comisiones (read API + write Sheet) | `comisiones_password` |
+| `facturador_app.py` | **Facturación masiva desde órdenes de venta** (write Contabilium) | `facturador_password` |
+
+### Facturador — uso local
+
+```bash
+# Mismo entorno que el dashboard, agregar el password en secrets.toml
+# (ver bloque comentado en .streamlit/secrets.toml.example)
+streamlit run facturador_app.py
+```
+
+Sidebar: rango de fechas, condición de venta, punto de venta, depósito.
+Botón "Buscar pendientes" → tabla con 3 buckets (facturables, ya
+facturadas vía API, no facturables por línea libre). Selección con
+checkbox + gate `FACTURAR` + run secuencial respetando throttling UY
+(15 req/10s). El log de cada emisión se persiste en Google Sheet
+(reutiliza el mismo `[gsheets]` block que Comisiones — tab nueva
+`log_facturacion`). Ver `facturador.py` para los detalles del workflow
+oficial validado contra la API REST UY.

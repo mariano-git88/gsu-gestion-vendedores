@@ -60,6 +60,23 @@ class PeriodoYaExisteError(GsheetsError):
 TAB_HISTORICO = "historico"
 TAB_PIVOT = "pivot_vendedor"
 TAB_COBRANZAS_PAGADAS = "cobranzas_pagadas"
+TAB_LOG_FACTURACION = "log_facturacion"
+
+# Schema del log de facturación masiva. Una fila por orden procesada
+# (sea exitosa o fallida). Append-only: nunca se borran ni reescriben filas.
+LOG_FACTURACION_COLUMNS = [
+    "timestamp",         # ISO YYYY-MM-DD HH:MM:SS
+    "id_orden",          # int, ID interno de Contabilium
+    "numero_orden",      # str, ej "00010445"
+    "comprador",         # str, razón social del cliente
+    "total_uyu",         # float
+    "status",            # "OK" | "ERROR"
+    "id_comprobante",    # int (0 si falló antes de crear borrador)
+    "numero_factura",    # str, ej "FAC A-00033662" (vacío si falló)
+    "cae",               # str (vacío si falló)
+    "fiscal_url",        # str URL del QR DGI (vacío si falló)
+    "error",             # str con mensaje de error (vacío si OK)
+]
 
 HISTORICO_COLUMNS = [
     "vendedor",
@@ -436,3 +453,50 @@ def periodo_existe_en_historico(
     if df.empty:
         return False
     return periodo in set(df["periodo"].astype(str))
+
+
+# =====================================================================
+# Log de facturación masiva
+# =====================================================================
+
+def append_log_facturacion(
+    gsheets_section: dict,
+    filas: list[dict],
+) -> int:
+    """Apenda filas al log de facturación masiva. Append-only: nunca
+    borra ni reescribe filas existentes.
+
+    Schema esperado en cada fila: ver `LOG_FACTURACION_COLUMNS`.
+    Las claves no presentes se llenan con string vacío.
+
+    Devuelve la cantidad de filas escritas. Si `filas` es vacío,
+    no toca el Sheet y devuelve 0.
+
+    Diseño:
+      - El caller (facturador_app.py) decide si tratar la excepción de
+        este método como warning (no detener el flujo) o como error.
+        El módulo de facturación NO debe romperse por un fallo del log
+        — la verdad fiscal vive en el comprobante emitido, no acá.
+      - Tab dedicada `log_facturacion`. Si no existe, se crea con header.
+    """
+    if not filas:
+        return 0
+
+    sh = _open_sheet(gsheets_section)
+    ws = _ensure_worksheet(
+        sh, TAB_LOG_FACTURACION,
+        rows=10000, cols=len(LOG_FACTURACION_COLUMNS),
+    )
+
+    # Asegurar header en row 1.
+    existing_header = ws.row_values(1)
+    if not existing_header:
+        ws.update("A1", [LOG_FACTURACION_COLUMNS], value_input_option="RAW")
+
+    # Construir filas en el orden de LOG_FACTURACION_COLUMNS, todo string.
+    rows_data = []
+    for f in filas:
+        rows_data.append([str(f.get(c, "") or "") for c in LOG_FACTURACION_COLUMNS])
+
+    ws.append_rows(rows_data, value_input_option="RAW")
+    return len(rows_data)
