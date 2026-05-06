@@ -36,7 +36,7 @@ import transforms
 import tutorial
 from subrubros import RUBROS, SUBRUBROS
 from vendedores import VENDEDORES
-from views import analisis, cobertura, cobranzas, inventario, resumen, sub_rubro
+from views import analisis, asistente, cobertura, cobranzas, inventario, resumen, sub_rubro
 
 # =====================================================================
 # CONFIG
@@ -994,11 +994,12 @@ if _has_red_alerts(health_sem) or _has_red_alerts(health_mes):
     tab_analisis,
     tab_cobranzas,
     tab_inventario,
+    tab_asistente,
     tab_salud,
 ) = st.tabs(
     [
         "Resumen", "Sub-rubro", "Cobertura", "Análisis",
-        "Cobranzas", "Inventario", "Salud",
+        "Cobranzas", "Inventario", "🤖 Asistente", "Salud",
     ]
 )
 
@@ -1023,6 +1024,20 @@ with tab_cobranzas:
     cobranzas.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
 with tab_inventario:
     inventario.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
+with tab_asistente:
+    # El asistente usa el df más amplio que se haya sincronizado (tri o
+    # mes — el que esté disponible). Si solo está la semana, va con eso.
+    _df_tri = st.session_state.get("df_tri")
+    _df_amplio = next(
+        (d for d in (_df_tri, df_mes, df_sem) if d is not None and not d.empty),
+        df_mes,
+    )
+    asistente.render(
+        df_fc=_df_amplio,
+        df_clientes=df_clientes,
+        df_productos=st.session_state.get("df_productos"),
+        api_session=_api_session() if st.session_state.fuente_activa == "api" else None,
+    )
 with tab_salud:
     st.subheader("Panel de salud de datos")
     # Encabezado con fuente activa + timestamp (para trazabilidad).
