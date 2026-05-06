@@ -309,6 +309,7 @@ def mapear_orden_a_body_crear(
     *,
     tipo_fc: str = "FAC",
     fecha_emision: date | None = None,
+    vendedor_email_override: str | None = None,
 ) -> dict:
     """Construye el body validado para POST /api/comprobantes/crear.
 
@@ -357,11 +358,17 @@ def mapear_orden_a_body_crear(
     fecha_emision = fecha_emision or date.today()
     id_orden = orden.get("ID") or orden.get("Id") or orden.get("id") or 0
 
-    # Resolver IDVendedor desde el email que viene en la orden.
-    # Sin esto, Contabilium asigna el vendedor del API key (típicamente
-    # OP/admin), lo cual rompe reportes downstream (Aging, NCF por
-    # vendedor, distribución de facturas impresas, etc).
-    vendedor_email = (orden.get("Vendedor") or "").strip().upper()
+    # Resolver IDVendedor desde el email del vendedor.
+    # CAVEAT: GET /api/ordenesventa/?id= NO devuelve el campo Vendedor
+    # (validado 2026-05-06 con orden 2026154). Solo el listado de search
+    # lo trae. Por eso aceptamos `vendedor_email_override` con prioridad
+    # sobre lo que devuelva el detalle, para que el caller pueda pasar
+    # el email obtenido del listado.
+    vendedor_email = (
+        vendedor_email_override
+        or orden.get("Vendedor")
+        or ""
+    ).strip().upper()
     id_vendedor = _VENDEDOR_EMAIL_A_ID.get(vendedor_email)
 
     body = {
@@ -504,9 +511,17 @@ def facturar_orden(
     *,
     tipo_fc: str = "FAC",
     fecha_emision: date | None = None,
+    vendedor_email: str | None = None,
 ) -> tuple[api_loader.ApiSession, dict]:
     """Pipeline completo: trae orden → mapea body → crea borrador →
     emite CAE. Devuelve dict con id_borrador + datos de emisión.
+
+    Args:
+      vendedor_email: email del vendedor que aparece en el listado de
+        órdenes (`/search`). El detalle (`/?id=`) NO lo trae, así que
+        el caller debe pasarlo desde el listado para que se mapee a
+        `IDVendedor` correctamente. Si es None y el detalle tampoco
+        lo trae, Contabilium asigna el vendedor del API key (admin).
 
     Si falla `emitir_fe`, intenta limpiar el borrador automáticamente
     (best effort — si la limpieza también falla, deja el id en el error
@@ -526,6 +541,7 @@ def facturar_orden(
         inventario_id=inventario_id,
         tipo_fc=tipo_fc,
         fecha_emision=fecha_emision,
+        vendedor_email_override=vendedor_email,
     )
 
     session, id_borrador = crear_borrador(session, body)

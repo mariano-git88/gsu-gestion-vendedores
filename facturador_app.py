@@ -638,11 +638,18 @@ else:
                     f"{fila['comprador']} — {_fmt_uyu(fila['total'])}"
                 )
                 try:
+                    # El detalle GET de la orden NO trae el campo Vendedor;
+                    # solo lo trae el listado de search. Por eso pasamos
+                    # el email obtenido del df_facturables (que viene del
+                    # search) a facturar_orden, así se puede mapear a
+                    # IDVendedor correctamente.
+                    vendedor_email_orden = str(fila.get("vendedor") or "")
                     session, emision = facturador.facturar_orden(
                         session, int(id_orden),
                         condicion_venta_nombre=condicion_venta_nombre,
                         punto_venta_id=punto_venta_id,
                         inventario_id=inventario_id,
+                        vendedor_email=vendedor_email_orden,
                     )
                     resultados.append({
                         "id_orden": id_orden,

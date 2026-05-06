@@ -61,7 +61,14 @@
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('facturador.py'\\).read\\(\\)\\); ast.parse\\(open\\('facturador_app.py'\\).read\\(\\)\\); print\\('OK los 2'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('app.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('app.py'\\).read\\(\\)\\); ast.parse\\(open\\('theme.py'\\).read\\(\\)\\); print\\('OK los 2'\\)\")",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('app.py'\\).read\\(\\)\\); ast.parse\\(open\\('theme.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('app.py'\\).read\\(\\)\\); ast.parse\\(open\\('theme.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "WebFetch(domain:suprabond.com.uy)",
+      "WebFetch(domain:developers.mercadolibre.com.uy)",
+      "WebFetch(domain:www.suprabond.com.uy)",
+      "WebFetch(domain:developers.mercadolibre.com)",
+      "WebFetch(domain:www.suprabond.com)",
+      "WebFetch(domain:tienda.suprabond.com)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('facturador.py'\\).read\\(\\)\\); ast.parse\\(open\\('facturador_app.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }
