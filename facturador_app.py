@@ -39,6 +39,9 @@ from __future__ import annotations
 import hmac
 from datetime import date, datetime
 
+import io
+import zipfile
+
 import pandas as pd
 import streamlit as st
 
@@ -497,6 +500,20 @@ if "emision_resultados" in st.session_state:
                 mime="text/csv",
                 use_container_width=True,
             )
+
+    # Botón para descargar todos los PDFs emitidos en un ZIP único.
+    # Resuelve el feedback de Valeria: hoy hay que entrar a Contabilium
+    # y descargar de a una. Con el ZIP, un solo click trae todo.
+    if st.session_state.get("pdfs_zip_bytes"):
+        n_pdfs = st.session_state.get("pdfs_zip_count", 0)
+        st.download_button(
+            f"📄 Descargar {n_pdfs} PDFs en un ZIP",
+            st.session_state["pdfs_zip_bytes"],
+            file_name=f"facturas_{fd_iso}_a_{fh_iso}.zip",
+            mime="application/zip",
+            use_container_width=True,
+        )
+
     st.dataframe(
         df_res,
         use_container_width=True,
@@ -610,6 +627,7 @@ else:
         if emitir_btn and gate_ok:
             session = _api_session()
             resultados = []
+            pdfs_bajados: list[tuple[str, bytes]] = []  # (filename, bytes) por factura emitida
             progreso = st.progress(0.0, text="Iniciando...")
             placeholder = st.empty()
 
@@ -638,6 +656,22 @@ else:
                         "fiscal_url": emision["fiscal_url"],
                         "error": "",
                     })
+                    # Bajar PDF (best-effort: si falla, no rompe el flujo
+                    # — la factura legal ya está emitida).
+                    try:
+                        session, pdf_bytes = facturador.obtener_pdf(
+                            session, int(emision["id_comprobante"])
+                        )
+                        # Filename: "FAC A-00033662 — RAZON SOCIAL.pdf"
+                        comprador_clean = "".join(
+                            c if c.isalnum() or c in " -_." else "_"
+                            for c in str(fila["comprador"])[:40]
+                        ).strip()
+                        fname = f"{emision['numero']} - {comprador_clean}.pdf"
+                        pdfs_bajados.append((fname, pdf_bytes))
+                    except Exception:
+                        # PDF no se bajó pero la factura es legal igual.
+                        pass
                 except Exception as exc:
                     resultados.append({
                         "id_orden": id_orden,
@@ -657,6 +691,19 @@ else:
             placeholder.empty()
             progreso.empty()
             st.session_state["emision_resultados"] = resultados
+
+            # Empaquetar PDFs en ZIP para descarga.
+            if pdfs_bajados:
+                zip_buf = io.BytesIO()
+                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for fname, pdf_bytes in pdfs_bajados:
+                        zf.writestr(fname, pdf_bytes)
+                st.session_state["pdfs_zip_bytes"] = zip_buf.getvalue()
+                st.session_state["pdfs_zip_count"] = len(pdfs_bajados)
+            else:
+                st.session_state.pop("pdfs_zip_bytes", None)
+                st.session_state.pop("pdfs_zip_count", None)
+
             st.cache_data.clear()  # invalidar cache de pendientes
 
             # Persistir log en Google Sheet (opcional, best-effort).

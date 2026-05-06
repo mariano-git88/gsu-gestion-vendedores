@@ -87,3 +87,6 @@ _exploracion-api-contabilium/
 *.har
 API Contabilium.pdf
 *.postman_collection.json
+
+# Portal landing — vive en repo separado, no commitear acá
+_portal-suprabond/

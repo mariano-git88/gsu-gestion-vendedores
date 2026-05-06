@@ -37,6 +37,14 @@ from datetime import date
 import requests
 
 import api_loader
+from vendedores import VENDEDORES
+
+# Lookup invertido: {email_uppercase: id_vendedor}. Se usa para resolver
+# el `IDVendedor` que va al body de POST /api/comprobantes/crear, dado
+# que la orden trae `Vendedor` como email.
+_VENDEDOR_EMAIL_A_ID: dict[str, int] = {
+    email.upper(): vid for vid, email in VENDEDORES.items()
+}
 
 # =====================================================================
 # Constantes
@@ -349,7 +357,14 @@ def mapear_orden_a_body_crear(
     fecha_emision = fecha_emision or date.today()
     id_orden = orden.get("ID") or orden.get("Id") or orden.get("id") or 0
 
-    return {
+    # Resolver IDVendedor desde el email que viene en la orden.
+    # Sin esto, Contabilium asigna el vendedor del API key (típicamente
+    # OP/admin), lo cual rompe reportes downstream (Aging, NCF por
+    # vendedor, distribución de facturas impresas, etc).
+    vendedor_email = (orden.get("Vendedor") or "").strip().upper()
+    id_vendedor = _VENDEDOR_EMAIL_A_ID.get(vendedor_email)
+
+    body = {
         "IdUsuarioAdicional": 0,
         "IdCliente": orden.get("IDPersona") or orden.get("IDCliente"),
         "FechaEmision": fecha_emision.isoformat(),
@@ -374,6 +389,9 @@ def mapear_orden_a_body_crear(
         "TipoDevolucion": None,
         "RefExterna": str(id_orden),  # clave para anti-doble-facturación.
     }
+    if id_vendedor is not None:
+        body["IDVendedor"] = int(id_vendedor)
+    return body
 
 
 # =====================================================================

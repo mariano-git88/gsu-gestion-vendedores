@@ -53,7 +53,12 @@
       "Bash(git fetch *)",
       "Bash(GIT_AUTHOR_NAME=\"mariano-git88\" GIT_AUTHOR_EMAIL=\"mariano@crafters.com.ar\" GIT_COMMITTER_NAME=\"mariano-git88\" GIT_COMMITTER_EMAIL=\"mariano@crafters.com.ar\" git commit -m \"Asistente conversacional con 18 tools \\(Claude API\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('agent.py'\\).read\\(\\)\\); ast.parse\\(open\\('app.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(GIT_AUTHOR_NAME=\"mariano-git88\" GIT_AUTHOR_EMAIL=\"mariano@crafters.com.ar\" GIT_COMMITTER_NAME=\"mariano-git88\" GIT_COMMITTER_EMAIL=\"mariano@crafters.com.ar\" git commit -m \"Asistente: usar df_hist12 + fecha actual y rango en system prompt\")"
+      "Bash(GIT_AUTHOR_NAME=\"mariano-git88\" GIT_AUTHOR_EMAIL=\"mariano@crafters.com.ar\" GIT_COMMITTER_NAME=\"mariano-git88\" GIT_COMMITTER_EMAIL=\"mariano@crafters.com.ar\" git commit -m \"Asistente: usar df_hist12 + fecha actual y rango en system prompt\")",
+      "Bash(nslookup suprabond.ai 8.8.8.8)",
+      "Bash(nslookup suprabond.ai 1.1.1.1)",
+      "Bash(nslookup -type=CNAME www.suprabond.ai 8.8.8.8)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('facturador.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('facturador.py'\\).read\\(\\)\\); ast.parse\\(open\\('facturador_app.py'\\).read\\(\\)\\); print\\('OK los 2'\\)\")"
     ]
   }
 }
