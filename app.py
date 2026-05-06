@@ -987,22 +987,60 @@ if _has_red_alerts(health_sem) or _has_red_alerts(health_mes):
 # TABS DE VISTAS
 # =====================================================================
 
+# CSS: destacar la tab de Asistente con borde naranja (color ACCENT del
+# proyecto, mismo del hover de los botones). La tab del Asistente está
+# en primera posición — si se reordena, ajustar el `nth-child(1)`.
+st.markdown(
+    """
+    <style>
+    [data-testid="stTabs"] [data-baseweb="tab-list"] > [data-baseweb="tab"]:nth-child(1) {
+        border: 1.5px solid #C8552F;
+        border-radius: 6px;
+        padding: 4px 12px !important;
+        margin-right: 6px;
+    }
+    [data-testid="stTabs"] [data-baseweb="tab-list"] > [data-baseweb="tab"]:nth-child(1):hover {
+        background-color: rgba(200, 85, 47, 0.08);
+    }
+    [data-testid="stTabs"] [data-baseweb="tab-list"] > [data-baseweb="tab"][aria-selected="true"]:nth-child(1) {
+        background-color: rgba(200, 85, 47, 0.12);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 (
+    tab_asistente,
     tab_resumen,
     tab_sub_rubro,
     tab_cobertura,
     tab_analisis,
     tab_cobranzas,
     tab_inventario,
-    tab_asistente,
     tab_salud,
 ) = st.tabs(
     [
-        "Resumen", "Sub-rubro", "Cobertura", "Análisis",
-        "Cobranzas", "Inventario", "🤖 Asistente", "Salud",
+        "🤖 Asistente", "Resumen", "Sub-rubro", "Cobertura", "Análisis",
+        "Cobranzas", "Inventario", "Salud",
     ]
 )
 
+with tab_asistente:
+    # Preferir df_hist12 (12 meses procesado) para que las preguntas
+    # tipo "últimos 12 meses" tengan datos. Fallback: tri → mes → sem.
+    _df_tri = st.session_state.get("df_tri")
+    _df_hist12 = st.session_state.get("df_hist12")
+    _df_amplio = next(
+        (d for d in (_df_hist12, _df_tri, df_mes, df_sem) if d is not None and not d.empty),
+        df_mes,
+    )
+    asistente.render(
+        df_fc=_df_amplio,
+        df_clientes=df_clientes,
+        df_productos=st.session_state.get("df_productos"),
+        api_session=_api_session() if st.session_state.fuente_activa == "api" else None,
+    )
 with tab_resumen:
     resumen.render(
         df_sem, df_mes, df_clientes, health_sem, health_mes,
@@ -1024,21 +1062,6 @@ with tab_cobranzas:
     cobranzas.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
 with tab_inventario:
     inventario.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
-with tab_asistente:
-    # Preferir df_hist12 (12 meses procesado) para que las preguntas
-    # tipo "últimos 12 meses" tengan datos. Fallback: tri → mes → sem.
-    _df_tri = st.session_state.get("df_tri")
-    _df_hist12 = st.session_state.get("df_hist12")
-    _df_amplio = next(
-        (d for d in (_df_hist12, _df_tri, df_mes, df_sem) if d is not None and not d.empty),
-        df_mes,
-    )
-    asistente.render(
-        df_fc=_df_amplio,
-        df_clientes=df_clientes,
-        df_productos=st.session_state.get("df_productos"),
-        api_session=_api_session() if st.session_state.fuente_activa == "api" else None,
-    )
 with tab_salud:
     st.subheader("Panel de salud de datos")
     # Encabezado con fuente activa + timestamp (para trazabilidad).

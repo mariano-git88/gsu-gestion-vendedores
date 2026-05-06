@@ -58,7 +58,8 @@
       "Bash(nslookup suprabond.ai 1.1.1.1)",
       "Bash(nslookup -type=CNAME www.suprabond.ai 8.8.8.8)",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('facturador.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('facturador.py'\\).read\\(\\)\\); ast.parse\\(open\\('facturador_app.py'\\).read\\(\\)\\); print\\('OK los 2'\\)\")"
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('facturador.py'\\).read\\(\\)\\); ast.parse\\(open\\('facturador_app.py'\\).read\\(\\)\\); print\\('OK los 2'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('app.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }
