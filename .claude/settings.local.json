@@ -51,7 +51,9 @@
       "Bash(GIT_AUTHOR_NAME=\"mariano-git88\" GIT_AUTHOR_EMAIL=\"mariano@crafters.com.ar\" GIT_COMMITTER_NAME=\"mariano-git88\" GIT_COMMITTER_EMAIL=\"mariano@crafters.com.ar\" git commit --amend --no-edit)",
       "Bash(grep -iE \"\\(postman|\\\\.har$|\\\\.pdf$\\)\")",
       "Bash(git fetch *)",
-      "Bash(GIT_AUTHOR_NAME=\"mariano-git88\" GIT_AUTHOR_EMAIL=\"mariano@crafters.com.ar\" GIT_COMMITTER_NAME=\"mariano-git88\" GIT_COMMITTER_EMAIL=\"mariano@crafters.com.ar\" git commit -m \"Asistente conversacional con 18 tools \\(Claude API\\)\")"
+      "Bash(GIT_AUTHOR_NAME=\"mariano-git88\" GIT_AUTHOR_EMAIL=\"mariano@crafters.com.ar\" GIT_COMMITTER_NAME=\"mariano-git88\" GIT_COMMITTER_EMAIL=\"mariano@crafters.com.ar\" git commit -m \"Asistente conversacional con 18 tools \\(Claude API\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('agent.py'\\).read\\(\\)\\); ast.parse\\(open\\('app.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(GIT_AUTHOR_NAME=\"mariano-git88\" GIT_AUTHOR_EMAIL=\"mariano@crafters.com.ar\" GIT_COMMITTER_NAME=\"mariano-git88\" GIT_COMMITTER_EMAIL=\"mariano@crafters.com.ar\" git commit -m \"Asistente: usar df_hist12 + fecha actual y rango en system prompt\")"
     ]
   }
 }
