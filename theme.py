@@ -244,31 +244,36 @@ p, div, span, li {{
     box-shadow: none !important;
 }}
 
-/* ----- Tabs: planas, subrayado naranja en activa ----- */
+/* ----- Tabs: cada tab como pill clickeable, activa muy visible ----- */
 [data-testid="stTabs"] {{
     border-bottom: 1px solid {LINE};
     margin-bottom: 1.5rem;
 }}
+[data-testid="stTabs"] [role="tablist"] {{
+    gap: 4px;
+}}
 [data-testid="stTabs"] button[role="tab"] {{
-    padding: 0.7rem 1.4rem !important;
-    background-color: transparent !important;
-    border-radius: 0 !important;
+    padding: 0.55rem 1.2rem !important;
+    background-color: #F5F5F5 !important;
+    border-radius: 6px 6px 0 0 !important;
     color: {TEXT_SOFT} !important;
     font-weight: 500 !important;
     font-size: 0.92rem !important;
     letter-spacing: 0.02em;
     border: none !important;
-    border-bottom: 2px solid transparent !important;
+    border-bottom: 3px solid transparent !important;
     margin-bottom: -1px;
+    transition: background-color 0.15s ease, color 0.15s ease;
 }}
 [data-testid="stTabs"] button[role="tab"]:hover {{
     color: {INK} !important;
-    background-color: transparent !important;
+    background-color: #EBEBEB !important;
 }}
 [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {{
     color: {INK} !important;
-    border-bottom: 2px solid {ACCENT} !important;
-    background-color: transparent !important;
+    background-color: rgba(200, 85, 47, 0.12) !important;
+    border-bottom: 3px solid {ACCENT} !important;
+    font-weight: 700 !important;
 }}
 
 /* ----- Form (login): card mínima ----- */
