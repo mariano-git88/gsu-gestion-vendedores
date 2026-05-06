@@ -44,6 +44,7 @@ import zipfile
 
 import pandas as pd
 import streamlit as st
+from pypdf import PdfReader, PdfWriter
 
 import api_loader
 import facturador
@@ -501,18 +502,32 @@ if "emision_resultados" in st.session_state:
                 use_container_width=True,
             )
 
-    # Botón para descargar todos los PDFs emitidos en un ZIP único.
-    # Resuelve el feedback de Valeria: hoy hay que entrar a Contabilium
-    # y descargar de a una. Con el ZIP, un solo click trae todo.
+    # Dos botones de descarga de PDFs:
+    # - ZIP con un PDF por factura (para archivar individualmente).
+    # - PDF único combinado con cada factura × 3 (para imprimir todo
+    #   de un saque, abriendo en Adobe/Edge y dándole Ctrl+P).
     if st.session_state.get("pdfs_zip_bytes"):
         n_pdfs = st.session_state.get("pdfs_zip_count", 0)
-        st.download_button(
-            f"📄 Descargar {n_pdfs} PDFs en un ZIP",
-            st.session_state["pdfs_zip_bytes"],
-            file_name=f"facturas_{fd_iso}_a_{fh_iso}.zip",
-            mime="application/zip",
-            use_container_width=True,
-        )
+        col_zip, col_combined = st.columns(2)
+        with col_zip:
+            st.download_button(
+                f"📄 ZIP de {n_pdfs} PDFs individuales",
+                st.session_state["pdfs_zip_bytes"],
+                file_name=f"facturas_{fd_iso}_a_{fh_iso}.zip",
+                mime="application/zip",
+                use_container_width=True,
+                help="Un PDF por factura. Para archivar / mandar por separado.",
+            )
+        with col_combined:
+            if st.session_state.get("pdfs_combined_bytes"):
+                st.download_button(
+                    f"🖨️ PDF único × 3 ({n_pdfs * 3} hojas)",
+                    st.session_state["pdfs_combined_bytes"],
+                    file_name=f"facturas_imprimir_{fd_iso}_a_{fh_iso}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    help="Todas las facturas combinadas, cada una repetida 3 veces. Abrilo y dale Ctrl+P para imprimir todo de una.",
+                )
 
     st.dataframe(
         df_res,
@@ -707,9 +722,30 @@ else:
                         zf.writestr(fname, pdf_bytes)
                 st.session_state["pdfs_zip_bytes"] = zip_buf.getvalue()
                 st.session_state["pdfs_zip_count"] = len(pdfs_bajados)
+
+                # PDF único combinado por triplicado: cada factura aparece
+                # 3 veces consecutivas. Optimizado para imprimir todo de
+                # un saque (Adobe / Edge → Ctrl+P → 1 click). Resuelve el
+                # feedback de Valeria: Windows no tiene "imprimir múltiples
+                # PDFs" nativo en el Explorer.
+                try:
+                    writer = PdfWriter()
+                    for _, pdf_bytes in pdfs_bajados:
+                        reader = PdfReader(io.BytesIO(pdf_bytes))
+                        for _ in range(3):  # triplicado
+                            for page in reader.pages:
+                                writer.add_page(page)
+                    combined_buf = io.BytesIO()
+                    writer.write(combined_buf)
+                    st.session_state["pdfs_combined_bytes"] = combined_buf.getvalue()
+                except Exception:
+                    # Si falla el merge, no rompemos — el ZIP individual
+                    # ya está disponible como fallback.
+                    st.session_state.pop("pdfs_combined_bytes", None)
             else:
                 st.session_state.pop("pdfs_zip_bytes", None)
                 st.session_state.pop("pdfs_zip_count", None)
+                st.session_state.pop("pdfs_combined_bytes", None)
 
             st.cache_data.clear()  # invalidar cache de pendientes
 
