@@ -997,7 +997,6 @@ st.markdown(
     [data-testid="stTabs"] [role="tablist"] > button[role="tab"]:nth-child(1) {
         border: 1.5px solid #C8552F !important;
         border-radius: 6px !important;
-        margin-right: 8px;
     }
     [data-testid="stTabs"] [role="tablist"] > button[role="tab"][aria-selected="true"]:nth-child(1) {
         background-color: rgba(200, 85, 47, 0.20) !important;

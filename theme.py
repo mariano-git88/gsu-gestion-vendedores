@@ -244,16 +244,21 @@ p, div, span, li {{
     box-shadow: none !important;
 }}
 
-/* ----- Tabs: cada tab como pill clickeable, activa muy visible ----- */
+/* ----- Tabs: cada tab como pill clickeable, activa muy visible,
+   todas el mismo tamaño y distribuidas uniformemente. ----- */
 [data-testid="stTabs"] {{
     border-bottom: 1px solid {LINE};
     margin-bottom: 1.5rem;
 }}
 [data-testid="stTabs"] [role="tablist"] {{
+    display: flex !important;
+    width: 100% !important;
     gap: 4px;
 }}
 [data-testid="stTabs"] button[role="tab"] {{
-    padding: 0.55rem 1.2rem !important;
+    flex: 1 1 0 !important;          /* todas el mismo tamaño, evenly spaced */
+    min-width: 0 !important;
+    padding: 0.55rem 0.6rem !important;
     background-color: #F5F5F5 !important;
     border-radius: 6px 6px 0 0 !important;
     color: {TEXT_SOFT} !important;
@@ -263,6 +268,8 @@ p, div, span, li {{
     border: none !important;
     border-bottom: 3px solid transparent !important;
     margin-bottom: -1px;
+    text-align: center;
+    justify-content: center;
     transition: background-color 0.15s ease, color 0.15s ease;
 }}
 [data-testid="stTabs"] button[role="tab"]:hover {{
