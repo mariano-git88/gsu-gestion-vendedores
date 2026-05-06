@@ -987,23 +987,56 @@ if _has_red_alerts(health_sem) or _has_red_alerts(health_mes):
 # TABS DE VISTAS
 # =====================================================================
 
-# CSS: destacar la tab de Asistente con borde naranja (color ACCENT del
-# proyecto, mismo del hover de los botones). La tab del Asistente está
-# en primera posición — si se reordena, ajustar el `nth-child(1)`.
+# CSS: dar a cada tab del dashboard estilo de "pill" claramente
+# clickeable. La tab activa se destaca con fondo naranja claro + borde
+# inferior naranja + bold. La primera tab (Asistente) tiene un borde
+# naranja permanente que la diferencia del resto. Color ACCENT del
+# proyecto: #C8552F (mismo del hover de los botones).
 st.markdown(
     """
     <style>
+    /* Contenedor de la barra de tabs: pequeño separador visual del contenido. */
+    [data-testid="stTabs"] [data-baseweb="tab-list"] {
+        gap: 4px;
+        border-bottom: 1px solid #E5E5E5;
+        padding-bottom: 0;
+    }
+
+    /* Cada tab: padding generoso, fondo gris claro, transición suave. */
+    [data-testid="stTabs"] [data-baseweb="tab-list"] > [data-baseweb="tab"] {
+        background-color: #F5F5F5;
+        border-radius: 6px 6px 0 0;
+        padding: 8px 18px !important;
+        margin-bottom: 0;
+        border-bottom: 3px solid transparent;
+        font-weight: 500;
+        transition: background-color 0.15s ease, border-color 0.15s ease;
+    }
+
+    /* Hover sobre tab no-activa: fondo un poco más oscuro. */
+    [data-testid="stTabs"] [data-baseweb="tab-list"] > [data-baseweb="tab"]:hover {
+        background-color: #EBEBEB;
+    }
+
+    /* Tab activa: fondo naranja claro + borde inferior naranja + bold. */
+    [data-testid="stTabs"] [data-baseweb="tab-list"] > [data-baseweb="tab"][aria-selected="true"] {
+        background-color: rgba(200, 85, 47, 0.12);
+        border-bottom: 3px solid #C8552F;
+        font-weight: 700;
+        color: #1f1f1f;
+    }
+
+    /* Asistente (primera tab): borde naranja permanente + esquinas
+       redondeadas todo alrededor para destacar como sección "especial".
+       Si se reordena, ajustar `nth-child(1)`. */
     [data-testid="stTabs"] [data-baseweb="tab-list"] > [data-baseweb="tab"]:nth-child(1) {
         border: 1.5px solid #C8552F;
         border-radius: 6px;
-        padding: 4px 12px !important;
-        margin-right: 6px;
-    }
-    [data-testid="stTabs"] [data-baseweb="tab-list"] > [data-baseweb="tab"]:nth-child(1):hover {
-        background-color: rgba(200, 85, 47, 0.08);
+        margin-right: 8px;
     }
     [data-testid="stTabs"] [data-baseweb="tab-list"] > [data-baseweb="tab"][aria-selected="true"]:nth-child(1) {
-        background-color: rgba(200, 85, 47, 0.12);
+        background-color: rgba(200, 85, 47, 0.18);
+        border: 1.5px solid #C8552F;
     }
     </style>
     """,

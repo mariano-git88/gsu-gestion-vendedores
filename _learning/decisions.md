@@ -1448,3 +1448,90 @@ Smoke test sintético:
 al cargar histórico, la agenda se regenera.
 
 **Confirmado por:** Mariano, sesión 2026-04-29.
+
+---
+
+## 2026-05-05 — Sprint C (Facturación masiva): tres decisiones arquitectónicas
+
+**Contexto:** la sesión 13 cerró el discovery del workflow REST de emisión
+de Contabilium UY (2 endpoints oficiales validados end-to-end con CAE real).
+Quedaron tres decisiones de arquitectura para implementar el módulo masivo.
+
+### Decisión 1 — Módulo aislado con su propio entry point
+
+`facturador_app.py` es el 3er entry point Streamlit del repo (después de
+`app.py` y `comisiones_app.py`), deployado como app separado en Streamlit
+Cloud con su propia URL y password. NO se integra al dashboard principal
+como una tab más.
+
+**Razón:** este es el único módulo del proyecto autorizado a llamar
+endpoints de escritura de la API de Contabilium (emisión de factura legal
+con CAE). El círculo de acceso debe ser el más chico de los tres apps,
+y aislar el módulo en un deploy propio permite controlar permisos a
+nivel infra (otra password, otro Settings de Secrets) sin afectar el
+dashboard principal o Comisiones.
+
+`claude.md.txt` línea 900 fue actualizado para reflejar la excepción
+explícita: el dashboard principal sigue siendo read-only, el facturador
+es el único con escritura permitida y dentro de garantías específicas
+(gate `FACTURAR`, run estrictamente secuencial con throttling, trazabilidad).
+
+### Decisión 2 — Anti-doble-facturación basado en `RefExterna` server-side, sin persistencia local
+
+Caveat fundamental descubierto en discovery: la API REST de Contabilium UY
+**no actualiza el `IDComprobante` de la orden de venta** después de emitir
+un comprobante via `crear` + `emitirFE`. La orden queda eternamente como
+`Estado: Pendiente` con `IDComprobante: 0`. Eso rompe el filtro intuitivo
+"órdenes pendientes = `IDComprobante == 0`" para detectar candidatas a
+facturar.
+
+Pero el comprobante sí guarda `RefExterna` con el id de la orden de origen
+(visible en `GET /api/comprobantes/?id=` y en `/api/comprobantes/search`).
+
+**Decisión:** antes de cada run masivo, paginar
+`/api/comprobantes/search?fechaDesde&fechaHasta` (~21 páginas para 1000
+items, ~35-42s con throttling), filtrar borradores (`Numero` ending en
+`-00000000`) y construir un `dict[RefExterna, IDComprobante]`. Cualquier
+orden cuyo id esté en ese dict se descarta del bucket facturable.
+
+**Por qué no persistir local (CSV / Sheet / DB):**
+1. La verdad fiscal vive en el comprobante, no en el log local.
+2. Si el log se desincroniza con el server, el operador no se entera.
+3. El comprobante mismo es el sistema de registro distribuido, sin
+   necesidad de mantener un cache adicional.
+
+**Por qué no filtrar server-side:** lo intentamos. `?filtro=`,
+`?refExterna=`, `?RefExterna=` no funcionan — el server los ignora o los
+interpreta como filtro de cliente. Tenemos que filtrar client-side.
+
+**Costo aceptable:** ~40s por run masivo de 50-150 órdenes — irrelevante
+comparado con el tiempo total del run (3 requests × 0.7s × 100 órdenes
+= 3.5 minutos).
+
+### Decisión 3 — Asistente conversacional con tool use acotado, no RAG ni text-to-SQL libre
+
+Tab "🤖 Asistente" del dashboard principal usa Claude API (`claude-sonnet-4-6`)
+con un set acotado de 18 tools que el LLM elige según la pregunta. Cada
+tool consulta los DataFrames cacheados del dashboard via pandas y devuelve
+un dict serializable.
+
+**Por qué no text-to-SQL ni text-to-pandas libre:**
+1. Predecible: el LLM elige tool de un set conocido, no inventa columnas
+   (riesgo común en text-to-SQL: el LLM asume `revenue` cuando la columna
+   real es `monto`).
+2. Auditable: cada tool call se loguea (input + result preview) y se
+   muestra al usuario en un expander de debug.
+3. Sin riesgo de inyección.
+4. Extensible: agregar tool nueva = definir entry en `TOOLS` + función +
+   entry en `_TOOL_FUNCTIONS`. Costo marginal bajo.
+
+**Decisiones específicas de implementación:**
+- System prompt dinámico construido por consulta con la fecha actual
+  (`date.today()`) + rango real de datos disponibles. Sin esto el LLM
+  consultaba 2023/2024 con "últimos 12 meses" usando su training cutoff.
+- `df_hist12` (12 meses procesado) como dataset preferido, fallback a
+  `df_tri` → `df_mes` → `df_sem`.
+- Cap de 6 iteraciones de tool use para prevenir loops infinitos.
+- Costo: ~USD 0.005-0.02 por consulta. <USD 5/mes para uso real.
+
+**Confirmado por:** Mariano, sesión 2026-05-05/06.
