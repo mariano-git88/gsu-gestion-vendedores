@@ -1025,11 +1025,12 @@ with tab_cobranzas:
 with tab_inventario:
     inventario.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
 with tab_asistente:
-    # El asistente usa el df más amplio que se haya sincronizado (tri o
-    # mes — el que esté disponible). Si solo está la semana, va con eso.
+    # Preferir df_hist12 (12 meses procesado) para que las preguntas
+    # tipo "últimos 12 meses" tengan datos. Fallback: tri → mes → sem.
     _df_tri = st.session_state.get("df_tri")
+    _df_hist12 = st.session_state.get("df_hist12")
     _df_amplio = next(
-        (d for d in (_df_tri, df_mes, df_sem) if d is not None and not d.empty),
+        (d for d in (_df_hist12, _df_tri, df_mes, df_sem) if d is not None and not d.empty),
         df_mes,
     )
     asistente.render(

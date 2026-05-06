@@ -36,8 +36,25 @@ MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 2048
 MAX_TOOL_LOOPS = 6  # tope de seguridad anti-loop con tool use
 
-SYSTEM_PROMPT = """Eres un asistente analítico para el dashboard de Gestión de Vendedores de Suprabond Uruguay (GSU).
+def _build_system_prompt(ctx: dict) -> str:
+    """Genera el system prompt incluyendo la fecha actual y el rango
+    real de datos cargados, así el LLM no inventa fechas con su training cutoff."""
+    from datetime import date as _date
+    hoy = _date.today().isoformat()
+
+    # Detectar el rango real de datos disponibles en df_fc.
+    rango_datos = "(no hay datos sincronizados)"
+    df = ctx.get("df_fc")
+    if df is not None and not df.empty and "fecha" in df.columns:
+        fechas = pd.to_datetime(df["fecha"], errors="coerce").dropna()
+        if not fechas.empty:
+            rango_datos = f"{fechas.min().date()} → {fechas.max().date()} ({len(df):,} filas)"
+
+    return f"""Eres un asistente analítico para el dashboard de Gestión de Vendedores de Suprabond Uruguay (GSU).
 Tu trabajo: responder preguntas de negocio del Jefe de Ventas usando las herramientas disponibles.
+
+Fecha de hoy: **{hoy}** (usá esta fecha como referencia para "hoy", "este mes", "últimos N meses", etc.)
+Rango de datos sincronizados: **{rango_datos}**
 
 Contexto importante:
 - Todos los datos son de Suprabond (UY). Moneda UYU. IVA básico 22%.
@@ -48,11 +65,12 @@ Contexto importante:
 Reglas de respuesta:
 1. Si la pregunta es ambigua, pedí aclaración antes de llamar tools.
 2. Si una tool devuelve `error`, mostrá ese error y sugerí alternativa, no inventes datos.
-3. Cuando muestres montos, usá formato UYU "$ 1.234,56".
-4. Cuando muestres rankings o listas, mostrá top 10 a menos que pidan otro número.
-5. Sé conciso. Una respuesta de 3-5 líneas suele ser ideal. Tabla solo si pidieron muchas filas.
-6. Las fechas en formato YYYY-MM-DD para tools, DD/MM/YYYY para mostrar al usuario.
-7. Si no podés responder con las tools disponibles, decílo claramente."""
+3. **Si te piden un período fuera del rango de datos sincronizados**, decílo claramente y proponé el período disponible. NO consultes fechas vacías una y otra vez.
+4. Cuando muestres montos, usá formato UYU "$ 1.234,56".
+5. Cuando muestres rankings o listas, mostrá top 10 a menos que pidan otro número.
+6. Sé conciso. Una respuesta de 3-5 líneas suele ser ideal. Tabla solo si pidieron muchas filas.
+7. Las fechas en formato YYYY-MM-DD para tools, DD/MM/YYYY para mostrar al usuario.
+8. Si no podés responder con las tools disponibles, decílo claramente."""
 
 
 # =====================================================================
@@ -1091,12 +1109,13 @@ def responder(
     """
     client = anthropic.Anthropic(api_key=api_key)
     tool_calls_log: list[dict] = []
+    system_prompt = _build_system_prompt(ctx)
 
     for _ in range(MAX_TOOL_LOOPS):
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
+            system=system_prompt,
             tools=TOOLS,
             messages=messages,
         )
