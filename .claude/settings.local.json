@@ -68,7 +68,9 @@
       "WebFetch(domain:developers.mercadolibre.com)",
       "WebFetch(domain:www.suprabond.com)",
       "WebFetch(domain:tienda.suprabond.com)",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('facturador.py'\\).read\\(\\)\\); ast.parse\\(open\\('facturador_app.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('facturador.py'\\).read\\(\\)\\); ast.parse\\(open\\('facturador_app.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(mkdir -p _recommender-ar/ingestion _recommender-ar/data)",
+      "Bash(printf '\\\\n# Recommender AR — vive en repo separado, no commitear acá\\\\n_recommender-ar/\\\\n')"
     ]
   }
 }
