@@ -89,7 +89,22 @@
       "Bash(git -c user.email=mariano@crafters.com.ar -c user.name=mariano-git88 commit -m ' *)",
       "Bash(flyctl status *)",
       "Bash(flyctl releases *)",
-      "Bash(timeout 8 flyctl logs --no-tail)"
+      "Bash(timeout 8 flyctl logs --no-tail)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/routes/app._index.tsx)",
+      "Bash(timeout 12 flyctl logs --no-tail)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/lib/csvImport.server.ts)",
+      "Bash(npx tsc *)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/lib/csvImport.server.ts app/routes/app.import.tsx)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/routes/app.reviews.tsx app/lib/review.server.ts)",
+      "Read(//mnt/c/Users/MarianoPappalardo/OneDrive - suprabond.com.uy/Claude + GSU/Parlata - Voice Reviews for Shopify/code/parlata-shopify-app/app/routes/**)",
+      "Bash(grep -nE 'type Data|export type|interface RecorderData|action.*r\\\\.$token\\\\.submit|fetch.*submit' app/components/RecorderScreen.tsx)",
+      "Bash(npm install *)",
+      "Bash(npx prisma *)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/ extensions/ package.json package-lock.json prisma/)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/)",
+      "Bash(git -c user.email=mariano@crafters.com.ar -c user.name=mariano-git88 add 'app/routes/r.qr.$token.submit.tsx')",
+      "Bash(timeout 6 flyctl logs --no-tail)",
+      "Bash(timeout 10 flyctl logs --no-tail)"
     ]
   }
 }
