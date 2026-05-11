@@ -104,7 +104,30 @@
       "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/)",
       "Bash(git -c user.email=mariano@crafters.com.ar -c user.name=mariano-git88 add 'app/routes/r.qr.$token.submit.tsx')",
       "Bash(timeout 6 flyctl logs --no-tail)",
-      "Bash(timeout 10 flyctl logs --no-tail)"
+      "Bash(timeout 10 flyctl logs --no-tail)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/routes/app._index.tsx prisma/schema.prisma extensions/block/blocks/parlata_reviews.liquid)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/ extensions/ prisma/)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add extensions/block/blocks/parlata_reviews.liquid extensions/block/blocks/parlata_combined.liquid)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/routes/app.billing.tsx)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/routes/app.tsx extensions/)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/ prisma/)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/lib/reviewLifecycle.server.ts app/routes/api.request-voice-review.tsx)",
+      "Bash(grep -E \"^_index|^index|^\\\\\\\\\\\\$|^auth\")",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/routes/_index/route.tsx)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/routes/admin._index.tsx app/routes/admin.auth.send.tsx)",
+      "Bash(pkill -f \"tsc --noEmit\")",
+      "Bash(pkill -f \"npx prisma\")",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/routes/app.tsx)",
+      "Bash(curl -sI https://admin.parlata.ai)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/routes/admin._index.tsx)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/routes/admin.tsx app/routes/admin.reviews.tsx)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/routes/admin.qa.tsx)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/routes/admin.products.tsx)",
+      "Bash(grep -nA 4 \"^model Question {\\\\|^model ReviewRequest {\" \"/mnt/c/Users/MarianoPappalardo/OneDrive - suprabond.com.uy/Claude + GSU/Parlata - Voice Reviews for Shopify/code/parlata-shopify-app/prisma/schema.prisma\")",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add app/routes/api.embed.reviews.tsx 'app/routes/embed[.]js.tsx' app/routes/admin.embed.tsx app/routes/admin.tsx)",
+      "Bash(git -c user.email='mariano@crafters.com.ar' -c user.name='mariano-git88' add prisma/)",
+      "Bash(grep -rn \"Product \\\\${\" app/)",
+      "Bash(git -c user.name=mariano-git88 -c user.email=mariano@crafters.com.ar commit -m ' *)"
     ]
   }
 }
