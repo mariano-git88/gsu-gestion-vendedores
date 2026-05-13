@@ -676,6 +676,8 @@ else:
                         "numero_factura": emision["numero"],
                         "cae": emision["cae"],
                         "fiscal_url": emision["fiscal_url"],
+                        "orden_cancelada": bool(emision.get("orden_cancelada")),
+                        "orden_cancel_error": emision.get("orden_cancel_error") or "",
                         "error": "",
                     })
                     # Bajar PDF (best-effort: si falla, no rompe el flujo
@@ -705,6 +707,8 @@ else:
                         "numero_factura": "",
                         "cae": "",
                         "fiscal_url": "",
+                        "orden_cancelada": False,
+                        "orden_cancel_error": "",
                         "error": str(exc)[:300],
                     })
 
@@ -770,6 +774,8 @@ else:
                             "numero_factura": r["numero_factura"],
                             "cae": r["cae"],
                             "fiscal_url": r["fiscal_url"],
+                            "orden_cancelada": r.get("orden_cancelada", False),
+                            "orden_cancel_error": r.get("orden_cancel_error", ""),
                             "error": r["error"],
                         }
                         for r in resultados

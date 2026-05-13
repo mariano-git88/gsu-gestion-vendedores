@@ -210,8 +210,18 @@ def _calcular_periodo(fecha_desde: str, fecha_hasta: str):
     """
     session = _api_session()
     session, mapa, valid_vendors = comisiones_data.cargar_clientes_para_comisiones(session)
+    # IDs de órdenes facturadas via API masiva (canceladas pero con
+    # factura emitida vinculada vía RefExterna). Se cuentan como
+    # ventas válidas aunque su estado en Contabilium sea Cancelada.
+    # Ver sesión 2026-05-13: pivot a RefExterna para no perder
+    # comisiones de órdenes que el facturador cancela para liberar
+    # StockReservado del bug Contabilium.
+    session, ids_facturadas = comisiones_data.cargar_ids_ordenes_facturadas_via_api(
+        session, fecha_desde, fecha_hasta
+    )
     session, ventas = comisiones_data.cargar_ventas_desde_api(
-        session, fecha_desde, fecha_hasta, valid_vendors
+        session, fecha_desde, fecha_hasta, valid_vendors,
+        ids_facturadas_via_api=ids_facturadas,
     )
     session, cobranzas = comisiones_data.cargar_cobranzas_desde_api(
         session, fecha_desde, fecha_hasta, mapa

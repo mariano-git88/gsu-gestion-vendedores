@@ -65,17 +65,19 @@ TAB_LOG_FACTURACION = "log_facturacion"
 # Schema del log de facturación masiva. Una fila por orden procesada
 # (sea exitosa o fallida). Append-only: nunca se borran ni reescriben filas.
 LOG_FACTURACION_COLUMNS = [
-    "timestamp",         # ISO YYYY-MM-DD HH:MM:SS
-    "id_orden",          # int, ID interno de Contabilium
-    "numero_orden",      # str, ej "00010445"
-    "comprador",         # str, razón social del cliente
-    "total_uyu",         # float
-    "status",            # "OK" | "ERROR"
-    "id_comprobante",    # int (0 si falló antes de crear borrador)
-    "numero_factura",    # str, ej "FAC A-00033662" (vacío si falló)
-    "cae",               # str (vacío si falló)
-    "fiscal_url",        # str URL del QR DGI (vacío si falló)
-    "error",             # str con mensaje de error (vacío si OK)
+    "timestamp",          # ISO YYYY-MM-DD HH:MM:SS
+    "id_orden",           # int, ID interno de Contabilium
+    "numero_orden",       # str, ej "00010445"
+    "comprador",          # str, razón social del cliente
+    "total_uyu",          # float
+    "status",             # "OK" | "ERROR"
+    "id_comprobante",     # int (0 si falló antes de crear borrador)
+    "numero_factura",     # str, ej "FAC A-00033662" (vacío si falló)
+    "cae",                # str (vacío si falló)
+    "fiscal_url",         # str URL del QR DGI (vacío si falló)
+    "orden_cancelada",    # bool: si la orden de venta se canceló post-emisión (libera reserva)
+    "orden_cancel_error", # str: mensaje de error si falló la cancelación (factura sigue válida)
+    "error",              # str con mensaje de error (vacío si OK)
 ]
 
 HISTORICO_COLUMNS = [
@@ -488,9 +490,13 @@ def append_log_facturacion(
         rows=10000, cols=len(LOG_FACTURACION_COLUMNS),
     )
 
-    # Asegurar header en row 1.
+    # Asegurar header en row 1. Si el header existe pero tiene menos
+    # columnas que LOG_FACTURACION_COLUMNS (Sheet creado con schema
+    # viejo), lo reemplazamos in-place — append_rows no se rompe porque
+    # las filas viejas mantienen sus valores en las primeras N columnas
+    # y las nuevas quedan vacías.
     existing_header = ws.row_values(1)
-    if not existing_header:
+    if not existing_header or len(existing_header) < len(LOG_FACTURACION_COLUMNS):
         ws.update("A1", [LOG_FACTURACION_COLUMNS], value_input_option="RAW")
 
     # Construir filas en el orden de LOG_FACTURACION_COLUMNS, todo string.

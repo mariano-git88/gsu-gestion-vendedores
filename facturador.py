@@ -465,6 +465,34 @@ def obtener_pdf(
     return session, r.content
 
 
+def cancelar_orden(
+    session: api_loader.ApiSession,
+    id_orden: int,
+) -> api_loader.ApiSession:
+    """POST /api/ordenesventa/Cancel?id=. Cancela una orden de venta.
+
+    Uso clave en el pipeline post-facturación: cuando emitís la factura
+    via API, Contabilium descuenta StockActual correctamente PERO no
+    libera StockReservado (la reserva colgada de la orden). El "Libres"
+    queda doble-descontado. Cancelar la orden libera la reserva sin
+    tocar StockActual (que ya bajó solo).
+
+    Como en errors.md (sesión 2026-05-06) está documentado, este endpoint
+    es el HANDLER GENÉRICO de /api/ordenesventa/<algo>?id= — los nombres
+    son decorativos. El subpath "Cancel" es el canónico de la doc oficial,
+    lo usamos por claridad.
+
+    Para que comisiones no pierda esta venta, ver la lógica de RefExterna
+    en comisiones_data.py (sesión 2026-05-13).
+    """
+    session, r = _post(session, f"/api/ordenesventa/Cancel?id={id_orden}", body={})
+    if r.status_code != 200:
+        raise FacturadorError(
+            f"Cancel orden {id_orden}: HTTP {r.status_code} | {r.text[:200]}"
+        )
+    return session
+
+
 def eliminar_borrador(
     session: api_loader.ApiSession,
     id_borrador: int,
@@ -563,6 +591,24 @@ def facturar_orden(
                 f"Original: {exc_emitir}. Cleanup: {exc_cleanup}"
             ) from exc_emitir
 
+    # Cancelar la orden tras emisión exitosa. Esto libera el
+    # StockReservado, que el bug del API de Contabilium no toca al
+    # facturar (sí descuenta StockActual, pero deja la reserva
+    # colgada — Gabi reportó "Libres baja doble"). Ver feedback
+    # 2026-05-13 + decisión de pivotear comisiones a RefExterna.
+    #
+    # Best effort: si Cancel falla, NO romper. La factura ya está
+    # emitida con CAE válido. Solo registramos el error en el dict
+    # para que el caller pueda mostrarlo y eventualmente cancelar
+    # manualmente desde Contabilium.
+    orden_cancelada = False
+    orden_cancel_error: str | None = None
+    try:
+        session = cancelar_orden(session, id_orden)
+        orden_cancelada = True
+    except Exception as exc_cancel:
+        orden_cancel_error = str(exc_cancel)
+
     return session, {
         "id_borrador": id_borrador,
         "id_comprobante": id_borrador,  # mismo id, ya con CAE.
@@ -572,4 +618,6 @@ def facturar_orden(
         "fiscal_url": emision.get("FiscalUrl"),
         "link_publico": emision.get("LinkPublico"),
         "fecha_cae": emision.get("FechaCAE"),
+        "orden_cancelada": orden_cancelada,
+        "orden_cancel_error": orden_cancel_error,
     }

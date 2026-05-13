@@ -106,11 +106,54 @@ def cargar_clientes_para_comisiones(
 # Cargador de ventas (órdenes de venta del período)
 # =====================================================================
 
+def cargar_ids_ordenes_facturadas_via_api(
+    session: api_loader.ApiSession,
+    fecha_desde: str,
+    fecha_hasta: str,
+) -> tuple[api_loader.ApiSession, set[str]]:
+    """Devuelve set de IDs de órdenes (como string) que tienen un
+    comprobante emitido vinculado vía `RefExterna`.
+
+    Necesario porque el facturador masivo (sesión 2026-05-13+) cancela
+    la orden de venta tras emitir la factura — para liberar la
+    StockReservado, que el bug del lado servidor de Contabilium no
+    libera al facturar via API. Pero las comisiones filtran órdenes
+    `Cancelada`, así que sin este cruce perderíamos esas ventas
+    facturadas-canceladas. Acá listamos qué órdenes están en esa
+    situación y `cargar_ventas_desde_api` las trata como excepción
+    al filtro de Cancelada.
+
+    Caveat: el server NO soporta filtro por RefExterna en el query
+    string (lo ignora silenciosamente). Paginamos todo el rango y
+    filtramos client-side. ~21 páginas por 1000 items, ~35-42s con
+    throttling.
+    """
+    path = (
+        f"/api/comprobantes/search"
+        f"?fechaDesde={fecha_desde}&fechaHasta={fecha_hasta}"
+    )
+    session, items = api_loader.api_paginate(session, path)
+    out: set[str] = set()
+    for it in items:
+        numero = str(it.get("Numero") or "")
+        # Excluir borradores (sufijo "-00000000"); estos son
+        # comprobantes que no salieron como factura legal.
+        if not numero or numero.endswith("-00000000"):
+            continue
+        ref = str(it.get("RefExterna") or "").strip()
+        if not ref:
+            continue  # comprobantes emitidos via UI Contabilium NO tienen RefExterna
+        out.add(ref)
+    return session, out
+
+
 def cargar_ventas_desde_api(
     session: api_loader.ApiSession,
     fecha_desde: str,
     fecha_hasta: str,
     valid_vendors: set[str],
+    *,
+    ids_facturadas_via_api: set[str] | None = None,
 ) -> tuple[api_loader.ApiSession, dict]:
     """Pullea órdenes del período y devuelve la estructura legacy de
     `commissions.load_ventas`.
@@ -142,6 +185,8 @@ def cargar_ventas_desde_api(
     bruto_excluido_invalido: dict = defaultdict(float)
     monedas_no_uyu: list = []
 
+    ids_facturadas_via_api = ids_facturadas_via_api or set()
+
     for it in items:
         vend = (it.get("Vendedor") or "").strip()
         estado = it.get("Estado", "")
@@ -158,8 +203,17 @@ def cargar_ventas_desde_api(
             excluidas["vendedor_op"] += 1
             continue
         if estado in ESTADOS_EXCLUIDOS:
-            excluidas["cancelada"] += 1
-            continue
+            # Excepción: orden cancelada PERO con factura emitida vía
+            # API vinculada (cancelación intencional del facturador
+            # masivo para liberar StockReservado). Esa venta es real
+            # — la contamos para comisiones igual que si la orden
+            # estuviera Pendiente.
+            id_orden = str(it.get("Id") or "")
+            if id_orden in ids_facturadas_via_api:
+                pass  # caen al flujo normal abajo
+            else:
+                excluidas["cancelada"] += 1
+                continue
         if vend not in valid_vendors:
             excluidas["vendedor_invalido"] += 1
             bruto_excluido_invalido[vend] += api_loader.parse_monto_uy(
