@@ -32,7 +32,7 @@ del proyecto autorizado a llamar endpoints de escritura de la API.
 from __future__ import annotations
 
 import time
-from datetime import date
+from datetime import date, timedelta
 
 import requests
 
@@ -60,6 +60,12 @@ SUFIJO_BORRADOR = "-00000000"
 # Default UYU. Los items de las órdenes traen IDMoneda en la respuesta;
 # si por alguna razón no viene, asumimos UYU.
 ID_MONEDA_UYU = 794
+
+# Días de vencimiento que se setean en el comprobante. Si dejamos
+# FechaVencimiento=None, Contabilium aplica un default de 10 días que
+# Suprabond NO usa — el negocio opera a 30 días contra cliente B2B.
+# Cambiar acá si se ajusta la política.
+DIAS_VENCIMIENTO_DEFAULT = 30
 
 USER_AGENT = "GSU-Facturador/1.0"
 DEFAULT_TIMEOUT = 60
@@ -379,7 +385,9 @@ def mapear_orden_a_body_crear(
         "Modo": "E",
         "PuntoVenta": str(punto_venta_id),
         "Inventario": int(inventario_id),
-        "FechaVencimiento": None,
+        "FechaVencimiento": (
+            fecha_emision + timedelta(days=DIAS_VENCIMIENTO_DEFAULT)
+        ).isoformat(),
         "Items": items_body,
         "Tributos": None,
         "Observaciones": (orden.get("Observaciones") or "")[:500],
