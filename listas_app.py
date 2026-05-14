@@ -34,6 +34,7 @@ import pandas as pd
 import streamlit as st
 
 import api_loader
+import gsheets
 import listas
 import theme
 
@@ -115,6 +116,19 @@ def _lista_uy_cached() -> pd.DataFrame:
     return df
 
 
+def _gsheets_section() -> dict:
+    """Sección de secrets para Google Sheets. Reusa la misma config que
+    el módulo de comisiones (`[gsheets]`): mismo spreadsheet, hoja
+    nueva `equivalencias_uy_ar`."""
+    return dict(st.secrets["gsheets"])
+
+
+@st.cache_data(ttl=300, show_spinner="Cargando equivalencias UY↔AR...")
+def _equivalencias_cached() -> pd.DataFrame:
+    """Tabla de equivalencias cacheada 5min. Se limpia tras add/delete."""
+    return gsheets.read_equivalencias_listas(_gsheets_section())
+
+
 # =====================================================================
 # Sidebar — configuración
 # =====================================================================
@@ -189,7 +203,21 @@ except Exception as e:
     st.error(f"Error parseando el xlsx AR: {e}")
     st.stop()
 
-df_cruzado = listas.cruzar_listas(df_uy, df_ar)
+try:
+    df_equivs = _equivalencias_cached()
+except Exception as e:
+    st.warning(
+        f"No pude leer las equivalencias del Sheet — sigo sin ellas. "
+        f"Detalle: {e}"
+    )
+    df_equivs = pd.DataFrame(columns=gsheets.EQUIVALENCIAS_LISTAS_COLUMNS)
+
+equivs_map = (
+    dict(zip(df_equivs["sku_ar"].astype(str), df_equivs["sku_uy"].astype(str)))
+    if not df_equivs.empty else {}
+)
+
+df_cruzado = listas.cruzar_listas(df_uy, df_ar, equivalencias=equivs_map)
 df_cmp = listas.convertir_a_moneda(df_cruzado, fx_ars_usd, fx_uyu_usd, moneda=moneda_cmp)
 
 
@@ -253,6 +281,87 @@ st.download_button(
     file_name=f"listas_uy_vs_ar_{moneda_cmp.lower()}.csv",
     mime="text/csv",
 )
+
+
+# --- Equivalencias SKU UY ↔ SKU AR
+st.markdown("---")
+st.subheader("Equivalencias SKU UY ↔ SKU AR")
+st.caption(
+    "Cuando un mismo producto tiene códigos distintos en cada lista, "
+    "podés vincularlos manualmente acá. Las equivalencias se guardan en "
+    "Google Sheets (hoja `equivalencias_uy_ar`) y se aplican en todos "
+    "los cruces posteriores."
+)
+
+with st.expander(f"Equivalencias actuales ({len(df_equivs)})", expanded=False):
+    if df_equivs.empty:
+        st.caption("Todavía no hay equivalencias cargadas.")
+    else:
+        for i, row in df_equivs.reset_index(drop=True).iterrows():
+            c1, c2, c3, c4 = st.columns([3, 3, 4, 1])
+            c1.text(f"UY: {row['sku_uy']}")
+            c2.text(f"AR: {row['sku_ar']}")
+            c3.caption(f"{row.get('fecha', '')} · {row.get('nota', '')}")
+            if c4.button("🗑️", key=f"del_eq_{i}", help="Eliminar equivalencia"):
+                try:
+                    gsheets.delete_equivalencia_lista(
+                        _gsheets_section(), row["sku_uy"], row["sku_ar"]
+                    )
+                    _equivalencias_cached.clear()
+                    st.success(f"Borrada: {row['sku_uy']} ↔ {row['sku_ar']}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"No pude borrar: {e}")
+
+with st.expander("➕ Agregar equivalencia", expanded=False):
+    df_solo_uy = df_cmp[df_cmp["presencia"] == "solo_uy"][["sku", "nombre_uy", "rubro"]].dropna(subset=["sku"])
+    df_solo_ar = df_cmp[df_cmp["presencia"] == "solo_ar"][["sku", "nombre_ar", "categoria_ar"]].dropna(subset=["sku"])
+
+    if df_solo_uy.empty or df_solo_ar.empty:
+        st.caption(
+            "No hay SKUs sin matchear en alguna de las listas — todo "
+            "cruzó automáticamente."
+        )
+    else:
+        col_uy, col_ar = st.columns(2)
+        with col_uy:
+            opciones_uy = df_solo_uy.sort_values("sku")["sku"].tolist()
+            def _lbl_uy(s):
+                fila = df_solo_uy[df_solo_uy["sku"] == s].iloc[0]
+                return f"{s} — {fila['nombre_uy']}"
+            sku_uy_new = st.selectbox(
+                "SKU solo en UY",
+                options=opciones_uy,
+                format_func=_lbl_uy,
+                key="new_eq_uy",
+            )
+        with col_ar:
+            opciones_ar = df_solo_ar.sort_values("sku")["sku"].tolist()
+            def _lbl_ar(s):
+                fila = df_solo_ar[df_solo_ar["sku"] == s].iloc[0]
+                return f"{s} — {fila['nombre_ar']}"
+            sku_ar_new = st.selectbox(
+                "SKU solo en AR",
+                options=opciones_ar,
+                format_func=_lbl_ar,
+                key="new_eq_ar",
+            )
+        nota_new = st.text_input("Nota (opcional)", key="new_eq_nota")
+        if st.button("Guardar equivalencia", key="save_eq", type="primary"):
+            try:
+                res = gsheets.add_equivalencia_lista(
+                    _gsheets_section(), sku_uy_new, sku_ar_new, nota=nota_new
+                )
+                _equivalencias_cached.clear()
+                if res.get("agregada"):
+                    st.success(f"Guardada: {sku_uy_new} ↔ {sku_ar_new}")
+                else:
+                    st.info(f"Esta equivalencia ya existía.")
+                st.rerun()
+            except gsheets.GsheetsError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Error inesperado: {e}")
 
 
 # --- Análisis por ancla
@@ -342,6 +451,8 @@ except ValueError as e:
     st.stop()
 
 df_ratios_disp = df_ratios.rename(columns={
+    "precio_uyu": "precio (UYU)",
+    "precio_uyu_teorico": "precio teórico (UYU)",
     "precio_uy_cmp": f"precio UY ({moneda_cmp})",
     "precio_ar_cmp": f"precio AR ({moneda_cmp})",
     "ratio_uy": "ratio UY",
@@ -355,6 +466,8 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
     column_config={
+        "precio (UYU)": st.column_config.NumberColumn(format="%.2f"),
+        "precio teórico (UYU)": st.column_config.NumberColumn(format="%.2f"),
         f"precio UY ({moneda_cmp})": st.column_config.NumberColumn(format="%.2f"),
         f"precio AR ({moneda_cmp})": st.column_config.NumberColumn(format="%.2f"),
         "ratio UY": st.column_config.NumberColumn(format="%.3f"),

@@ -61,6 +61,17 @@ TAB_HISTORICO = "historico"
 TAB_PIVOT = "pivot_vendedor"
 TAB_COBRANZAS_PAGADAS = "cobranzas_pagadas"
 TAB_LOG_FACTURACION = "log_facturacion"
+TAB_EQUIVALENCIAS_LISTAS = "equivalencias_uy_ar"
+
+# Tabla de equivalencias entre SKUs UY (Contabilium) y SKUs AR
+# (export Lista_Marketing). Una fila por equivalencia confirmada
+# manualmente desde listas_app.py.
+EQUIVALENCIAS_LISTAS_COLUMNS = [
+    "sku_uy",         # str — SKU canónico (Contabilium UY)
+    "sku_ar",         # str — SKU del export AR que mapea al UY
+    "fecha",          # ISO YYYY-MM-DD HH:MM cuando se creó la equivalencia
+    "nota",           # str opcional, contexto sobre por qué son equivalentes
+]
 
 # Schema del log de facturación masiva. Una fila por orden procesada
 # (sea exitosa o fallida). Append-only: nunca se borran ni reescriben filas.
@@ -506,3 +517,145 @@ def append_log_facturacion(
 
     ws.append_rows(rows_data, value_input_option="RAW")
     return len(rows_data)
+
+
+# =====================================================================
+# Equivalencias UY ↔ AR (listas de precios)
+# =====================================================================
+
+def read_equivalencias_listas(gsheets_section: dict) -> pd.DataFrame:
+    """Lee la tab de equivalencias SKU UY ↔ SKU AR.
+
+    Si la tab no existe, la crea con headers y devuelve DataFrame vacío.
+    """
+    sh = _open_sheet(gsheets_section)
+    ws = _ensure_worksheet(
+        sh, TAB_EQUIVALENCIAS_LISTAS, cols=len(EQUIVALENCIAS_LISTAS_COLUMNS)
+    )
+    rows = ws.get_all_values()
+
+    if not rows:
+        ws.update("A1", [EQUIVALENCIAS_LISTAS_COLUMNS])
+        return pd.DataFrame(columns=EQUIVALENCIAS_LISTAS_COLUMNS)
+
+    headers = rows[0]
+    if headers != EQUIVALENCIAS_LISTAS_COLUMNS:
+        if all(not c for c in headers):
+            ws.update("A1", [EQUIVALENCIAS_LISTAS_COLUMNS])
+            return pd.DataFrame(columns=EQUIVALENCIAS_LISTAS_COLUMNS)
+        raise GsheetsError(
+            f"Encabezados inesperados en tab '{TAB_EQUIVALENCIAS_LISTAS}'. "
+            f"Esperaba {EQUIVALENCIAS_LISTAS_COLUMNS}, encontró {headers}."
+        )
+
+    if len(rows) < 2:
+        return pd.DataFrame(columns=EQUIVALENCIAS_LISTAS_COLUMNS)
+
+    return pd.DataFrame(rows[1:], columns=EQUIVALENCIAS_LISTAS_COLUMNS)
+
+
+def add_equivalencia_lista(
+    gsheets_section: dict,
+    sku_uy: str,
+    sku_ar: str,
+    nota: str = "",
+) -> dict:
+    """Agrega una equivalencia SKU UY ↔ SKU AR. Idempotente: si la
+    misma combinación ya existe, no se duplica.
+
+    Valida que ni `sku_uy` ni `sku_ar` aparezcan ya en otras
+    equivalencias (caso ambiguo): si alguno está, raise GsheetsError
+    con el conflicto explícito.
+    """
+    sku_uy = (sku_uy or "").strip().upper()
+    sku_ar = (sku_ar or "").strip().upper()
+    if not sku_uy or not sku_ar:
+        raise GsheetsError("sku_uy y sku_ar no pueden estar vacíos.")
+
+    df = read_equivalencias_listas(gsheets_section)
+
+    if not df.empty:
+        df["sku_uy"] = df["sku_uy"].astype(str).str.strip().str.upper()
+        df["sku_ar"] = df["sku_ar"].astype(str).str.strip().str.upper()
+
+        # Idempotencia: ya existe exactamente esta combinación
+        ya_esta = ((df["sku_uy"] == sku_uy) & (df["sku_ar"] == sku_ar)).any()
+        if ya_esta:
+            return {"agregada": False, "motivo": "ya_existia"}
+
+        # Conflictos
+        conflicto_uy = df[df["sku_uy"] == sku_uy]
+        if not conflicto_uy.empty:
+            otro_ar = conflicto_uy.iloc[0]["sku_ar"]
+            raise GsheetsError(
+                f"El SKU UY {sku_uy!r} ya está vinculado al SKU AR "
+                f"{otro_ar!r}. Borrá esa equivalencia antes de crear una nueva."
+            )
+        conflicto_ar = df[df["sku_ar"] == sku_ar]
+        if not conflicto_ar.empty:
+            otro_uy = conflicto_ar.iloc[0]["sku_uy"]
+            raise GsheetsError(
+                f"El SKU AR {sku_ar!r} ya está vinculado al SKU UY "
+                f"{otro_uy!r}. Borrá esa equivalencia antes de crear una nueva."
+            )
+
+    sh = _open_sheet(gsheets_section)
+    ws = _ensure_worksheet(
+        sh, TAB_EQUIVALENCIAS_LISTAS, cols=len(EQUIVALENCIAS_LISTAS_COLUMNS)
+    )
+    # Asegurar header
+    existing_header = ws.row_values(1)
+    if not existing_header or existing_header[: len(EQUIVALENCIAS_LISTAS_COLUMNS)] != EQUIVALENCIAS_LISTAS_COLUMNS:
+        ws.update("A1", [EQUIVALENCIAS_LISTAS_COLUMNS], value_input_option="RAW")
+
+    fila = [
+        sku_uy,
+        sku_ar,
+        datetime.now().strftime("%Y-%m-%d %H:%M"),
+        str(nota or ""),
+    ]
+    ws.append_row(fila, value_input_option="RAW")
+    return {"agregada": True}
+
+
+def delete_equivalencia_lista(
+    gsheets_section: dict,
+    sku_uy: str,
+    sku_ar: str,
+) -> dict:
+    """Elimina la equivalencia (sku_uy, sku_ar) del Sheet. Si no existe,
+    devuelve {"eliminada": False, "motivo": "no_existia"} sin error.
+    """
+    sku_uy = (sku_uy or "").strip().upper()
+    sku_ar = (sku_ar or "").strip().upper()
+
+    sh = _open_sheet(gsheets_section)
+    ws = _ensure_worksheet(
+        sh, TAB_EQUIVALENCIAS_LISTAS, cols=len(EQUIVALENCIAS_LISTAS_COLUMNS)
+    )
+    rows = ws.get_all_values()
+    if len(rows) < 2:
+        return {"eliminada": False, "motivo": "no_existia"}
+
+    headers = rows[0]
+    if headers != EQUIVALENCIAS_LISTAS_COLUMNS:
+        raise GsheetsError(
+            f"Encabezados inesperados en tab '{TAB_EQUIVALENCIAS_LISTAS}'."
+        )
+
+    data = rows[1:]
+    nuevas = [
+        r for r in data
+        if not (
+            len(r) >= 2
+            and r[0].strip().upper() == sku_uy
+            and r[1].strip().upper() == sku_ar
+        )
+    ]
+    if len(nuevas) == len(data):
+        return {"eliminada": False, "motivo": "no_existia"}
+
+    grid = [EQUIVALENCIAS_LISTAS_COLUMNS] + nuevas
+    ws.clear()
+    ws.update("A1", grid, value_input_option="RAW")
+    return {"eliminada": True, "filas_restantes": len(nuevas)}

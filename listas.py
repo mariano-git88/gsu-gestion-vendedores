@@ -106,11 +106,35 @@ def load_lista_uy(
     return session, df
 
 
-def cruzar_listas(df_uy: pd.DataFrame, df_ar: pd.DataFrame) -> pd.DataFrame:
+def cruzar_listas(
+    df_uy: pd.DataFrame,
+    df_ar: pd.DataFrame,
+    equivalencias: dict[str, str] | None = None,
+) -> pd.DataFrame:
     """Outer join por SKU. Agrega columna `presencia` con valores
     "ambas" / "solo_uy" / "solo_ar" para filtrar después en la app.
+
+    `equivalencias` es un mapping `sku_ar → sku_uy` (ambos normalizados
+    a uppercase) que permite cruzar productos cuyo código difiere entre
+    listas pero se confirmó manualmente que son el mismo SKU. Antes del
+    merge, los SKUs de AR se reemplazan por su equivalente UY; el SKU
+    original de AR se preserva en la columna `sku_ar_original` para
+    trazabilidad.
     """
-    df = df_uy.merge(df_ar, on="sku", how="outer", indicator=True)
+    df_ar_eff = df_ar.copy()
+    df_ar_eff["sku_ar_original"] = df_ar_eff["sku"]
+    if equivalencias:
+        mapping = {_norm_sku(k): _norm_sku(v) for k, v in equivalencias.items()}
+        # Series.replace con dict tiene comportamiento dependiente del
+        # dtype (ArrowStringArray no matchea). map con fallback es
+        # type-agnostic y siempre devuelve dtype object.
+        df_ar_eff["sku"] = df_ar_eff["sku"].map(lambda s: mapping.get(s, s))
+        # Si dos SKUs AR mapearan al mismo SKU UY (caso raro), nos
+        # quedamos con el último — la app valida unicidad al crear la
+        # equivalencia, así que esto es defensivo.
+        df_ar_eff = df_ar_eff.drop_duplicates(subset=["sku"], keep="last")
+
+    df = df_uy.merge(df_ar_eff, on="sku", how="outer", indicator=True)
     df["presencia"] = df["_merge"].map(
         {"both": "ambas", "left_only": "solo_uy", "right_only": "solo_ar"}
     )
@@ -171,6 +195,7 @@ def calcular_ratios_ancla(
 
     Columnas devueltas:
         sku, nombre_uy, rubro, sub_rubro, categoria_ar, marca,
+        precio_uyu, precio_uyu_teorico,
         precio_uy_cmp, precio_ar_cmp,
         ratio_uy, ratio_ar, delta_ratio, delta_ratio_pct
 
@@ -183,6 +208,11 @@ def calcular_ratios_ancla(
         delta_ratio > 0 → el SKU está relativamente más caro en UY que
         en AR respecto al ancla. < 0 → relativamente más barato. ≈ 0
         → la estructura relativa coincide entre ambas listas.
+
+        precio_uyu_teorico = precio_uyu_ancla × ratio_ar. Es el precio
+        en UYU que el SKU debería tener si la estructura UY replicara
+        exactamente la de AR (anclando ambas en el mismo SKU). Comparar
+        contra precio_uyu real cuantifica el desvío en pesos.
     """
     sku_ancla = _norm_sku(sku_ancla)
     fila_ancla = df_cruzado[df_cruzado["sku"] == sku_ancla]
@@ -200,6 +230,13 @@ def calcular_ratios_ancla(
     if precio_uy_ancla <= 0 or precio_ar_ancla <= 0:
         raise ValueError(f"SKU ancla {sku_ancla!r} con precio no positivo")
 
+    precio_uyu_ancla = ancla.get("precio_uyu")
+    if pd.isna(precio_uyu_ancla) or precio_uyu_ancla <= 0:
+        raise ValueError(
+            f"SKU ancla {sku_ancla!r} sin precio UYU válido "
+            f"(precio_uyu={precio_uyu_ancla!r})"
+        )
+
     if skus_a_comparar is None:
         df = df_cruzado.copy()
     else:
@@ -210,10 +247,12 @@ def calcular_ratios_ancla(
     df["ratio_ar"] = df["precio_ar_cmp"] / precio_ar_ancla
     df["delta_ratio"] = df["ratio_uy"] - df["ratio_ar"]
     df["delta_ratio_pct"] = (df["ratio_uy"] / df["ratio_ar"] - 1) * 100
+    df["precio_uyu_teorico"] = precio_uyu_ancla * df["ratio_ar"]
 
     cols = [
         "sku", "nombre_uy", "rubro", "sub_rubro",
         "categoria_ar", "marca",
+        "precio_uyu", "precio_uyu_teorico",
         "precio_uy_cmp", "precio_ar_cmp",
         "ratio_uy", "ratio_ar", "delta_ratio", "delta_ratio_pct",
     ]
