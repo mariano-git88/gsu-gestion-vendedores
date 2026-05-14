@@ -191,6 +191,12 @@ def convertir_a_moneda(
         out["precio_uy_cmp"] = out["precio_uyu"]
         out["precio_ar_cmp"] = out["precio_ars"] / fx_ars_usd * fx_uyu_usd
 
+    # Siempre disponible: precio AR expresado en UYU vía USD intermedio
+    # (= ARS / fx_ars_usd × fx_uyu_usd). Útil para comparar el precio
+    # uruguayo cargado contra lo que "debería" ser según AR, sin
+    # importar la moneda elegida para la comparación general.
+    out["precio_ar_uyu_equiv"] = out["precio_ars"] / fx_ars_usd * fx_uyu_usd
+
     out["delta_pct"] = (
         (out["precio_uy_cmp"] - out["precio_ar_cmp"]) / out["precio_ar_cmp"] * 100
     )

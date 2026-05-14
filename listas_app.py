@@ -255,12 +255,13 @@ if cats_sel:
 cols_show = [
     "sku", "presencia", "nombre_uy", "rubro", "sub_rubro",
     "categoria_ar", "nombre_ar", "marca",
-    "precio_uy_cmp", "precio_ar_cmp", "delta_pct",
+    "precio_uy_cmp", "precio_ar_cmp", "precio_ar_uyu_equiv", "delta_pct",
 ]
 cols_show = [c for c in cols_show if c in df_tabla.columns]
 df_tabla_disp = df_tabla[cols_show].rename(columns={
     "precio_uy_cmp": f"precio UY ({moneda_cmp})",
     "precio_ar_cmp": f"precio AR ({moneda_cmp})",
+    "precio_ar_uyu_equiv": "precio AR en UYU",
     "delta_pct": "Δ % (UY vs AR)",
 })
 
@@ -271,6 +272,11 @@ st.dataframe(
     column_config={
         f"precio UY ({moneda_cmp})": st.column_config.NumberColumn(format="%.2f"),
         f"precio AR ({moneda_cmp})": st.column_config.NumberColumn(format="%.2f"),
+        "precio AR en UYU": st.column_config.NumberColumn(
+            format="%.2f",
+            help="Precio AR llevado a UYU vía USD (ARS ÷ fx_ars_usd × fx_uyu_usd). "
+                 "Lo que debería costar en UYU según la lista AR.",
+        ),
         "Δ % (UY vs AR)": st.column_config.NumberColumn(format="%.1f %%"),
     },
 )
