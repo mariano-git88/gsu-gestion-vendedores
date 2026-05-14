@@ -472,3 +472,88 @@ decorativos) NO es exclusivo de Contabilium — es común en cualquier API
 .NET MVC que no tenga rutas explícitas. Antes de confiar en un endpoint
 no documentado, **el primer test es probar un nombre absurdo y ver si
 responde igual**.
+
+---
+
+## 2026-05-13 — Reservas fantasma en Contabilium al facturar via API
+
+**Bug del lado servidor de Contabilium**: al facturar una orden de venta
+via `/api/comprobantes/crear` + `/emitirFE`, Contabilium **sí descuenta
+`StockActual`** del depósito (correcto) PERO **NO libera el `StockReservado`**
+de la orden (incorrecto). La orden queda en estado `Pendiente` para
+siempre con su reserva colgada — aunque la mercadería ya salió.
+
+Gabi reportó (2026-05-13) el síntoma: "Libres baja DOBLE — una vez por
+menos físico, otra vez por reserva no liberada". Resultado operativo:
+después de varias facturaciones via API, intentar facturar una orden
+nueva con SKUs cuyo `StockConReservas` está agotado por reservas
+fantasma → HTTP 500 `"El producto no tiene stock suficiente en el
+inventario seleccionado"`.
+
+**Fix definitivo** (sesión 2026-05-13): después de emitir la factura,
+cancelar la orden (`POST /api/ordenesventa/Cancel?id=`). El Cancel
+libera StockReservado sin tocar StockActual (que ya bajó solo). Ver
+decisión completa en `_learning/decisions.md`.
+
+**Cleanup históricas**: si encontrás el error `"stock no suficiente"` al
+facturar masivo, correr
+`_exploracion-api-contabilium/cleanup_reservas_fantasma.py` (DRY RUN
+primero, después `--apply`). Lista órdenes Pendientes con factura
+emitida vía API y las cancela en bulk.
+
+---
+
+## 2026-05-13 — Campo `ID` (D mayúscula) en `/api/ordenesventa/search`
+
+`GET /api/ordenesventa/search` devuelve cada orden con campo **`ID`**
+(D mayúscula), no `Id`. Lo descubrí cuando el primer dry run del cleanup
+me dio 0 cruces con 109 órdenes + 109 RefExterna — todos los
+`o.get("Id")` daban `None`.
+
+Contra-intuitivo porque otros endpoints usan `Id` (minúscula): por
+ejemplo `/api/comprobantes/search` devuelve `Id` para el ID del
+comprobante. **No hay regla uniforme** entre endpoints.
+
+**Defensa**: cuando cruces IDs entre endpoints distintos, hacer fallback:
+
+```python
+oid = str(o.get("ID") or o.get("Id") or "")
+```
+
+Aplicado en:
+- `comisiones_data.py::cargar_ventas_desde_api` (filtro de excepción RefExterna)
+- `_exploracion-api-contabilium/cleanup_reservas_fantasma.py`
+
+---
+
+## 2026-05-13 — `/api/inventarios/modificarStock` es ABSOLUTO, no relativo
+
+El parámetro `cantidad` de `POST /api/inventarios/modificarStock?id=&idConcepto=&cantidad=N`
+**sobreescribe `StockActual` al valor `N`**. No suma ni resta — setea.
+
+Discovery validado (`discovery_modificar_stock.py`):
+- StockActual baseline = 0, `cantidad=1` → StockActual = 1 (parece suma)
+- StockActual = 1, `cantidad=-1` → StockActual = -1 (NO es "restar 1", es "setear a -1")
+- StockActual = -1, `cantidad=1` → StockActual = 1 (confirmado: absoluto)
+
+**Implicaciones**:
+1. Para "descontar N" tenés que hacer `GET stock + calcular nuevo + POST cantidad=nuevo`. **Race condition** entre el GET y el POST.
+2. NO afecta StockReservado (solo toca StockActual). Inútil para liberar reservas.
+
+**Endpoint alternativo más seguro**: `POST /api/inventarios/movimientoInterno?idDepositoOrigen=&idDepositoDestino=&codigo=&cantidad=N`
+es atómico y semánticamente más claro. Considerar antes que modificarStock
+si necesitás ajustar inventario via API.
+
+**Endpoints de inventario válidos** (para futuras consultas):
+```
+GET  /api/inventarios/getDepositos
+GET  /api/inventarios/getStockByDeposito?id=&page=&pageSize=
+GET  /api/inventarios/getStockBySKU?codigo=          ← útil
+POST /api/inventarios/modificarStock?id=&idConcepto=&cantidad=N  ← ABSOLUTO, ojo
+POST /api/inventarios/movimientoInterno?...           ← atómico, preferible
+GET  /api/stock/Novedades?skip=&timestamp=
+```
+
+**NO existen** (probadas en sesión inicial y daban 404): `/api/depositos`,
+`/api/stock` (a secas), `/api/inventario` (sin `s`). El prefix correcto
+es **`/api/inventarios/`** (con `s` final).

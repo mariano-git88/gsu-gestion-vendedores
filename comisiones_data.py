@@ -208,7 +208,10 @@ def cargar_ventas_desde_api(
             # masivo para liberar StockReservado). Esa venta es real
             # — la contamos para comisiones igual que si la orden
             # estuviera Pendiente.
-            id_orden = str(it.get("Id") or "")
+            # /api/ordenesventa/search devuelve "ID" (D mayúscula), no
+            # "Id". RefExterna guarda ese ID como string. Defensivo
+            # por si en otra versión la API cambia el case.
+            id_orden = str(it.get("ID") or it.get("Id") or "")
             if id_orden in ids_facturadas_via_api:
                 pass  # caen al flujo normal abajo
             else:

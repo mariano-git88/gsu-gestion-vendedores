@@ -1535,3 +1535,71 @@ un dict serializable.
 - Costo: ~USD 0.005-0.02 por consulta. <USD 5/mes para uso real.
 
 **Confirmado por:** Mariano, sesión 2026-05-05/06.
+
+---
+
+## 2026-05-13 — Facturador cancela orden post-emisión + comisiones cruza RefExterna
+
+### Contexto
+
+Hasta hoy el facturador masivo emitía la factura via API y dejaba la
+orden de venta en `Pendiente`. Gabi reportó que "Libres" (StockConReservas)
+bajaba doble: una vez porque StockActual bajaba bien (Contabilium descuenta
+físico al emitir), otra vez porque StockReservado quedaba colgado en la
+orden. Resultado: reservas fantasma que bloqueaban facturaciones nuevas
+con error `HTTP 500 — El producto no tiene stock suficiente`.
+
+Único endpoint que toca StockReservado es `POST /api/ordenesventa/Cancel`.
+Cancelar la orden post-emisión libera la reserva sin tocar StockActual
+(que ya bajó solo por el bug). Pero rompía comisiones, que excluyen
+estado `Cancelada`.
+
+### Decisión 1 — Pipeline del facturador agrega `cancelar_orden` post-emisión
+
+`facturador.py::facturar_orden()` llama `cancelar_orden(session, id_orden)`
+después de `emitir_fe` exitoso. Best-effort: si Cancel falla, NO rompe
+(la factura ya está emitida con CAE válido). Devuelve flags
+`orden_cancelada` + `orden_cancel_error` para que el caller los logue.
+
+Schema del Sheet `log_facturacion` extendido con 2 columnas nuevas
+(`orden_cancelada`, `orden_cancel_error`). Migración in-place del header
+si el Sheet existe con schema viejo.
+
+### Decisión 2 — Comisiones cruza `RefExterna` para no perder canceladas-facturadas
+
+**INVARIANTE CRÍTICO (Mariano, 2026-05-13): el cálculo de comisiones NO
+puede fallar nunca.** Cualquier cambio que toque `commissions.py` o
+`comisiones_data.py` requiere smoke test que confirme el path legacy
+(sin órdenes canceladas-facturadas) da resultado idéntico al cambio
+anterior.
+
+Implementación:
+- Nueva `comisiones_data.cargar_ids_ordenes_facturadas_via_api(session,
+  desde, hasta)` pagina `/api/comprobantes/search` y devuelve set de
+  RefExterna (= IDs de órdenes facturadas via API).
+- `cargar_ventas_desde_api()` acepta param opcional `ids_facturadas_via_api`.
+  Cuando estado == "Cancelada" pero el `ID` de la orden está en el set,
+  la cuenta como venta válida (excepción al filtro de cancelada).
+- `comisiones_app.py` invoca el cruce antes de cargar ventas.
+
+**Smoke test invariante** (`_exploracion-api-contabilium/smoke_comisiones_refexterna.py`):
+con set vacío (pre-rollout) el resultado es IDÉNTICO al legacy. 479 ventas
+en abril 2026, brutas y excluidas coinciden bit a bit. **Antes de tocar
+comisiones en el futuro, correr este smoke**.
+
+### Decisión 3 — Vencimiento de facturas: emisión + 30 días
+
+`facturador.py::DIAS_VENCIMIENTO_DEFAULT = 30`. Antes mandábamos
+`FechaVencimiento: None` y Contabilium aplicaba su default de 10 días,
+incorrecto para Suprabond B2B (opera a 30). Cambiar la constante si la
+política comercial cambia.
+
+### Cleanup operativo 2026-05-13
+
+90 órdenes Pendientes históricas con factura emitida vía API (reservas
+fantasma acumuladas semanas) canceladas en bulk con
+`_exploracion-api-contabilium/cleanup_reservas_fantasma.py --apply`.
+Total liberado: ~UYU 777.231 en reservas fantasma. Cero fallos.
+A futuro el flow nuevo previene la acumulación.
+
+**Confirmado por:** Mariano, sesión 2026-05-13.
