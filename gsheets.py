@@ -618,6 +618,96 @@ def add_equivalencia_lista(
     return {"agregada": True}
 
 
+def bulk_add_equivalencias_listas(
+    gsheets_section: dict,
+    filas: list[dict],
+) -> dict:
+    """Inserción masiva de equivalencias. Append-only.
+
+    Cada elemento de `filas` debe tener keys: sku_uy, sku_ar, y
+    opcionalmente nota.
+
+    Comportamiento por fila:
+      - Pares (sku_uy, sku_ar) ya existentes exactos → conteo en
+        `duplicadas`, no se reescriben.
+      - sku_uy o sku_ar ya vinculados a OTRA equivalencia (en el Sheet
+        o en el mismo batch) → registrado en `conflictos` con motivo.
+      - Resto → agregadas en un solo `append_rows` (1 escritura, evita
+        rate-limit 429 de Google Sheets).
+
+    Devuelve dict:
+        {agregadas: int, duplicadas: int, conflictos: list[dict]}
+    Cada conflicto es {sku_uy, sku_ar, motivo}.
+    """
+    if not filas:
+        return {"agregadas": 0, "duplicadas": 0, "conflictos": []}
+
+    df_existente = read_equivalencias_listas(gsheets_section)
+
+    pares_existentes: set[tuple[str, str]] = set()
+    sku_uy_tomados: dict[str, str] = {}
+    sku_ar_tomados: dict[str, str] = {}
+    if not df_existente.empty:
+        for _, r in df_existente.iterrows():
+            uy = str(r["sku_uy"]).strip().upper()
+            ar = str(r["sku_ar"]).strip().upper()
+            if uy and ar:
+                pares_existentes.add((uy, ar))
+                sku_uy_tomados[uy] = ar
+                sku_ar_tomados[ar] = uy
+
+    agregadas_rows: list[list[str]] = []
+    duplicadas = 0
+    conflictos: list[dict] = []
+    fecha_now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    for f in filas:
+        uy = (f.get("sku_uy") or "").strip().upper()
+        ar = (f.get("sku_ar") or "").strip().upper()
+        nota = str(f.get("nota") or "")
+        if not uy or not ar:
+            conflictos.append({
+                "sku_uy": uy, "sku_ar": ar, "motivo": "sku vacío"
+            })
+            continue
+        if (uy, ar) in pares_existentes:
+            duplicadas += 1
+            continue
+        if uy in sku_uy_tomados:
+            conflictos.append({
+                "sku_uy": uy, "sku_ar": ar,
+                "motivo": f"SKU UY ya vinculado a {sku_uy_tomados[uy]}",
+            })
+            continue
+        if ar in sku_ar_tomados:
+            conflictos.append({
+                "sku_uy": uy, "sku_ar": ar,
+                "motivo": f"SKU AR ya vinculado a {sku_ar_tomados[ar]}",
+            })
+            continue
+        # Reservar para detectar conflictos internos del mismo batch
+        pares_existentes.add((uy, ar))
+        sku_uy_tomados[uy] = ar
+        sku_ar_tomados[ar] = uy
+        agregadas_rows.append([uy, ar, fecha_now, nota])
+
+    if agregadas_rows:
+        sh = _open_sheet(gsheets_section)
+        ws = _ensure_worksheet(
+            sh, TAB_EQUIVALENCIAS_LISTAS, cols=len(EQUIVALENCIAS_LISTAS_COLUMNS)
+        )
+        existing_header = ws.row_values(1)
+        if not existing_header or existing_header[: len(EQUIVALENCIAS_LISTAS_COLUMNS)] != EQUIVALENCIAS_LISTAS_COLUMNS:
+            ws.update("A1", [EQUIVALENCIAS_LISTAS_COLUMNS], value_input_option="RAW")
+        ws.append_rows(agregadas_rows, value_input_option="RAW")
+
+    return {
+        "agregadas": len(agregadas_rows),
+        "duplicadas": duplicadas,
+        "conflictos": conflictos,
+    }
+
+
 def delete_equivalencia_lista(
     gsheets_section: dict,
     sku_uy: str,

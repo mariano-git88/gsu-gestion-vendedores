@@ -6,3 +6,4 @@ gspread>=6.0
 google-auth>=2.30
 anthropic>=0.40
 pypdf>=4.0
+rapidfuzz>=3.0

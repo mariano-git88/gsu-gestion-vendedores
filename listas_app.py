@@ -313,10 +313,10 @@ with st.expander(f"Equivalencias actuales ({len(df_equivs)})", expanded=False):
                 except Exception as e:
                     st.error(f"No pude borrar: {e}")
 
-with st.expander("➕ Agregar equivalencia", expanded=False):
-    df_solo_uy = df_cmp[df_cmp["presencia"] == "solo_uy"][["sku", "nombre_uy", "rubro"]].dropna(subset=["sku"])
-    df_solo_ar = df_cmp[df_cmp["presencia"] == "solo_ar"][["sku", "nombre_ar", "categoria_ar"]].dropna(subset=["sku"])
+df_solo_uy = df_cmp[df_cmp["presencia"] == "solo_uy"][["sku", "nombre_uy", "rubro"]].dropna(subset=["sku"])
+df_solo_ar = df_cmp[df_cmp["presencia"] == "solo_ar"][["sku", "nombre_ar", "categoria_ar"]].dropna(subset=["sku"])
 
+with st.expander("➕ Agregar equivalencia (manual)", expanded=False):
     if df_solo_uy.empty or df_solo_ar.empty:
         st.caption(
             "No hay SKUs sin matchear en alguna de las listas — todo "
@@ -362,6 +362,153 @@ with st.expander("➕ Agregar equivalencia", expanded=False):
                 st.error(str(e))
             except Exception as e:
                 st.error(f"Error inesperado: {e}")
+
+with st.expander("🔎 Sugerencias automáticas (fuzzy match)", expanded=False):
+    st.caption(
+        "Buscamos candidatos AR para cada SKU sólo UY usando un score "
+        "combinado: 70% similitud de descripción + 30% similitud de SKU. "
+        "Revisá las sugerencias antes de aceptarlas — el score es una guía, "
+        "no una verdad absoluta."
+    )
+    if df_solo_uy.empty or df_solo_ar.empty:
+        st.caption("No hay SKUs sueltos en alguna de las listas.")
+    else:
+        col_t, col_n = st.columns(2)
+        threshold = col_t.slider(
+            "Score mínimo",
+            min_value=0, max_value=100, value=50, step=5,
+            key="sug_threshold",
+            help="Sugerencias con score combinado menor a este valor no aparecen.",
+        )
+        top_n_sug = col_n.slider(
+            "Sugerencias por SKU UY",
+            min_value=1, max_value=5, value=3,
+            key="sug_topn",
+        )
+        if st.button("Calcular sugerencias", key="run_fuzzy"):
+            with st.spinner(f"Comparando {len(df_solo_uy)} × {len(df_solo_ar)} pares..."):
+                st.session_state["sug_df"] = listas.sugerir_matches(
+                    df_solo_uy, df_solo_ar, top_n=top_n_sug, threshold=threshold,
+                )
+
+        sug_df = st.session_state.get("sug_df")
+        if sug_df is not None and not sug_df.empty:
+            st.caption(
+                f"**{len(sug_df)} sugerencia(s) encontradas** "
+                f"para {sug_df['sku_uy'].nunique()} SKU(s) UY. "
+                f"Marcá la columna *Aceptar* en las que quieras guardar."
+            )
+            sug_edit = sug_df.copy()
+            sug_edit.insert(0, "Aceptar", False)
+            edited = st.data_editor(
+                sug_edit,
+                use_container_width=True,
+                hide_index=True,
+                disabled=[
+                    "sku_uy", "nombre_uy", "sku_ar", "nombre_ar",
+                    "score_nombre", "score_sku", "score_total", "rank",
+                ],
+                column_config={
+                    "Aceptar": st.column_config.CheckboxColumn(default=False),
+                    "score_nombre": st.column_config.NumberColumn(format="%.0f"),
+                    "score_sku": st.column_config.NumberColumn(format="%.0f"),
+                    "score_total": st.column_config.NumberColumn(format="%.0f"),
+                },
+                key="sug_editor",
+            )
+            marcadas = edited[edited["Aceptar"] == True]
+            if not marcadas.empty:
+                if st.button(
+                    f"Guardar {len(marcadas)} equivalencia(s) marcada(s)",
+                    type="primary",
+                    key="save_sug",
+                ):
+                    filas_in = [
+                        {
+                            "sku_uy": r["sku_uy"],
+                            "sku_ar": r["sku_ar"],
+                            "nota": f"fuzzy match (score {int(r['score_total'])})",
+                        }
+                        for _, r in marcadas.iterrows()
+                    ]
+                    try:
+                        res = gsheets.bulk_add_equivalencias_listas(
+                            _gsheets_section(), filas_in
+                        )
+                        _equivalencias_cached.clear()
+                        st.success(
+                            f"Agregadas: {res['agregadas']} · "
+                            f"Duplicadas: {res['duplicadas']} · "
+                            f"Conflictos: {len(res['conflictos'])}"
+                        )
+                        if res["conflictos"]:
+                            st.dataframe(
+                                pd.DataFrame(res["conflictos"]),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+                        st.session_state.pop("sug_df", None)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error guardando: {e}")
+        elif sug_df is not None:
+            st.info(
+                "Ninguna sugerencia supera el threshold. Bajá el score "
+                "mínimo o revisá manualmente."
+            )
+
+with st.expander("📥 Import masivo desde xlsx", expanded=False):
+    st.caption(
+        "Subí un xlsx con columnas `sku_uy` y `sku_ar` (la columna `nota` "
+        "es opcional). Modo **append**: las equivalencias existentes no "
+        "se borran. Las filas que ya existen se saltean y los conflictos "
+        "(SKU ya vinculado a otra equivalencia) se reportan."
+    )
+    uploaded_eq = st.file_uploader(
+        "Archivo xlsx",
+        type=["xlsx"],
+        key="upload_eq_bulk",
+    )
+    if uploaded_eq is not None:
+        try:
+            df_import = listas.parse_xlsx_equivalencias(uploaded_eq)
+        except ValueError as e:
+            st.error(str(e))
+            df_import = None
+        except Exception as e:
+            st.error(f"Error leyendo el archivo: {e}")
+            df_import = None
+
+        if df_import is not None:
+            st.caption(f"**Preview**: {len(df_import)} fila(s) válida(s) en el archivo.")
+            st.dataframe(df_import, use_container_width=True, hide_index=True)
+            if st.button(
+                f"Importar {len(df_import)} equivalencia(s)",
+                type="primary",
+                key="confirm_bulk",
+            ):
+                with st.spinner("Guardando en Google Sheets..."):
+                    try:
+                        res = gsheets.bulk_add_equivalencias_listas(
+                            _gsheets_section(),
+                            df_import.to_dict("records"),
+                        )
+                        _equivalencias_cached.clear()
+                        st.success(
+                            f"Agregadas: {res['agregadas']} · "
+                            f"Duplicadas (skip): {res['duplicadas']} · "
+                            f"Conflictos: {len(res['conflictos'])}"
+                        )
+                        if res["conflictos"]:
+                            st.markdown("**Conflictos:**")
+                            st.dataframe(
+                                pd.DataFrame(res["conflictos"]),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error guardando: {e}")
 
 
 # --- Análisis por ancla

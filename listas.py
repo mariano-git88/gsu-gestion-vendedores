@@ -37,6 +37,7 @@ Análisis por ancla:
 from __future__ import annotations
 
 import pandas as pd
+from rapidfuzz import fuzz
 
 import api_loader
 from subrubros import RUBROS, SUBRUBROS
@@ -55,8 +56,14 @@ COLS_AR: dict[str, str] = {
 
 def _norm_sku(s: object) -> str:
     """SKUs en ambas listas se normalizan a uppercase + strip para que
-    el cruce no falle por casing o espacios al borde."""
-    return str(s or "").strip().upper()
+    el cruce no falle por casing o espacios al borde.
+
+    NaN se trata como cadena vacía. Python lo considera truthy, así que
+    un `s or ""` no lo descarta — hay que chequear con `pd.isna` explícito.
+    """
+    if pd.isna(s):
+        return ""
+    return str(s).strip().upper()
 
 
 def parse_xlsx_ar(file_or_path) -> pd.DataFrame:
@@ -275,3 +282,121 @@ def calcular_ratios_ancla(
         ignore_index=True,
     )
     return df
+
+
+# =====================================================================
+# Fuzzy matching: sugerencias automáticas UY → AR
+# =====================================================================
+
+# Pesos del score combinado. Nombre pesa más porque las descripciones
+# largas suelen ser la señal más robusta cuando los SKUs difieren entre
+# países.
+SCORE_PESO_NOMBRE = 0.7
+SCORE_PESO_SKU = 0.3
+
+
+def sugerir_matches(
+    df_solo_uy: pd.DataFrame,
+    df_solo_ar: pd.DataFrame,
+    top_n: int = 3,
+    threshold: float = 50.0,
+) -> pd.DataFrame:
+    """Sugiere candidatos AR para cada SKU solo UY usando fuzzy match.
+
+    Score combinado:
+        score_total = 0.7 × similitud(nombre_uy, nombre_ar)
+                    + 0.3 × similitud(sku_uy, sku_ar)
+
+    `fuzz.token_sort_ratio` para nombres (ignora orden de tokens y
+    casing). `fuzz.ratio` para SKUs (comparación de caracteres).
+
+    Args:
+        df_solo_uy: DataFrame con columnas sku, nombre_uy. Universo a
+            buscar match.
+        df_solo_ar: DataFrame con columnas sku, nombre_ar. Universo de
+            candidatos.
+        top_n: top N candidatos por SKU UY.
+        threshold: descarta sugerencias con score_total < threshold.
+
+    Devuelve DataFrame long-format con columnas:
+        sku_uy, nombre_uy, sku_ar, nombre_ar,
+        score_nombre, score_sku, score_total, rank
+    """
+    cols = [
+        "sku_uy", "nombre_uy", "sku_ar", "nombre_ar",
+        "score_nombre", "score_sku", "score_total", "rank",
+    ]
+    if df_solo_uy.empty or df_solo_ar.empty:
+        return pd.DataFrame(columns=cols)
+
+    # Pre-extraer listas para no recorrer DataFrames en el inner loop
+    ar_records = [
+        (str(r["sku"]), str(r.get("nombre_ar") or "").strip())
+        for _, r in df_solo_ar.iterrows()
+    ]
+
+    sugerencias = []
+    for _, fila_uy in df_solo_uy.iterrows():
+        sku_uy = str(fila_uy["sku"])
+        nombre_uy = str(fila_uy.get("nombre_uy") or "").strip()
+        candidatos = []
+        for sku_ar, nombre_ar in ar_records:
+            score_n = fuzz.token_sort_ratio(nombre_uy, nombre_ar) if (nombre_uy and nombre_ar) else 0.0
+            score_s = fuzz.ratio(sku_uy, sku_ar)
+            score_t = SCORE_PESO_NOMBRE * score_n + SCORE_PESO_SKU * score_s
+            if score_t >= threshold:
+                candidatos.append((sku_ar, nombre_ar, score_n, score_s, score_t))
+        candidatos.sort(key=lambda x: x[4], reverse=True)
+        for rank, c in enumerate(candidatos[:top_n], start=1):
+            sugerencias.append({
+                "sku_uy": sku_uy,
+                "nombre_uy": nombre_uy,
+                "sku_ar": c[0],
+                "nombre_ar": c[1],
+                "score_nombre": round(c[2], 1),
+                "score_sku": round(c[3], 1),
+                "score_total": round(c[4], 1),
+                "rank": rank,
+            })
+    return pd.DataFrame(sugerencias, columns=cols)
+
+
+# =====================================================================
+# Import masivo de equivalencias desde xlsx
+# =====================================================================
+
+# Columnas requeridas en el xlsx de import. La de `nota` es opcional.
+COLS_EQUIVALENCIAS_REQUERIDAS = ("sku_uy", "sku_ar")
+
+
+def parse_xlsx_equivalencias(file_or_path) -> pd.DataFrame:
+    """Parsea un xlsx de import masivo de equivalencias.
+
+    Columnas requeridas (header case-insensitive): sku_uy, sku_ar.
+    Columna opcional: nota.
+
+    Devuelve DataFrame canónico con columnas sku_uy, sku_ar (uppercase
+    + strip) y nota (str, vacío si no había columna). Drops filas
+    vacías y duplicadas exactas.
+    """
+    df = pd.read_excel(file_or_path)
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    faltantes = [c for c in COLS_EQUIVALENCIAS_REQUERIDAS if c not in df.columns]
+    if faltantes:
+        raise ValueError(
+            f"Columnas faltantes en el xlsx: {faltantes}. "
+            f"Requeridas: {list(COLS_EQUIVALENCIAS_REQUERIDAS)}. "
+            f"`nota` es opcional."
+        )
+    out = pd.DataFrame({
+        "sku_uy": df["sku_uy"].map(_norm_sku),
+        "sku_ar": df["sku_ar"].map(_norm_sku),
+        "nota": (
+            df["nota"].fillna("").astype(str).str.strip()
+            if "nota" in df.columns
+            else pd.Series([""] * len(df))
+        ),
+    })
+    out = out[(out["sku_uy"] != "") & (out["sku_ar"] != "")]
+    out = out.drop_duplicates(subset=["sku_uy", "sku_ar"]).reset_index(drop=True)
+    return out
