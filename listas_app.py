@@ -34,6 +34,7 @@ import pandas as pd
 import streamlit as st
 
 import api_loader
+import fx
 import gsheets
 import listas
 import theme
@@ -146,19 +147,66 @@ uploaded = st.sidebar.file_uploader(
 )
 
 st.sidebar.markdown("**Tipos de cambio**")
+
+# Defaults solo si no hay nada en session_state. Cuando el botón
+# "Traer online" pisa estos valores, el next-run los lee desde
+# session_state vía la key del number_input.
+if "fx_ars_usd" not in st.session_state:
+    st.session_state["fx_ars_usd"] = 1420.0
+if "fx_uyu_usd" not in st.session_state:
+    st.session_state["fx_uyu_usd"] = 40.0
+
+if st.sidebar.button("🔄 Traer cotizaciones online", use_container_width=True):
+    errores = []
+    try:
+        blue = fx.obtener_blue_ars_usd()
+        st.session_state["fx_ars_usd"] = blue["venta"]
+        st.session_state["fx_blue_meta"] = blue
+    except fx.FxError as e:
+        errores.append(f"Blue: {e}")
+    try:
+        uyu = fx.obtener_uyu_usd()
+        st.session_state["fx_uyu_usd"] = uyu["valor"]
+        st.session_state["fx_uyu_meta"] = uyu
+    except fx.FxError as e:
+        errores.append(f"UYU: {e}")
+    if errores:
+        for err in errores:
+            st.sidebar.error(err)
+    else:
+        st.rerun()
+
+# Captions con detalle de la última cotización fetcheada.
+if "fx_blue_meta" in st.session_state:
+    b = st.session_state["fx_blue_meta"]
+    st.sidebar.caption(
+        f"Blue: compra **{b['compra']:.0f}** / venta **{b['venta']:.0f}** "
+        f"· {b['fecha'][:10]} · _{b['fuente']}_"
+    )
+if "fx_uyu_meta" in st.session_state:
+    u = st.session_state["fx_uyu_meta"]
+    st.sidebar.caption(
+        f"UYU/USD interbancario: **{u['valor']:.2f}** · "
+        f"{u['fecha'][:16]} · _{u['fuente']}_"
+    )
+
 fx_ars_usd = st.sidebar.number_input(
     "ARS por 1 USD",
     min_value=1.0,
-    value=1050.0,
     step=10.0,
-    help="Cotización ARS/USD a aplicar (MEP, blue, oficial). Manual.",
+    key="fx_ars_usd",
+    help=(
+        "Cotización ARS/USD a aplicar. Al traer online se rellena con la "
+        "**venta del Blue** (es el valor que da menos USD por el mismo "
+        "precio ARS, escenario más conservador para evaluar precios UY)."
+    ),
 )
 fx_uyu_usd = st.sidebar.number_input(
     "UYU por 1 USD",
     min_value=1.0,
-    value=40.0,
     step=0.5,
-    help="Cotización UYU/USD a aplicar. Manual.",
+    key="fx_uyu_usd",
+    help="Cotización UYU/USD. Al traer online usa open.er-api.com.",
 )
 moneda_cmp = st.sidebar.radio(
     "Comparar en",
