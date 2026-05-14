@@ -100,7 +100,7 @@ def load_lista_uy(
     para evitar colisiones con el lado AR.
 
     Devuelve (session, df) con columnas:
-        sku, nombre_uy, rubro, sub_rubro, precio_uyu
+        sku, nombre_uy, rubro, sub_rubro, precio_uyu, stock
     """
     session, df = api_loader.load_productos_api(
         session, subrubros_map=SUBRUBROS, rubros_map=RUBROS
@@ -108,7 +108,7 @@ def load_lista_uy(
     df = df.copy()
     df["sku"] = df["sku"].map(_norm_sku)
     df = df.rename(columns={"nombre": "nombre_uy", "precio": "precio_uyu"})
-    df = df[["sku", "nombre_uy", "rubro", "sub_rubro", "precio_uyu"]]
+    df = df[["sku", "nombre_uy", "rubro", "sub_rubro", "precio_uyu", "stock"]]
     df = df[df["sku"] != ""].reset_index(drop=True)
     return session, df
 

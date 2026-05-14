@@ -314,7 +314,7 @@ else:
         "precio_uy_cmp", "precio_uyu",
         "precio_ar_cmp", "precio_ar_uyu_equiv",
     ]
-cols_show += ["delta_pct"]
+cols_show += ["delta_pct", "stock"]
 cols_show = [c for c in cols_show if c in df_tabla.columns]
 df_tabla_disp = df_tabla[cols_show].rename(columns={
     "precio_uy_cmp": f"precio UY ({moneda_cmp})",
@@ -322,6 +322,7 @@ df_tabla_disp = df_tabla[cols_show].rename(columns={
     "precio_ar_cmp": f"precio AR ({moneda_cmp})",
     "precio_ar_uyu_equiv": "precio AR en UYU",
     "delta_pct": "Δ % (UY vs AR)",
+    "stock": "stock UY (un.)",
 })
 
 st.dataframe(
@@ -341,6 +342,10 @@ st.dataframe(
                  "Lo que debería costar en UYU según la lista AR.",
         ),
         "Δ % (UY vs AR)": st.column_config.NumberColumn(format="%.1f %%"),
+        "stock UY (un.)": st.column_config.NumberColumn(
+            format="%.0f",
+            help="Unidades en stock según Contabilium UY. Vacío en SKUs solo AR.",
+        ),
     },
 )
 
