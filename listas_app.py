@@ -303,11 +303,22 @@ if cats_sel:
 cols_show = [
     "sku", "presencia", "nombre_uy", "rubro", "sub_rubro",
     "categoria_ar", "nombre_ar", "marca",
-    "precio_uy_cmp", "precio_ar_cmp", "precio_ar_uyu_equiv", "delta_pct",
 ]
+# Columnas de precio. Cuando moneda_cmp == "UYU", `precio_uy_cmp` es
+# idéntico a `precio_uyu` y `precio_ar_cmp` es idéntico a
+# `precio_ar_uyu_equiv` — omito los duplicados para no ensuciar.
+if moneda_cmp == "UYU":
+    cols_show += ["precio_uyu", "precio_ar_uyu_equiv"]
+else:
+    cols_show += [
+        "precio_uy_cmp", "precio_uyu",
+        "precio_ar_cmp", "precio_ar_uyu_equiv",
+    ]
+cols_show += ["delta_pct"]
 cols_show = [c for c in cols_show if c in df_tabla.columns]
 df_tabla_disp = df_tabla[cols_show].rename(columns={
     "precio_uy_cmp": f"precio UY ({moneda_cmp})",
+    "precio_uyu": "precio UY (UYU)",
     "precio_ar_cmp": f"precio AR ({moneda_cmp})",
     "precio_ar_uyu_equiv": "precio AR en UYU",
     "delta_pct": "Δ % (UY vs AR)",
@@ -319,6 +330,10 @@ st.dataframe(
     hide_index=True,
     column_config={
         f"precio UY ({moneda_cmp})": st.column_config.NumberColumn(format="%.2f"),
+        "precio UY (UYU)": st.column_config.NumberColumn(
+            format="%.2f",
+            help="Precio UY tal cual lo trae Contabilium (neto sin IVA UY 22%).",
+        ),
         f"precio AR ({moneda_cmp})": st.column_config.NumberColumn(format="%.2f"),
         "precio AR en UYU": st.column_config.NumberColumn(
             format="%.2f",
