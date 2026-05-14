@@ -121,7 +121,14 @@ def cruzar_listas(
     original de AR se preserva en la columna `sku_ar_original` para
     trazabilidad.
     """
+    df_uy_eff = df_uy.copy()
     df_ar_eff = df_ar.copy()
+    # Forzar dtype object en sku de ambos lados. pd.read_excel suele
+    # devolver ArrowStringArray y .map() del normalizador no siempre
+    # downgradea — el merge entre dtypes incompatibles puede dar
+    # TypeError en algunas versiones de pandas.
+    df_uy_eff["sku"] = df_uy_eff["sku"].astype(object)
+    df_ar_eff["sku"] = df_ar_eff["sku"].astype(object)
     df_ar_eff["sku_ar_original"] = df_ar_eff["sku"]
     if equivalencias:
         mapping = {_norm_sku(k): _norm_sku(v) for k, v in equivalencias.items()}
@@ -134,8 +141,10 @@ def cruzar_listas(
         # equivalencia, así que esto es defensivo.
         df_ar_eff = df_ar_eff.drop_duplicates(subset=["sku"], keep="last")
 
-    df = df_uy.merge(df_ar_eff, on="sku", how="outer", indicator=True)
-    df["presencia"] = df["_merge"].map(
+    df = df_uy_eff.merge(df_ar_eff, on="sku", how="outer", indicator=True)
+    # _merge es Categorical; .map(dict) sobre Categorical tira TypeError
+    # en pandas < 2.2. astype(str) lo convierte a object antes del map.
+    df["presencia"] = df["_merge"].astype(str).map(
         {"both": "ambas", "left_only": "solo_uy", "right_only": "solo_ar"}
     )
     return df.drop(columns=["_merge"])
