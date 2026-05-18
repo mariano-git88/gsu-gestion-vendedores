@@ -106,6 +106,7 @@ URLs y passwords distintas:
 | `app.py` | Dashboard semanal del Jefe de Ventas (read-only) | `app_password` |
 | `comisiones_app.py` | Liquidación mensual de Comisiones (read API + write Sheet) | `comisiones_password` |
 | `facturador_app.py` | **Facturación masiva desde órdenes de venta** (write Contabilium) | `facturador_password` |
+| `pedidos_app.py` | **Carga de Pedidos** — lee y controla el Excel que mandan los vendedores (read-only, sin API en Fase 1) | `pedidos_password` |
 
 ### Facturador — uso local
 
@@ -123,3 +124,18 @@ checkbox + gate `FACTURAR` + run secuencial respetando throttling UY
 (reutiliza el mismo `[gsheets]` block que Comisiones — tab nueva
 `log_facturacion`). Ver `facturador.py` para los detalles del workflow
 oficial validado contra la API REST UY.
+
+### Carga de Pedidos — uso local
+
+```bash
+# Mismo entorno; agregar pedidos_password en secrets.toml
+streamlit run pedidos_app.py
+```
+
+Subís el Excel `NOTA DE PEDIDO G.S.U.` tal como lo manda el vendedor
+(protegido y con celdas combinadas, no importa). La app descarta el
+catálogo de relleno, deja solo los pedidos reales y verifica el control
+de totales (suma sin IVA × 1,22 == TOTAL CON IVA del Excel). Toda la
+lógica de lectura vive en `pedidos.py`. Fase 1 es read-only: no toca
+Contabilium. El chequeo de deuda por API (Fase 1b) está pendiente de
+confirmar qué campo de Contabilium es el "Nro. Cliente" del vendedor.
