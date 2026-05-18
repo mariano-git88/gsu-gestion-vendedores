@@ -93,3 +93,8 @@ _portal-suprabond/
 
 # Recommender AR — vive en repo separado, no commitear acá
 _recommender-ar/
+
+# Material del proceso de Carga de Pedidos: tiene Excel y screenshots
+# con clientes, RUTs y mails REALES. El repo es público — NUNCA subir.
+assets/Imágenes Proceso Carga de Pedido/
+*pedidos de *.xlsx
