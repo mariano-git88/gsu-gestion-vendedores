@@ -37,6 +37,7 @@ import pedidos
 import pedidos_deuda
 import pedidos_orden
 import theme
+import tutorial_pedidos
 
 try:
     import gsheets  # opcional: audit log de Fase 2 si está configurado.
@@ -239,6 +240,15 @@ def _maps_orden():
 
 
 # =====================================================================
+# Tutorial (modal abierto desde la sidebar)
+# =====================================================================
+
+@st.dialog("Tutorial — Carga de Pedidos", width="large")
+def _tutorial_dialog():
+    tutorial_pedidos.render()
+
+
+# =====================================================================
 # Sidebar
 # =====================================================================
 
@@ -249,6 +259,8 @@ with st.sidebar:
         "vendedor. No hace falta desproteger ni descombinar nada."
     )
     st.markdown("---")
+    if st.button("📖 Tutorial", use_container_width=True, key="btn_tutorial"):
+        _tutorial_dialog()
     if st.button("Cerrar sesión", use_container_width=True):
         st.session_state.pop("auth_pedidos", None)
         st.rerun()
