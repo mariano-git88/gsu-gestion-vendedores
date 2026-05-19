@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hmac
 import io
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -34,7 +35,13 @@ import streamlit as st
 import api_loader
 import pedidos
 import pedidos_deuda
+import pedidos_orden
 import theme
+
+try:
+    import gsheets  # opcional: audit log de Fase 2 si está configurado.
+except ImportError:
+    gsheets = None
 
 # =====================================================================
 # Page config + theme  (idéntico a facturador_app.py para misma UI)
@@ -209,6 +216,24 @@ def _deuda_map(meses: int):
     try:
         _, m, _err = pedidos_deuda.deuda_por_documento(sess, meses)
         return m
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@st.cache_data(ttl=3600, show_spinner="Cargando catálogo de Contabilium...")
+def _maps_orden():
+    """(mapa_conceptos, mapa_clientes_full, inventario_VENTAS) o None.
+    Read-only, cacheado 1h. Necesario para armar/cargar órdenes."""
+    sess = _api_session()
+    if sess is None:
+        return None
+    try:
+        sess, mc = pedidos_orden.cargar_mapa_conceptos(sess)
+        sess, mcli = pedidos_orden.cargar_mapa_clientes_full(sess)
+        sess, inv = pedidos_orden.resolver_inventario_ventas(sess)
+        if inv is None:
+            return None
+        return (mc, mcli, inv)
     except Exception:  # noqa: BLE001
         return None
 
@@ -477,3 +502,285 @@ else:
                 f"{_m} meses. Una factura impaga más vieja que la ventana "
                 "no aparece (misma limitación que el dashboard)."
             )
+
+
+# =====================================================================
+# Fase 2 — Carga de órdenes en Contabilium (⚠️ ESCRIBE EN PRODUCCIÓN)
+# =====================================================================
+
+st.markdown("---")
+st.subheader("Carga de órdenes en Contabilium")
+st.warning(
+    "⚠️ Esta sección **crea órdenes de venta reales en Contabilium** y "
+    "**reserva stock al instante**. Revisá todo antes de confirmar."
+)
+
+_maps = _maps_orden()
+_m_deuda = st.session_state.get("pedidos_deuda_meses")
+_deuda = _deuda_map(_m_deuda) if _m_deuda else None
+
+if _maps is None:
+    st.info(
+        "La API de Contabilium no está configurada o no respondió. "
+        "La carga de órdenes no está disponible (el lector sí funciona)."
+    )
+elif _deuda is None:
+    st.info(
+        "Primero corré **«🔎 Chequear deuda vencida»** acá arriba. Sin "
+        "saber la deuda no se puede saber qué pedidos necesitan "
+        "autorización de Valeria — la carga queda bloqueada hasta eso."
+    )
+else:
+    _mapa_conc, _mapa_cli_full, _inv_id = _maps
+    _hoy = datetime.now().date()
+
+    seleccionados = []
+    resumen_rows = []
+    for p in lista:
+        ident = pedidos_deuda.identificar(p.nro_cliente, p.cliente, _mapa)
+        rut = str(ident.get("rut", "") or "").strip()
+        d = _deuda.get(rut)
+        deuda_vencida = bool(d and d["vencida"] >= UMBRAL_VENCIDA_UYU)
+        tiene_comentario = bool((p.cond_pago or "").strip())
+
+        descuentos = {}
+        for it in p.items:
+            v = st.session_state.get(f"desc_{p.hoja}_{it.fila}", 0.0)
+            if v:
+                descuentos[it.fila] = float(v)
+
+        armado = pedidos_orden.armar_body_orden(
+            p, _mapa_cli_full, _mapa_conc, _inv_id,
+            descuentos=descuentos, fecha=_hoy,
+        )
+
+        titulo = (
+            f"{p.hoja} — {ident.get('razon_social', p.cliente)} "
+            f"({len(p.items)} ítems)"
+            + ("  ·  🔴 deuda vencida" if deuda_vencida else "")
+            + ("  ·  📝 comentario de precio" if tiene_comentario else "")
+        )
+        with st.expander(titulo, expanded=deuda_vencida or tiene_comentario):
+            if not armado.ok:
+                st.error("No se puede cargar:")
+                for pr in armado.problemas:
+                    st.markdown(f"- {pr}")
+                resumen_rows.append(
+                    {"Pedido": p.hoja, "Estado": "🔴 No cargable"}
+                )
+                continue
+
+            apr_deuda = True
+            apr_precio = True
+
+            if deuda_vencida:
+                st.error(
+                    f"Deuda vencida {_fmt_uyu(d['vencida'])} "
+                    f"(tramo {d['peor_bucket'] or '—'})."
+                )
+                apr_deuda = st.checkbox(
+                    "✅ APROBADO — deuda (Valeria autorizó cargar igual)",
+                    key=f"aprdeuda_{p.hoja}",
+                )
+
+            if tiene_comentario:
+                st.info(
+                    f"Comentario del vendedor (Cond. de Pago): "
+                    f"**{p.cond_pago}**"
+                )
+                apr_precio = st.checkbox(
+                    "✅ APROBADO — precio (comentario revisado)",
+                    key=f"aprprecio_{p.hoja}",
+                )
+                with st.expander("Desglosar / aplicar descuento por ítem"):
+                    for it in p.items:
+                        c1, c2 = st.columns([3, 1])
+                        c1.markdown(
+                            f"`{it.codigo}` {it.descripcion[:32]} — "
+                            f"{_fmt_uyu(it.precio_sin_iva)} ×{it.cantidad:g}"
+                        )
+                        c2.number_input(
+                            "Desc %", min_value=0.0, max_value=99.0,
+                            step=1.0, format="%g",
+                            key=f"desc_{p.hoja}_{it.fila}",
+                            label_visibility="collapsed",
+                        )
+                    st.caption(
+                        "Ej: precio 100 con 32 → se carga 68 "
+                        "(va al campo Bonificación)."
+                    )
+
+            if not (apr_deuda and apr_precio):
+                falta = []
+                if deuda_vencida and not apr_deuda:
+                    falta.append("APROBADO deuda")
+                if tiene_comentario and not apr_precio:
+                    falta.append("APROBADO precio")
+                st.warning(
+                    "Falta: " + " + ".join(falta)
+                    + " — este pedido NO se va a cargar."
+                )
+                resumen_rows.append(
+                    {"Pedido": p.hoja, "Estado": "🟠 Falta aprobación"}
+                )
+                continue
+
+            incluir = st.checkbox(
+                "Incluir este pedido en la carga",
+                key=f"incluir_{p.hoja}", value=False,
+            )
+            st.success(
+                "Listo para cargar · "
+                f"{_fmt_uyu(p.total_con_iva_declarado or 0)}"
+                + ("  ·  ⚠️ contiene combo" if armado.tiene_combo else "")
+            )
+            resumen_rows.append({
+                "Pedido": p.hoja,
+                "Estado": "🟢 Seleccionado" if incluir
+                else "⚪ Listo (sin tildar)",
+            })
+            if incluir:
+                seleccionados.append((p, armado.body, {
+                    "rut": rut,
+                    "razon_social": ident.get("razon_social", p.cliente),
+                    "deuda_vencida": deuda_vencida,
+                    "tiene_comentario": tiene_comentario,
+                    "descuentos": descuentos,
+                }))
+
+    st.markdown("### Confirmación")
+    if resumen_rows:
+        st.dataframe(
+            pd.DataFrame(resumen_rows),
+            use_container_width=True, hide_index=True,
+        )
+    st.markdown(f"**{len(seleccionados)}** pedido(s) tildados para cargar.")
+
+    if seleccionados:
+        with st.expander("Ver exactamente qué se va a mandar (revisión final)"):
+            for p, body, _meta in seleccionados:
+                st.markdown(f"**{p.hoja}**")
+                st.json(body)
+
+        usuario = st.text_input(
+            "Tu nombre/iniciales (para el registro de auditoría)",
+            key="pedidos_usuario",
+        )
+        st.warning(
+            "Al confirmar se crean las órdenes en Contabilium (reservan "
+            "stock). **La primera vez**, tildá UN solo pedido de prueba, "
+            "verificalo en Contabilium, y recién después cargá el resto."
+        )
+        gate = st.text_input(
+            "Escribí CARGAR PEDIDOS para habilitar el botón",
+            key="pedidos_gate",
+        )
+        listo = (
+            gate.strip() == "CARGAR PEDIDOS"
+            and len(seleccionados) > 0
+            and bool(usuario.strip())
+        )
+        if st.button(
+            "🚀 CARGAR PEDIDOS EN CONTABILIUM",
+            disabled=not listo, type="primary",
+        ):
+            session = _api_session()
+            if session is None:
+                st.error("No hay sesión con Contabilium. Revisá los secrets.")
+            else:
+                resultados, log_rows = [], []
+                barra = st.progress(0.0)
+                for idx, (p, body, meta) in enumerate(seleccionados, 1):
+                    fila = {
+                        "timestamp": datetime.now().isoformat(
+                            timespec="seconds"),
+                        "usuario": usuario.strip(),
+                        "pedido": p.hoja,
+                        "nro_cliente": p.nro_cliente,
+                        "cliente": meta["razon_social"],
+                        "rut": meta["rut"],
+                        "id_cliente": body["idCliente"],
+                        "id_vendedor": body["IDVendedor"],
+                        "n_items": len(body["items"]),
+                        "total_sin_iva": round(sum(
+                            i["precioUnitario"] * i["cantidad"]
+                            * (1 - i["bonificacion"] / 100.0)
+                            for i in body["items"]), 2),
+                        "aprobado_deuda": "SI" if meta["deuda_vencida"]
+                        else "N/A",
+                        "aprobado_precio": "SI" if meta["tiene_comentario"]
+                        else "N/A",
+                        "descuentos": "; ".join(
+                            f"fila{f}:{v:g}%"
+                            for f, v in meta["descuentos"].items()) or "—",
+                    }
+                    try:
+                        session, r = pedidos_orden.crear_orden(session, body)
+                        if r.status_code in (200, 201):
+                            try:
+                                j = r.json()
+                            except Exception:  # noqa: BLE001
+                                j = {}
+                            if not isinstance(j, dict):
+                                j = {}
+                            num = str(j.get("NumeroOrden")
+                                      or j.get("Numero")
+                                      or j.get("numeroOrden") or "")
+                            oid = str(j.get("ID") or j.get("Id")
+                                      or j.get("id") or "")
+                            fila.update(status="OK", numero_orden=num,
+                                        id_orden=oid, error="")
+                            resultados.append({
+                                "Pedido": p.hoja, "Resultado": "✅ Cargada",
+                                "Orden": num or oid or "(sin nº en respuesta)",
+                            })
+                        else:
+                            msg = f"HTTP {r.status_code}: {r.text[:200]}"
+                            fila.update(status="ERROR", numero_orden="",
+                                        id_orden="", error=msg)
+                            resultados.append({
+                                "Pedido": p.hoja, "Resultado": "❌ Error",
+                                "Orden": msg})
+                    except Exception as exc:  # noqa: BLE001
+                        fila.update(status="ERROR", numero_orden="",
+                                    id_orden="", error=str(exc)[:250])
+                        resultados.append({
+                            "Pedido": p.hoja, "Resultado": "❌ Error",
+                            "Orden": str(exc)[:120]})
+                    log_rows.append(fila)
+                    barra.progress(idx / len(seleccionados))
+
+                ok = sum(1 for r in resultados if "✅" in r["Resultado"])
+                ko = len(resultados) - ok
+                if ko == 0:
+                    st.success(
+                        f"✅ {ok} orden(es) cargada(s) correctamente "
+                        "en Contabilium."
+                    )
+                else:
+                    st.error(
+                        f"{ok} cargada(s), {ko} con error. Revisar abajo."
+                    )
+                st.dataframe(
+                    pd.DataFrame(resultados),
+                    use_container_width=True, hide_index=True,
+                )
+
+                if gsheets is not None and "gsheets_facturacion" in st.secrets:
+                    try:
+                        n = gsheets.append_log_carga_pedidos(
+                            dict(st.secrets["gsheets_facturacion"]), log_rows)
+                        st.caption(
+                            f"Registro de auditoría guardado ({n} fila/s) "
+                            "en Google Sheet (tab log_carga_pedidos)."
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        st.warning(
+                            "Órdenes procesadas, pero NO pude guardar el "
+                            f"audit log: {exc}"
+                        )
+                else:
+                    st.caption(
+                        "Audit log a Sheet deshabilitado "
+                        "(`[gsheets_facturacion]` no configurado en secrets)."
+                    )

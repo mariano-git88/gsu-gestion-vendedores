@@ -61,6 +61,7 @@ TAB_HISTORICO = "historico"
 TAB_PIVOT = "pivot_vendedor"
 TAB_COBRANZAS_PAGADAS = "cobranzas_pagadas"
 TAB_LOG_FACTURACION = "log_facturacion"
+TAB_LOG_CARGA_PEDIDOS = "log_carga_pedidos"
 TAB_EQUIVALENCIAS_LISTAS = "equivalencias_uy_ar"
 
 # Tabla de equivalencias entre SKUs UY (Contabilium) y SKUs AR
@@ -89,6 +90,28 @@ LOG_FACTURACION_COLUMNS = [
     "orden_cancelada",    # bool: si la orden de venta se canceló post-emisión (libera reserva)
     "orden_cancel_error", # str: mensaje de error si falló la cancelación (factura sigue válida)
     "error",              # str con mensaje de error (vacío si OK)
+]
+
+# Schema del audit log de Carga de Pedidos (Fase 2). Una fila por
+# pedido procesado. Append-only. Registra quién aprobó qué.
+LOG_CARGA_PEDIDOS_COLUMNS = [
+    "timestamp",          # ISO YYYY-MM-DD HH:MM:SS
+    "usuario",            # str — quien operó (libre, lo setea la app)
+    "pedido",             # str, hoja ej "Pedido 4"
+    "nro_cliente",        # str, el del Excel ej "4060"
+    "cliente",            # str, razón social Contabilium
+    "rut",                # str
+    "id_cliente",         # int Contabilium
+    "id_vendedor",        # int (vendedor del cliente)
+    "n_items",            # int
+    "total_sin_iva",      # float
+    "aprobado_deuda",     # "SI" | "NO" | "N/A"
+    "aprobado_precio",    # "SI" | "NO" | "N/A"
+    "descuentos",         # str, ej "fila10:32%; fila57:10%" | "—"
+    "status",             # "OK" | "ERROR"
+    "numero_orden",       # str (vacío si falló)
+    "id_orden",           # str/int (vacío si falló)
+    "error",              # str (vacío si OK)
 ]
 
 HISTORICO_COLUMNS = [
@@ -515,6 +538,39 @@ def append_log_facturacion(
     for f in filas:
         rows_data.append([str(f.get(c, "") or "") for c in LOG_FACTURACION_COLUMNS])
 
+    ws.append_rows(rows_data, value_input_option="RAW")
+    return len(rows_data)
+
+
+def append_log_carga_pedidos(
+    gsheets_section: dict,
+    filas: list[dict],
+) -> int:
+    """Apenda filas al audit log de Carga de Pedidos (Fase 2).
+
+    Append-only, mismo diseño que `append_log_facturacion`: tab dedicada
+    `log_carga_pedidos` (se crea con header si no existe), best-effort
+    desde el caller (un fallo del log no debe romper la carga; la verdad
+    vive en la orden creada en Contabilium). Reusa el mismo Sheet/Service
+    Account del facturador (`[gsheets_facturacion]`).
+    """
+    if not filas:
+        return 0
+
+    sh = _open_sheet(gsheets_section)
+    ws = _ensure_worksheet(
+        sh, TAB_LOG_CARGA_PEDIDOS,
+        rows=10000, cols=len(LOG_CARGA_PEDIDOS_COLUMNS),
+    )
+
+    existing_header = ws.row_values(1)
+    if not existing_header or len(existing_header) < len(LOG_CARGA_PEDIDOS_COLUMNS):
+        ws.update("A1", [LOG_CARGA_PEDIDOS_COLUMNS], value_input_option="RAW")
+
+    rows_data = [
+        [str(f.get(c, "") or "") for c in LOG_CARGA_PEDIDOS_COLUMNS]
+        for f in filas
+    ]
     ws.append_rows(rows_data, value_input_option="RAW")
     return len(rows_data)
 
