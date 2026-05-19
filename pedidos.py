@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import re
 
 import openpyxl
 
@@ -93,6 +94,35 @@ def _txt(v) -> str:
 
 def _num(v) -> float | None:
     return float(v) if isinstance(v, (int, float)) else None
+
+
+def codigo_cliente_candidatos(nro_cliente, cliente_texto) -> list[str]:
+    """Códigos Contabilium candidatos ('0XXXX-C') para un pedido.
+
+    Primero el Nro. Cliente (col E3). Como fallback, un número embebido
+    al principio del nombre del cliente (col C3), porque muchas veces el
+    vendedor escribe ahí el número: 'mucho texto' no matchea, pero
+    '4016-barraca pirata' o '4016 barraca pirata' → 04016-C.
+
+    Devuelve la lista de candidatos en orden de preferencia (sin
+    duplicados). El llamador prueba cada uno contra el maestro y se
+    queda con el primero que exista.
+    """
+    cands: list[str] = []
+
+    def fmt(d) -> str | None:
+        d = re.sub(r"\D", "", str(d or ""))
+        return f"{int(d):05d}-C" if d else None
+
+    c1 = fmt(nro_cliente)
+    if c1:
+        cands.append(c1)
+    m = re.match(r"\s*0*(\d{2,6})\b", str(cliente_texto or ""))
+    if m:
+        c2 = fmt(m.group(1))
+        if c2 and c2 not in cands:
+            cands.append(c2)
+    return cands
 
 
 def leer_pedidos(file_or_path) -> list[Pedido]:

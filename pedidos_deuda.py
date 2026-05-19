@@ -33,6 +33,7 @@ import unicodedata
 
 import api_loader
 import metrics
+import pedidos
 
 
 def codigo_contabilium(nro) -> str | None:
@@ -88,12 +89,13 @@ def identificar(nro_cliente, nombre_excel: str, mapa: dict[str, dict]) -> dict:
                            (posible Nro. Cliente equivocado → revisar).
       - "ok"             : código encontrado y nombre consistente.
     """
-    cod = codigo_contabilium(nro_cliente)
-    if cod is None:
+    cands = pedidos.codigo_cliente_candidatos(nro_cliente, nombre_excel)
+    if not cands:
         return {"estado": "sin_codigo", "codigo": None}
-    cli = mapa.get(cod)
-    if cli is None:
-        return {"estado": "no_encontrado", "codigo": cod}
+    cod = next((c for c in cands if c in mapa), None)
+    if cod is None:
+        return {"estado": "no_encontrado", "codigo": cands[0]}
+    cli = mapa[cod]
     a, b = _norm(nombre_excel), _norm(cli["razon_social"])
     coincide = bool(a) and bool(b) and (
         a in b or b in a or (len(a) >= 6 and len(b) >= 6 and a[:6] == b[:6])

@@ -533,36 +533,108 @@ elif _deuda is None:
 else:
     _mapa_conc, _mapa_cli_full, _inv_id = _maps
     _hoy = datetime.now().date()
+    _cli_cods = sorted(_mapa_cli_full)
+
+    def _cli_label(c):
+        if not c:
+            return "— elegí un cliente —"
+        r = _mapa_cli_full.get(c, {})
+        return f"{c} — {r.get('razon_social', '')} (RUT {r.get('rut', '')})"
 
     seleccionados = []
     resumen_rows = []
     for p in lista:
-        ident = pedidos_deuda.identificar(p.nro_cliente, p.cliente, _mapa)
-        rut = str(ident.get("rut", "") or "").strip()
+        _ov = st.session_state.get(f"cliov_{p.hoja}") or None
+        _cands = ([_ov] if _ov
+                  else pedidos.codigo_cliente_candidatos(
+                      p.nro_cliente, p.cliente))
+        cod_cli = next((c for c in _cands if c in _mapa_cli_full), None)
+        cli = _mapa_cli_full.get(cod_cli) if cod_cli else None
+        rut = str(cli.get("rut", "")).strip() if cli else ""
+        nombre_cli = cli.get("razon_social") if cli else p.cliente
         d = _deuda.get(rut)
         deuda_vencida = bool(d and d["vencida"] >= UMBRAL_VENCIDA_UYU)
         tiene_comentario = bool((p.cond_pago or "").strip())
 
-        descuentos = {}
+        descuentos, precios = {}, {}
         for it in p.items:
-            v = st.session_state.get(f"desc_{p.hoja}_{it.fila}", 0.0)
-            if v:
-                descuentos[it.fila] = float(v)
+            dv = st.session_state.get(f"desc_{p.hoja}_{it.fila}", 0.0)
+            if dv:
+                descuentos[it.fila] = float(dv)
+            pv = st.session_state.get(f"precio_{p.hoja}_{it.fila}")
+            if pv is not None:
+                precios[it.fila] = float(pv)
 
         armado = pedidos_orden.armar_body_orden(
             p, _mapa_cli_full, _mapa_conc, _inv_id,
-            descuentos=descuentos, fecha=_hoy,
+            descuentos=descuentos, precios=precios, fecha=_hoy,
+            codigo_cliente_override=cod_cli,
         )
 
         titulo = (
-            f"{p.hoja} — {ident.get('razon_social', p.cliente)} "
-            f"({len(p.items)} ítems)"
+            f"{p.hoja} — {nombre_cli} ({len(p.items)} ítems)"
             + ("  ·  🔴 deuda vencida" if deuda_vencida else "")
-            + ("  ·  📝 comentario de precio" if tiene_comentario else "")
+            + ("  ·  📝 comentario" if tiene_comentario else "")
+            + ("  ·  ⚠️ cliente sin asignar" if cli is None else "")
         )
-        with st.expander(titulo, expanded=deuda_vencida or tiene_comentario):
+        with st.expander(
+            titulo,
+            expanded=deuda_vencida or tiene_comentario or cli is None,
+        ):
+            # --- Cliente: asignación manual si no se identificó ---
+            if cli is None:
+                st.warning(
+                    f"No identifiqué el cliente (Nro. {p.nro_cliente!r} / "
+                    f"nombre {p.cliente!r}). Buscalo y asignalo a mano:"
+                )
+                st.selectbox(
+                    "Buscar y asignar cliente",
+                    options=[""] + _cli_cods,
+                    format_func=_cli_label,
+                    key=f"cliov_{p.hoja}",
+                )
+            else:
+                st.caption(
+                    f"Cliente: **{cli['razon_social']}** · RUT "
+                    f"{cli['rut']} · cód. {cod_cli} · vendedor "
+                    f"{cli.get('id_vendedor')}"
+                )
+
+            # --- Editor de ítems (precio + descuento), siempre ---
+            if p.items:
+                with st.expander(
+                    "Desglosar / editar ítems (precio y descuento)"
+                ):
+                    for it in p.items:
+                        st.session_state.setdefault(
+                            f"precio_{p.hoja}_{it.fila}",
+                            round(float(it.precio_sin_iva), 2),
+                        )
+                        cA, cB, cC = st.columns([4, 1.3, 1])
+                        cA.markdown(
+                            f"`{it.codigo}` {it.descripcion[:34]} "
+                            f"×{it.cantidad:g}"
+                        )
+                        cB.number_input(
+                            "Precio U.", min_value=0.0, step=1.0,
+                            format="%.2f",
+                            key=f"precio_{p.hoja}_{it.fila}",
+                            label_visibility="collapsed",
+                        )
+                        cC.number_input(
+                            "Desc %", min_value=0.0, max_value=99.0,
+                            step=1.0, format="%g",
+                            key=f"desc_{p.hoja}_{it.fila}",
+                            label_visibility="collapsed",
+                        )
+                    st.caption(
+                        "Precio U. = el del Excel (editable). Desc %: "
+                        "100 con 32 → neto 68 (campo Bonificación)."
+                    )
+
+            # --- ¿Se puede armar? ---
             if not armado.ok:
-                st.error("No se puede cargar:")
+                st.info("Todavía no se puede cargar:")
                 for pr in armado.problemas:
                     st.markdown(f"- {pr}")
                 resumen_rows.append(
@@ -592,23 +664,6 @@ else:
                     "✅ APROBADO — precio (comentario revisado)",
                     key=f"aprprecio_{p.hoja}",
                 )
-                with st.expander("Desglosar / aplicar descuento por ítem"):
-                    for it in p.items:
-                        c1, c2 = st.columns([3, 1])
-                        c1.markdown(
-                            f"`{it.codigo}` {it.descripcion[:32]} — "
-                            f"{_fmt_uyu(it.precio_sin_iva)} ×{it.cantidad:g}"
-                        )
-                        c2.number_input(
-                            "Desc %", min_value=0.0, max_value=99.0,
-                            step=1.0, format="%g",
-                            key=f"desc_{p.hoja}_{it.fila}",
-                            label_visibility="collapsed",
-                        )
-                    st.caption(
-                        "Ej: precio 100 con 32 → se carga 68 "
-                        "(va al campo Bonificación)."
-                    )
 
             if not (apr_deuda and apr_precio):
                 falta = []
@@ -642,7 +697,7 @@ else:
             if incluir:
                 seleccionados.append((p, armado.body, {
                     "rut": rut,
-                    "razon_social": ident.get("razon_social", p.cliente),
+                    "razon_social": nombre_cli,
                     "deuda_vencida": deuda_vencida,
                     "tiene_comentario": tiene_comentario,
                     "descuentos": descuentos,

@@ -127,26 +127,40 @@ def armar_body_orden(
     inventario_id: int,
     *,
     descuentos: dict[int, float] | None = None,
+    precios: dict[int, float] | None = None,
     fecha: dt.date | None = None,
+    codigo_cliente_override: str | None = None,
 ) -> ResultadoArmado:
     """Construye el body de POST /api/ordenesVenta para un pedido.
 
     NO hace red. Devuelve ResultadoArmado: si `ok` es False, `problemas`
     explica por qué no se puede cargar (y NO se debe llamar crear_orden).
 
-    `descuentos`: {fila_excel: porcentaje} que el operador ingresó por
-    ítem (ej. {53: 32.0} → bonificación 32% en el ítem de la fila 53).
+    `descuentos`: {fila_excel: %} de bonificación por ítem.
+    `precios`: {fila_excel: precio} que pisa el precio del Excel para
+        ese ítem (edición manual del operador).
+    `codigo_cliente_override`: si el operador asignó el cliente a mano,
+        el código Contabilium ('0XXXX-C') elegido. Si es None, se
+        resuelve por Nro. Cliente y, como fallback, por el número
+        embebido en el nombre (ver pedidos.codigo_cliente_candidatos).
     """
     descuentos = descuentos or {}
+    precios = precios or {}
     fecha = fecha or dt.date.today()
     problemas: list[str] = []
 
-    cod_cli = codigo_cliente(pedido.nro_cliente)
+    if codigo_cliente_override:
+        cands = [codigo_cliente_override]
+    else:
+        cands = pedidos.codigo_cliente_candidatos(
+            pedido.nro_cliente, pedido.cliente
+        )
+    cod_cli = next((c for c in cands if c in mapa_clientes), None)
     cli = mapa_clientes.get(cod_cli) if cod_cli else None
     if cli is None:
         problemas.append(
-            f"Cliente no identificado (Nro. {pedido.nro_cliente} → "
-            f"{cod_cli}). No se carga."
+            f"Cliente no identificado (Nro. {pedido.nro_cliente!r} / "
+            f"nombre {pedido.cliente!r}). Asignarlo a mano."
         )
     if cli and not cli.get("id_vendedor"):
         problemas.append(
@@ -156,6 +170,7 @@ def armar_body_orden(
 
     items_body = []
     tiene_combo = False
+    total_neto = 0.0
     for it in pedido.items:
         c = mapa_conceptos.get(_norm_sku(it.codigo))
         if c is None:
@@ -169,17 +184,27 @@ def armar_body_orden(
                 f"Descuento inválido en {it.codigo!r}: {pct} "
                 "(debe ser 0–99)."
             )
+        precio = precios.get(it.fila)
+        precio = float(precio) if precio is not None else float(it.precio_sin_iva)
+        if precio < 0:
+            problemas.append(f"Precio negativo en {it.codigo!r}: {precio}")
+        precio = round(precio, 2)
         items_body.append(
             {
                 "idConcepto": str(c["id"]),
                 "cantidad": float(it.cantidad),
-                "precioUnitario": round(float(it.precio_sin_iva), 2),
+                "precioUnitario": precio,
                 "bonificacion": round(pct, 2),
             }
         )
+        total_neto += precio * float(it.cantidad) * (1 - pct / 100.0)
 
     if not items_body:
         problemas.append("El pedido no tiene ítems cargables.")
+    elif round(total_neto, 2) <= 0:
+        problemas.append(
+            "El total del pedido es $0,00 — no se carga."
+        )
 
     if problemas:
         return ResultadoArmado(pedido.hoja, False, None, problemas, tiene_combo)
