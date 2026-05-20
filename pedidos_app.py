@@ -36,6 +36,7 @@ import api_loader
 import pedidos
 import pedidos_deuda
 import pedidos_orden
+import pedidos_pdf
 import theme
 import tutorial_pedidos
 
@@ -768,6 +769,7 @@ else:
                 seleccionados.append((p, armado.body, {
                     "rut": rut,
                     "razon_social": nombre_cli,
+                    "codigo_cli": cod_cli,
                     "deuda_vencida": deuda_vencida,
                     "tiene_comentario": tiene_comentario,
                     "descuentos": descuentos,
@@ -814,6 +816,15 @@ else:
                 st.error("No hay sesión con Contabilium. Revisá los secrets.")
             else:
                 resultados, log_rows = [], []
+                ordenes_render_ok = []  # para el PDF combinado
+                # mapa inverso idConcepto -> {codigo, nombre} para el PDF
+                _id_to_concepto = {
+                    str(c["id"]): {"codigo": cod, "nombre": c["nombre"]}
+                    for cod, c in _mapa_conc.items()
+                }
+                # limpiar PDF de cargas previas, si hubiera
+                st.session_state.pop("pedidos_pdf_bytes", None)
+                st.session_state.pop("pedidos_pdf_filename", None)
                 barra = st.progress(0.0)
                 for idx, (p, body, meta) in enumerate(seleccionados, 1):
                     fila = {
@@ -855,6 +866,34 @@ else:
                                       or j.get("id") or "")
                             fila.update(status="OK", numero_orden=num,
                                         id_orden=oid, error="")
+                            # render data para el PDF combinado de esta carga
+                            items_render = []
+                            for it_b in body["items"]:
+                                info = _id_to_concepto.get(
+                                    it_b["idConcepto"], {}
+                                )
+                                items_render.append({
+                                    "codigo": info.get("codigo", ""),
+                                    "descripcion": info.get("nombre", ""),
+                                    "cantidad": it_b["cantidad"],
+                                    "precio_unit": it_b["precioUnitario"],
+                                    "bonif_pct": it_b["bonificacion"],
+                                })
+                            ordenes_render_ok.append({
+                                "pedido_hoja": p.hoja,
+                                "numero_orden": num or "(sin nº)",
+                                "id_orden": oid or "—",
+                                "fecha": _hoy.isoformat(),
+                                "cliente": {
+                                    "codigo": meta.get("codigo_cli") or "—",
+                                    "razon_social": meta["razon_social"],
+                                    "rut": meta["rut"],
+                                },
+                                "vendedor_id": body["IDVendedor"],
+                                "deposito": "VENTAS",
+                                "observaciones": body.get("observaciones", ""),
+                                "items": items_render,
+                            })
                             resultados.append({
                                 "Pedido": p.hoja, "Resultado": "✅ Cargada",
                                 "Orden": num or oid or "(sin nº en respuesta)",
@@ -909,3 +948,44 @@ else:
                         "Audit log a Sheet deshabilitado "
                         "(`[gsheets_facturacion]` no configurado en secrets)."
                     )
+
+                # PDF combinado de las órdenes cargadas con éxito.
+                # Best-effort: si falla, la carga sigue siendo válida.
+                if ordenes_render_ok:
+                    try:
+                        pdfs = [
+                            pedidos_pdf.generar_pdf_orden(o)
+                            for o in ordenes_render_ok
+                        ]
+                        st.session_state["pedidos_pdf_bytes"] = (
+                            pedidos_pdf.combinar_pdfs(pdfs)
+                        )
+                        st.session_state["pedidos_pdf_filename"] = (
+                            f"ordenes_{_hoy.isoformat()}"
+                            f"_{datetime.now().strftime('%H%M')}.pdf"
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        st.warning(
+                            "Órdenes cargadas, pero NO pude generar el "
+                            f"PDF combinado: {exc}"
+                        )
+
+    # Botón de descarga del PDF combinado de la última carga.
+    # Vive afuera del flujo de la carga así sobrevive a interacciones
+    # (clicks, cambios de selección) hasta que se haga otra carga.
+    if st.session_state.get("pedidos_pdf_bytes"):
+        st.markdown("---")
+        st.download_button(
+            "📄 Descargar PDF combinado de las órdenes cargadas",
+            data=st.session_state["pedidos_pdf_bytes"],
+            file_name=st.session_state.get(
+                "pedidos_pdf_filename", "ordenes.pdf"
+            ),
+            mime="application/pdf",
+            type="primary",
+        )
+        st.caption(
+            "Documento generado por la app, con todos los datos enviados "
+            "a Contabilium. **No** es el PDF oficial de Contabilium (la "
+            "API no lo expone para órdenes de venta)."
+        )
