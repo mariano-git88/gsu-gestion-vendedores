@@ -608,7 +608,7 @@ else:
         deuda_vencida = bool(d and d["vencida"] >= UMBRAL_VENCIDA_UYU)
         tiene_comentario = bool((p.cond_pago or "").strip())
 
-        descuentos, precios = {}, {}
+        descuentos, precios, cantidades = {}, {}, {}
         for it in p.items:
             dv = st.session_state.get(f"desc_{p.hoja}_{it.fila}", 0.0)
             if dv:
@@ -616,11 +616,14 @@ else:
             pv = st.session_state.get(f"precio_{p.hoja}_{it.fila}")
             if pv is not None:
                 precios[it.fila] = float(pv)
+            qv = st.session_state.get(f"cant_{p.hoja}_{it.fila}")
+            if qv is not None:
+                cantidades[it.fila] = float(qv)
 
         armado = pedidos_orden.armar_body_orden(
             p, _mapa_cli_full, _mapa_conc, _inv_id,
-            descuentos=descuentos, precios=precios, fecha=_hoy,
-            codigo_cliente_override=cod_cli,
+            descuentos=descuentos, precios=precios, cantidades=cantidades,
+            fecha=_hoy, codigo_cliente_override=cod_cli,
         )
 
         titulo = (
@@ -652,36 +655,51 @@ else:
                     f"{cli.get('id_vendedor')}"
                 )
 
-            # --- Editor de ítems (precio + descuento), siempre ---
+            # --- Editor de ítems (cantidad, precio, descuento) ---
             if p.items:
                 with st.expander(
-                    "Desglosar / editar ítems (precio y descuento)"
+                    "Desglosar / editar ítems (cantidad, precio, descuento)"
                 ):
+                    hA, hB, hC, hD = st.columns([3.2, 1, 1.2, 1])
+                    hA.caption("Ítem")
+                    hB.caption("Cantidad")
+                    hC.caption("Precio U.")
+                    hD.caption("Desc %")
                     for it in p.items:
+                        st.session_state.setdefault(
+                            f"cant_{p.hoja}_{it.fila}",
+                            float(it.cantidad),
+                        )
                         st.session_state.setdefault(
                             f"precio_{p.hoja}_{it.fila}",
                             round(float(it.precio_sin_iva), 2),
                         )
-                        cA, cB, cC = st.columns([4, 1.3, 1])
+                        cA, cB, cC, cD = st.columns([3.2, 1, 1.2, 1])
                         cA.markdown(
-                            f"`{it.codigo}` {it.descripcion[:34]} "
-                            f"×{it.cantidad:g}"
+                            f"`{it.codigo}` {it.descripcion[:34]}"
                         )
                         cB.number_input(
+                            "Cantidad", min_value=0.0, step=1.0,
+                            format="%g",
+                            key=f"cant_{p.hoja}_{it.fila}",
+                            label_visibility="collapsed",
+                        )
+                        cC.number_input(
                             "Precio U.", min_value=0.0, step=1.0,
                             format="%.2f",
                             key=f"precio_{p.hoja}_{it.fila}",
                             label_visibility="collapsed",
                         )
-                        cC.number_input(
+                        cD.number_input(
                             "Desc %", min_value=0.0, max_value=99.0,
                             step=1.0, format="%g",
                             key=f"desc_{p.hoja}_{it.fila}",
                             label_visibility="collapsed",
                         )
                     st.caption(
-                        "Precio U. = el del Excel (editable). Desc %: "
-                        "100 con 32 → neto 68 (campo Bonificación)."
+                        "**Cantidad**: editable, poner **0 excluye ese ítem** "
+                        "(ej. no hay stock). **Precio U.**: del Excel, editable. "
+                        "**Desc %**: 100 con 32 → neto 68 (campo Bonificación)."
                     )
 
             # --- ¿Se puede armar? ---

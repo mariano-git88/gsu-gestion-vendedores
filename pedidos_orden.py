@@ -128,6 +128,7 @@ def armar_body_orden(
     *,
     descuentos: dict[int, float] | None = None,
     precios: dict[int, float] | None = None,
+    cantidades: dict[int, float] | None = None,
     fecha: dt.date | None = None,
     codigo_cliente_override: str | None = None,
 ) -> ResultadoArmado:
@@ -137,8 +138,13 @@ def armar_body_orden(
     explica por qué no se puede cargar (y NO se debe llamar crear_orden).
 
     `descuentos`: {fila_excel: %} de bonificación por ítem.
-    `precios`: {fila_excel: precio} que pisa el precio del Excel para
-        ese ítem (edición manual del operador).
+    `precios`: {fila_excel: precio} que pisa el precio del Excel.
+    `cantidades`: {fila_excel: cantidad} que pisa la cantidad del Excel
+        para ese ítem (ej. el vendedor pidió 50 pero hay stock para 30).
+        Si la cantidad final queda en 0 el ítem se EXCLUYE de la orden
+        (típicamente porque no hay stock); el resto del pedido se carga
+        normal. Si TODOS los ítems quedan en 0, el pedido es no cargable
+        por el guard de total $0.
     `codigo_cliente_override`: si el operador asignó el cliente a mano,
         el código Contabilium ('0XXXX-C') elegido. Si es None, se
         resuelve por Nro. Cliente y, como fallback, por el número
@@ -146,6 +152,7 @@ def armar_body_orden(
     """
     descuentos = descuentos or {}
     precios = precios or {}
+    cantidades = cantidades or {}
     fecha = fecha or dt.date.today()
     problemas: list[str] = []
 
@@ -176,6 +183,18 @@ def armar_body_orden(
         if c is None:
             problemas.append(f"SKU sin match en Contabilium: {it.codigo!r}")
             continue
+        # Cantidad — el operador puede pisarla (típico: 0 = "sin stock,
+        # no enviar este ítem"). cant=0 excluye el ítem; el resto del
+        # pedido se carga normal.
+        cant_raw = cantidades.get(it.fila, it.cantidad)
+        cant_final = float(cant_raw) if cant_raw is not None else float(it.cantidad)
+        if cant_final < 0:
+            problemas.append(
+                f"Cantidad negativa en {it.codigo!r}: {cant_final}"
+            )
+            continue
+        if cant_final == 0:
+            continue  # ítem excluido por el operador
         if c.get("tipo") == "Combo":
             tiene_combo = True
         pct = float(descuentos.get(it.fila, 0.0) or 0.0)
@@ -192,12 +211,12 @@ def armar_body_orden(
         items_body.append(
             {
                 "idConcepto": str(c["id"]),
-                "cantidad": float(it.cantidad),
+                "cantidad": cant_final,
                 "precioUnitario": precio,
                 "bonificacion": round(pct, 2),
             }
         )
-        total_neto += precio * float(it.cantidad) * (1 - pct / 100.0)
+        total_neto += precio * cant_final * (1 - pct / 100.0)
 
     if not items_body:
         problemas.append("El pedido no tiene ítems cargables.")
