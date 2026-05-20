@@ -78,7 +78,13 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
-def identificar(nro_cliente, nombre_excel: str, mapa: dict[str, dict]) -> dict:
+def identificar(
+    nro_cliente,
+    nombre_excel: str,
+    mapa: dict[str, dict],
+    *,
+    codigo_override: str | None = None,
+) -> dict:
     """Identifica el cliente de un pedido y chequea que el nombre cuadre.
 
     Estados posibles:
@@ -88,7 +94,18 @@ def identificar(nro_cliente, nombre_excel: str, mapa: dict[str, dict]) -> dict:
                            parece al nombre que escribió el vendedor
                            (posible Nro. Cliente equivocado → revisar).
       - "ok"             : código encontrado y nombre consistente.
+
+    `codigo_override`: si el operador asignó el cliente a mano vía
+    selectbox (`cliov_<hoja>` en session_state), pasarlo acá hace que
+    el resultado refleje esa elección directamente, sin cross-check de
+    nombre (es decisión explícita del operador).
     """
+    if codigo_override:
+        cli = mapa.get(codigo_override)
+        if cli is None:
+            return {"estado": "no_encontrado", "codigo": codigo_override}
+        return {"estado": "ok", "codigo": codigo_override, **cli}
+
     cands = pedidos.codigo_cliente_candidatos(nro_cliente, nombre_excel)
     if not cands:
         return {"estado": "sin_codigo", "codigo": None}

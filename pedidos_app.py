@@ -400,15 +400,21 @@ else:
     }
     filas_id = []
     n_ok = n_rev = n_prob = 0
+    pedidos_no_ok = []  # para el expander de asignación manual de abajo
     for p in lista:
-        r = pedidos_deuda.identificar(p.nro_cliente, p.cliente, _mapa)
+        _ov_id = st.session_state.get(f"cliov_{p.hoja}") or None
+        r = pedidos_deuda.identificar(
+            p.nro_cliente, p.cliente, _mapa, codigo_override=_ov_id
+        )
         est = r["estado"]
         if est == "ok":
             n_ok += 1
         elif est == "revisar_nombre":
             n_rev += 1
+            pedidos_no_ok.append(p)
         else:
             n_prob += 1
+            pedidos_no_ok.append(p)
         filas_id.append(
             {
                 "Pedido": p.hoja,
@@ -434,6 +440,40 @@ else:
     st.dataframe(
         pd.DataFrame(filas_id), use_container_width=True, hide_index=True
     )
+
+    # Buscador manual para los pedidos que no quedaron 🟢 OK.
+    if pedidos_no_ok:
+        _cli_cods_id = sorted(_mapa)
+
+        def _cli_label_id(c):
+            if not c:
+                return "— elegí un cliente —"
+            rec = _mapa.get(c, {})
+            return (
+                f"{c} — {rec.get('razon_social', '')} "
+                f"(RUT {rec.get('rut', '')})"
+            )
+
+        with st.expander(
+            f"🔧 Asignar / corregir cliente a mano "
+            f"({len(pedidos_no_ok)} pedido(s) a revisar)",
+            expanded=True,
+        ):
+            st.caption(
+                "Para los pedidos que no se identificaron solos (o que el "
+                "nombre no cuadra), elegí el cliente correcto. La elección "
+                "se guarda y también la respeta la sección de Carga de "
+                "órdenes de abajo."
+            )
+            for p in pedidos_no_ok:
+                st.selectbox(
+                    f"**{p.hoja}** — Excel dice: "
+                    f"{p.cliente or '(sin cliente)'!r} · "
+                    f"Nro {p.nro_cliente or '(vacío)'}",
+                    options=[""] + _cli_cods_id,
+                    format_func=_cli_label_id,
+                    key=f"cliov_{p.hoja}",
+                )
     st.markdown("---")
     st.markdown("**Deuda vencida del cliente**")
     cD1, _cD2 = st.columns([1, 3])

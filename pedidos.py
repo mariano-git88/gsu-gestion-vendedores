@@ -171,6 +171,15 @@ def leer_pedidos(file_or_path) -> list[Pedido]:
                     subtotal=_num(col(_COL_SUBTOT)) or 0.0,
                 )
             )
+        # Saltar hojas que son sólo relleno del template: sin cliente,
+        # sin Nro. Cliente y sin ítems con cantidad > 0. Aparecen porque
+        # el Excel trae siempre plantilla fija con varias hojas vacías.
+        if (
+            not ped.cliente.strip()
+            and not ped.nro_cliente.strip()
+            and not ped.items
+        ):
+            continue
         pedidos.append(ped)
 
     wb.close()
