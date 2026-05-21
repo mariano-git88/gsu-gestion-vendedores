@@ -942,38 +942,25 @@ else:
 
                 ok = sum(1 for r in resultados if "✅" in r["Resultado"])
                 ko = len(resultados) - ok
-                if ko == 0:
-                    st.success(
-                        f"✅ {ok} orden(es) cargada(s) correctamente "
-                        "en Contabilium."
-                    )
-                else:
-                    st.error(
-                        f"{ok} cargada(s), {ko} con error. Revisar abajo."
-                    )
-                st.dataframe(
-                    pd.DataFrame(resultados),
-                    use_container_width=True, hide_index=True,
-                )
-
+                meta_carga = {
+                    "ok": ok, "ko": ko,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "usuario": usuario.strip(),
+                }
+                # Audit log a Google Sheet (best-effort).
                 if gsheets is not None and "gsheets_facturacion" in st.secrets:
                     try:
                         n = gsheets.append_log_carga_pedidos(
                             dict(st.secrets["gsheets_facturacion"]), log_rows)
-                        st.caption(
-                            f"Registro de auditoría guardado ({n} fila/s) "
-                            "en Google Sheet (tab log_carga_pedidos)."
-                        )
+                        meta_carga["gsheets"] = ("ok", str(n))
                     except Exception as exc:  # noqa: BLE001
-                        st.warning(
-                            "Órdenes procesadas, pero NO pude guardar el "
-                            f"audit log: {exc}"
-                        )
+                        meta_carga["gsheets"] = ("error", str(exc)[:200])
                 else:
-                    st.caption(
-                        "Audit log a Sheet deshabilitado "
-                        "(`[gsheets_facturacion]` no configurado en secrets)."
-                    )
+                    meta_carga["gsheets"] = ("not_configured", None)
+                # Persistir en sesión: el display se hace abajo y sobrevive
+                # a reruns hasta la próxima carga.
+                st.session_state["pedidos_carga_resultados"] = resultados
+                st.session_state["pedidos_carga_meta"] = meta_carga
 
                 # PDF combinado de las órdenes cargadas con éxito.
                 # Best-effort: si falla, la carga sigue siendo válida.
@@ -995,6 +982,77 @@ else:
                             "Órdenes cargadas, pero NO pude generar el "
                             f"PDF combinado: {exc}"
                         )
+
+    # Resultados persistentes de la última carga: vive afuera del flujo
+    # del botón para que el Nº de Contabilium quede visible y exportable
+    # hasta la próxima carga (la operadora necesita ese número para su
+    # planilla de entregas, su cruce con el flete tercerizado, y como
+    # respaldo cuando un cliente reclama).
+    if st.session_state.get("pedidos_carga_resultados"):
+        st.markdown("---")
+        st.markdown("### Resultados de la última carga")
+        _meta = st.session_state.get("pedidos_carga_meta", {})
+        _ok = _meta.get("ok", 0)
+        _ko = _meta.get("ko", 0)
+        _ts = _meta.get("timestamp", "")
+        _usuario = _meta.get("usuario", "")
+        _cab = _ts + (f" · cargado por {_usuario}" if _usuario else "")
+        if _ko == 0:
+            st.success(
+                f"✅ **{_ok}** orden(es) cargada(s) correctamente en "
+                f"Contabilium. — {_cab}"
+            )
+        else:
+            st.error(
+                f"**{_ok}** cargada(s), **{_ko}** con error. — {_cab}. "
+                "Revisar la columna *Detalle* abajo."
+            )
+        _df_res = pd.DataFrame(st.session_state["pedidos_carga_resultados"])
+        st.dataframe(_df_res, use_container_width=True, hide_index=True)
+
+        # CSV descargable — pensado para que la operadora lo sume a su
+        # planilla externa de entregas a la nave / fletes / archivo.
+        _ts_fname = _ts.replace(":", "").replace(" ", "_") or "ordenes"
+        st.download_button(
+            "⬇️ Descargar resultados en CSV (para tu planilla externa)",
+            data=_df_res.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"ordenes_cargadas_{_ts_fname}.csv",
+            mime="text/csv",
+        )
+
+        # Estado del audit log a Google Sheet.
+        _gs = _meta.get("gsheets")
+        if _gs:
+            _estado, _detalle = _gs
+            if _estado == "ok":
+                st.caption(
+                    f"📝 Audit log guardado en Google Sheet ({_detalle} "
+                    "fila/s en la tab `log_carga_pedidos`)."
+                )
+            elif _estado == "error":
+                st.warning(
+                    "⚠️ Las órdenes se cargaron en Contabilium, pero el "
+                    f"audit log a Google Sheet **falló**: `{_detalle}`. "
+                    "Cosas a verificar: (1) que el spreadsheet esté "
+                    "**compartido con el `client_email` del service "
+                    "account** como Editor; (2) que el bloque "
+                    "`[gsheets_facturacion]` en Settings → Secrets esté "
+                    "**completo** (incluyendo `[gsheets_facturacion.service_account]`); "
+                    "(3) que el `spreadsheet_id` sea válido. Mientras tanto, "
+                    "los datos están en este reporte y en el CSV de arriba."
+                )
+            elif _estado == "not_configured":
+                st.info(
+                    "ℹ️ **El audit log a Google Sheet está desactivado en "
+                    "esta app.** Las órdenes se cargan igual y este reporte "
+                    "(más el CSV de arriba) te quedan disponibles hasta la "
+                    "próxima carga. **Para activar el log persistente** a "
+                    "Sheet, agregar en Streamlit Cloud → Manage app → "
+                    "**Settings → Secrets** de esta app, el bloque "
+                    "`[gsheets_facturacion]` exactamente como está en el "
+                    "app del Facturador (mismo `spreadsheet_id`, mismo "
+                    "`service_account`). Setup one-time."
+                )
 
     # Botón de descarga del PDF combinado de la última carga.
     # Vive afuera del flujo de la carga así sobrevive a interacciones

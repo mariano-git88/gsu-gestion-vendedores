@@ -168,9 +168,25 @@ Abajo de todo:
    el botón.
 5. Apretá **🚀 CARGAR PEDIDOS EN CONTABILIUM**.
 
-La app las carga **una por una**, respetando los límites de la API. Al
-final te muestra un reporte ✅/❌ por pedido y guarda una fila por
-pedido en un Google Sheet.
+La app las carga **una por una**, respetando los límites de la API.
+
+Al final aparece la sección **"Resultados de la última carga"**, con
+una tabla que incluye **el Nº de Orden de Contabilium** de cada pedido,
+el cliente, los ítems y el total. Esta tabla **queda visible** mientras
+estés en la app, incluso si tocás otras cosas — no se pierde con un
+rerun.
+
+Además, abajo de la tabla aparece:
+
+- **⬇️ Descargar resultados en CSV** — para sumar a tu planilla externa
+  (entregas a la nave, fletes, archivo). Incluye el Nº de Contabilium
+  y el ID interno por si necesitás buscar después.
+- **📄 Descargar PDF combinado** — un PDF por orden con los datos para
+  el depósito (ya lo conocés).
+- Mensaje del **audit log a Google Sheet** — si está configurado,
+  guarda automáticamente cada carga en el Sheet
+  (tab `log_carga_pedidos`). Si no está configurado, te dice cómo
+  activarlo.
 """
     )
 
