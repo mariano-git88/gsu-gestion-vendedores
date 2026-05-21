@@ -1603,3 +1603,64 @@ Total liberado: ~UYU 777.231 en reservas fantasma. Cero fallos.
 A futuro el flow nuevo previene la acumulación.
 
 **Confirmado por:** Mariano, sesión 2026-05-13.
+
+---
+
+## 2026-05-21 — Nueva fórmula de compensación v1.2 (propuesta acordada, NO implementada)
+
+**Decisión:** se acordó una nueva fórmula de compensación para los
+vendedores GSU activos, motivada por el cambio normativo uruguayo que
+fija el salario mínimo en $49.855 UYU y establece que sólo el sueldo
+fijo cuenta para alcanzarlo. El esquema anterior ($10.000 fijo + 2,35%
+× venta neta + 3% × cobranza) deja de cumplir.
+
+**Esquema acordado (v1.2):**
+
+- **Sueldo fijo** = $49.855/mes.
+- **Comisión mensual** sobre excedente, con tres tramos por pilar:
+  - Venta neta: 0% hasta $600k, 2,35% entre $600k–$1,5M, 5% sobre $1,5M.
+  - Cobranza: 0% hasta $700k, 3% entre $700k–$1,5M, 4% sobre $1,5M.
+- **Bono trimestral por pilar** (evaluación independiente de venta y
+  cobranza, sumados):
+  - Cat A (3 meses con umbral pleno): 10% × com_venta_trim + 15% ×
+    com_cobranza_trim.
+  - Cat B (avg ≥ 50% umbral y ≥1 mes pleno): 5% + 8%.
+  - Sin categoría: 0.
+- **Licencia por vacaciones**: por ley UY, mes de licencia se computa
+  con promedio de los otros 2 meses (afecta clasificación y bono).
+
+**Estado:** propuesta acordada, **NO implementada en `commissions.py`**
+al cierre de esta sesión. Pendiente confirmación final de Mariano
+después de la conversación con los vendedores que arrancó 2026-05-20.
+
+**Variantes evaluadas y descartadas:**
+
+- **v2** (cobranza "3% sobre todo el monto", no sobre excedente):
+  +$67k/mes para Suprabond, $21k/mes/vendedor — demasiado caro.
+- **E1/E2** (escalones discretos de $100k, mismo monto por escalón):
+  perdían $7-10k/mes vs v1 por la "lumpiness" en los bordes.
+- **STEPPED cumulative** (tabla por bracket de $100k incluyendo
+  brackets bajos): +$25,5k/mes, costo extra entero en los brackets
+  bajos.
+- **v1.1** (v1 + microcomisión 0,3%/0,5% bajo umbral): +$15,9k/mes,
+  reparto plano de $5.300/vendedor. Descartada en favor de v1.2 que
+  premia la consistencia y desempeño proporcional.
+- **v1.2 con umbrales aumentados $100k** (700/800 en lugar de 600/700):
+  ahorraba ~$17k/mes empresa pero recortaba ~$5k/mes a los vendedores.
+  Se mantuvo la calibración 600/700 para alinear con "al mismo volumen
+  mismo total".
+
+**Especificación completa:** ver `_learning/formula_compensacion_v1.2.md`
+con la fórmula, fórmulas en pseudocódigo, constantes para implementar,
+reglas operativas y guía de implementación.
+
+**Regla firme antes de implementar:** correr el smoke test invariante
+(`_exploracion-api-contabilium/smoke_comisiones_refexterna.py`)
+**antes** de tocar `commissions.py` o `comisiones_data.py`. Plata
+real, no se rompe — ver memoria `feedback_comisiones_invariante`.
+
+**Costo extra estimado para Suprabond** (top-3 vendedores activos):
++$24.500/mes empresa, ~$294k/año. Mejora promedio para vendedores:
++10% a +13% en compensación mensual.
+
+**Confirmado por:** Mariano, sesión 2026-05-21.

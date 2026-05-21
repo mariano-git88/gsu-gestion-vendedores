@@ -822,9 +822,10 @@ else:
                     str(c["id"]): {"codigo": cod, "nombre": c["nombre"]}
                     for cod, c in _mapa_conc.items()
                 }
-                # limpiar PDF de cargas previas, si hubiera
-                st.session_state.pop("pedidos_pdf_bytes", None)
-                st.session_state.pop("pedidos_pdf_filename", None)
+                # limpiar resultados/PDF de cargas previas, si los hubiera
+                for k in ("pedidos_pdf_bytes", "pedidos_pdf_filename",
+                          "pedidos_carga_resultados", "pedidos_carga_meta"):
+                    st.session_state.pop(k, None)
                 barra = st.progress(0.0)
                 for idx, (p, body, meta) in enumerate(seleccionados, 1):
                     fila = {
@@ -894,23 +895,48 @@ else:
                                 "observaciones": body.get("observaciones", ""),
                                 "items": items_render,
                             })
+                            total_neto_orden = round(sum(
+                                i["precioUnitario"] * i["cantidad"]
+                                * (1 - i["bonificacion"] / 100.0)
+                                for i in body["items"]
+                            ), 2)
                             resultados.append({
-                                "Pedido": p.hoja, "Resultado": "✅ Cargada",
-                                "Orden": num or oid or "(sin nº en respuesta)",
+                                "Pedido": p.hoja,
+                                "Cliente": meta["razon_social"],
+                                "Nº Orden Contabilium": num or "(sin nº)",
+                                "ID interno": oid or "—",
+                                "Ítems": len(body["items"]),
+                                "Total c/IVA": round(total_neto_orden * 1.22, 2),
+                                "Resultado": "✅ Cargada",
+                                "Detalle": "",
                             })
                         else:
                             msg = f"HTTP {r.status_code}: {r.text[:200]}"
                             fila.update(status="ERROR", numero_orden="",
                                         id_orden="", error=msg)
                             resultados.append({
-                                "Pedido": p.hoja, "Resultado": "❌ Error",
-                                "Orden": msg})
+                                "Pedido": p.hoja,
+                                "Cliente": meta["razon_social"],
+                                "Nº Orden Contabilium": "—",
+                                "ID interno": "—",
+                                "Ítems": len(body["items"]),
+                                "Total c/IVA": 0,
+                                "Resultado": "❌ Error",
+                                "Detalle": msg,
+                            })
                     except Exception as exc:  # noqa: BLE001
                         fila.update(status="ERROR", numero_orden="",
                                     id_orden="", error=str(exc)[:250])
                         resultados.append({
-                            "Pedido": p.hoja, "Resultado": "❌ Error",
-                            "Orden": str(exc)[:120]})
+                            "Pedido": p.hoja,
+                            "Cliente": meta["razon_social"],
+                            "Nº Orden Contabilium": "—",
+                            "ID interno": "—",
+                            "Ítems": len(body["items"]),
+                            "Total c/IVA": 0,
+                            "Resultado": "❌ Error",
+                            "Detalle": str(exc)[:200],
+                        })
                     log_rows.append(fila)
                     barra.progress(idx / len(seleccionados))
 
