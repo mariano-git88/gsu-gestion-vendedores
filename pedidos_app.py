@@ -621,9 +621,14 @@ else:
             if qv is not None:
                 cantidades[it.fila] = float(qv)
 
+        desc_orden = float(
+            st.session_state.get(f"descorden_{p.hoja}", 0.0) or 0.0
+        )
+
         armado = pedidos_orden.armar_body_orden(
             p, _mapa_cli_full, _mapa_conc, _inv_id,
             descuentos=descuentos, precios=precios, cantidades=cantidades,
+            descuento_global=desc_orden,
             fecha=_hoy, codigo_cliente_override=cod_cli,
         )
 
@@ -655,6 +660,19 @@ else:
                     f"{cli['rut']} · cód. {cod_cli} · vendedor "
                     f"{cli.get('id_vendedor')}"
                 )
+
+            # --- Descuento de la orden completa ---
+            st.number_input(
+                "Descuento de la orden %  (se aplica a todos los ítems)",
+                min_value=0.0, max_value=99.0, step=1.0, format="%g",
+                key=f"descorden_{p.hoja}",
+                help=(
+                    "Descuento sobre TODOS los artículos de esta orden. "
+                    "Ej.: ítem a $100 con orden 10% → $90. Si un ítem ya "
+                    "tiene descuento propio, los dos se componen "
+                    "(ítem 32% + orden 10% → 38,8%)."
+                ),
+            )
 
             # --- Editor de ítems (cantidad, precio, descuento) ---
             if p.items:
@@ -773,6 +791,7 @@ else:
                     "deuda_vencida": deuda_vencida,
                     "tiene_comentario": tiene_comentario,
                     "descuentos": descuentos,
+                    "descuento_orden": desc_orden,
                 }))
 
     st.markdown("### Confirmación")
@@ -848,8 +867,11 @@ else:
                         "aprobado_precio": "SI" if meta["tiene_comentario"]
                         else "N/A",
                         "descuentos": "; ".join(
-                            f"fila{f}:{v:g}%"
-                            for f, v in meta["descuentos"].items()) or "—",
+                            ([f"orden:{meta['descuento_orden']:g}%"]
+                             if meta.get("descuento_orden") else [])
+                            + [f"fila{f}:{v:g}%"
+                               for f, v in meta["descuentos"].items()]
+                        ) or "—",
                     }
                     try:
                         session, r = pedidos_orden.crear_orden(session, body)

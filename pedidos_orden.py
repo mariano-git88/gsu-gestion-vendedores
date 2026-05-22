@@ -129,6 +129,7 @@ def armar_body_orden(
     descuentos: dict[int, float] | None = None,
     precios: dict[int, float] | None = None,
     cantidades: dict[int, float] | None = None,
+    descuento_global: float = 0.0,
     fecha: dt.date | None = None,
     codigo_cliente_override: str | None = None,
 ) -> ResultadoArmado:
@@ -138,6 +139,12 @@ def armar_body_orden(
     explica por qué no se puede cargar (y NO se debe llamar crear_orden).
 
     `descuentos`: {fila_excel: %} de bonificación por ítem.
+    `descuento_global`: % de descuento de la orden completa que el
+        operador ingresa a mano. Se aplica a TODOS los ítems, compuesto
+        sobre el descuento por ítem: el factor final de cada ítem es
+        (1 - desc_item/100) * (1 - descuento_global/100). El campo
+        `bonificacion` que va a Contabilium lleva ese descuento ya
+        compuesto, así el PDF, el log y los totales quedan consistentes.
     `precios`: {fila_excel: precio} que pisa el precio del Excel.
     `cantidades`: {fila_excel: cantidad} que pisa la cantidad del Excel
         para ese ítem (ej. el vendedor pidió 50 pero hay stock para 30).
@@ -155,6 +162,13 @@ def armar_body_orden(
     cantidades = cantidades or {}
     fecha = fecha or dt.date.today()
     problemas: list[str] = []
+
+    descuento_global = float(descuento_global or 0.0)
+    if descuento_global < 0 or descuento_global >= 100:
+        problemas.append(
+            f"Descuento de la orden inválido: {descuento_global} "
+            "(debe ser 0–99)."
+        )
 
     if codigo_cliente_override:
         cands = [codigo_cliente_override]
@@ -208,15 +222,21 @@ def armar_body_orden(
         if precio < 0:
             problemas.append(f"Precio negativo en {it.codigo!r}: {precio}")
         precio = round(precio, 2)
+        # Descuento del ítem y descuento de la orden, compuestos:
+        # primero se aplica el del ítem, después el de la orden sobre
+        # el remanente. La `bonificacion` que va a Contabilium lleva el
+        # descuento ya compuesto en un solo número.
+        factor = (1 - pct / 100.0) * (1 - descuento_global / 100.0)
+        bonif_efectiva = round((1 - factor) * 100.0, 2)
         items_body.append(
             {
                 "idConcepto": str(c["id"]),
                 "cantidad": cant_final,
                 "precioUnitario": precio,
-                "bonificacion": round(pct, 2),
+                "bonificacion": bonif_efectiva,
             }
         )
-        total_neto += precio * cant_final * (1 - pct / 100.0)
+        total_neto += precio * cant_final * factor
 
     if not items_body:
         problemas.append("El pedido no tiene ítems cargables.")
