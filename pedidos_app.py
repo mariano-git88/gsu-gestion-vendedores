@@ -854,19 +854,23 @@ else:
                     try:
                         session, r = pedidos_orden.crear_orden(session, body)
                         if r.status_code in (200, 201):
-                            try:
-                                j = r.json()
-                            except Exception:  # noqa: BLE001
-                                j = {}
-                            if not isinstance(j, dict):
-                                j = {}
-                            num = str(j.get("NumeroOrden")
-                                      or j.get("Numero")
-                                      or j.get("numeroOrden") or "")
-                            oid = str(j.get("ID") or j.get("Id")
-                                      or j.get("id") or "")
+                            # El POST no devuelve el NumeroOrden formateado
+                            # (ni siempre el ID en un dict). Se extrae el ID
+                            # de forma tolerante y se pide el Nº con un GET.
+                            oid = pedidos_orden.extraer_id_orden(r)
+                            num = ""
+                            if oid:
+                                try:
+                                    session, num = (
+                                        pedidos_orden.obtener_numero_orden(
+                                            session, oid))
+                                except Exception:  # noqa: BLE001
+                                    num = ""  # la orden existe igual
+                            nota_err = "" if oid else (
+                                "Orden creada, pero la respuesta del POST no "
+                                f"traía ID: {(r.text or '')[:120]}")
                             fila.update(status="OK", numero_orden=num,
-                                        id_orden=oid, error="")
+                                        id_orden=oid, error=nota_err)
                             # render data para el PDF combinado de esta carga
                             items_render = []
                             for it_b in body["items"]:

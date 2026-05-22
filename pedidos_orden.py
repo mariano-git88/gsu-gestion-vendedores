@@ -256,3 +256,57 @@ def crear_orden(
     vía facturador._post.
     """
     return facturador._post(session, "/api/ordenesVenta", body)
+
+
+# =====================================================================
+# Lectura post-creación — obtener el Nº de OV formateado
+# =====================================================================
+
+def extraer_id_orden(r: requests.Response) -> str:
+    """Saca el ID interno de la orden desde la respuesta del POST.
+
+    Contabilium no documenta el body de POST /api/ordenesVenta (el
+    Postman oficial lo trae sin ejemplo de respuesta). En la práctica
+    puede venir como dict {"ID": ...}, como número plano, o como
+    string numérico entre comillas. Esta función tolera las tres
+    formas y devuelve el ID como string, o "" si no se pudo extraer.
+
+    El POST de creación NO trae el `NumeroOrden` formateado; para eso
+    está `obtener_numero_orden`, que necesita este ID.
+    """
+    try:
+        j = r.json()
+    except Exception:  # noqa: BLE001 — body no-JSON, se cae al texto crudo
+        j = None
+    if isinstance(j, dict):
+        for k in ("ID", "Id", "id", "idOrden", "IdOrden"):
+            v = j.get(k)
+            if v:
+                return str(v)
+        return ""
+    # bool es subclase de int en Python: descartarlo antes del chequeo numérico.
+    if isinstance(j, bool):
+        return ""
+    if isinstance(j, (int, float)):
+        return str(int(j))
+    if isinstance(j, str) and j.strip().strip('"').isdigit():
+        return j.strip().strip('"')
+    texto = (r.text or "").strip().strip('"')
+    return texto if texto.isdigit() else ""
+
+
+def obtener_numero_orden(
+    session: api_loader.ApiSession, id_orden: str
+) -> tuple[api_loader.ApiSession, str]:
+    """GET /api/ordenesVenta/?id={id} → `NumeroOrden` formateado.
+
+    El número visible de la OV ("00010749") no viene en la respuesta
+    del POST de creación; hay que pedirlo con este GET. Devuelve ""
+    si la orden no trae el campo o la respuesta no es un dict.
+    """
+    session, payload = api_loader.api_get(
+        session, f"/api/ordenesVenta/?id={id_orden}"
+    )
+    if isinstance(payload, dict):
+        return session, str(payload.get("NumeroOrden") or "")
+    return session, ""
