@@ -40,6 +40,16 @@ import pedidos
 
 ORIGEN = "Pedidos GSU"
 
+# Texto fijo de la Adenda de la factura (campo `observaciones` de la OV).
+# Reemplaza al comentario del vendedor (`cond_pago`), que sigue mostrándose
+# en la pantalla de revisión pero NO viaja a Contabilium.
+OBSERVACIONES_ADENDA = (
+    "Cuentas bancarias habilitadas para cobros: "
+    "BROU 110954910-00001 || ITAÚ 9818174 || BBVA 25540491 || "
+    "SANTANDER Sucursal: 0073 Cuenta: 1391763. "
+    "Consultas a pedidos@suprabond.com.uy o 093 900 536"
+)
+
 
 def _norm_sku(x: object) -> str:
     return re.sub(r"\s+", " ", str(x or "").strip()).upper()
@@ -251,7 +261,7 @@ def armar_body_orden(
     body = {
         "idCliente": cli["id"],
         "fechaEmision": fecha.isoformat(),
-        "observaciones": pedido.cond_pago or "",
+        "observaciones": OBSERVACIONES_ADENDA,
         "bonificacionGlobal": 0.0,
         "IDInventario": inventario_id,
         "IDVendedor": cli["id_vendedor"],
