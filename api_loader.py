@@ -33,6 +33,7 @@ Referencias:
 
 from __future__ import annotations
 
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -55,6 +56,14 @@ EXPIRY_MARGIN = 60    # regenerar token 60s antes de que venza
 # para que el "valor de stock" sea comparable con el `monto` neto del
 # resto del dashboard, dividimos por este factor al cargar el maestro.
 IVA_BASICO_UY = 1.22
+
+# Depósitos que cuentan como "stock disponible" para la tab Inventario.
+# El stock de Inventario NO es el consolidado de todos los depósitos de
+# Contabilium: solo se cuentan las unidades DISPONIBLES (físico menos
+# reservado = StockConReservas) en estos dos (decisión 2026-06-30).
+# Match por nombre normalizado (.strip().upper()) porque el ERP devuelve
+# " MFLEX" con un espacio adelante.
+DEPOSITOS_INVENTARIO = ("VENTAS", "MFLEX")
 
 
 # =====================================================================
@@ -348,6 +357,84 @@ def _fetch_all_conceptos(session: ApiSession) -> tuple[ApiSession, list[dict]]:
     return api_paginate(session, "/api/conceptos/search")
 
 
+def load_stock_depositos(
+    session: ApiSession,
+    nombres: tuple[str, ...] = DEPOSITOS_INVENTARIO,
+) -> tuple[ApiSession, dict[int, float]]:
+    """Suma el stock disponible (StockConReservas) de un conjunto de depósitos.
+
+    Para la tab Inventario, "stock disponible" = unidades disponibles
+    (físico menos reservado) en los depósitos VENTAS y MFLEX, NO el
+    consolidado de todos los depósitos que trae el campo `Stock` de
+    /api/conceptos/search.
+
+    Flujo:
+        1. GET /api/inventarios/getDepositos → lista de depósitos.
+           Se resuelven los IDs cuyos nombres (normalizados con
+           .strip().upper()) están en `nombres`. El ERP devuelve
+           " MFLEX" con espacio adelante, por eso el .strip().
+        2. Para cada depósito resuelto, paginar
+           GET /api/inventarios/getStockByDeposito?id=<dep> que devuelve
+           {Items:[{Id(concepto), Codigo(SKU), StockActual,
+           StockReservado, StockConReservas}], TotalItems}.
+        3. Acumular la suma de StockConReservas (= StockActual −
+           StockReservado) por `Id` de concepto a lo largo de los depósitos.
+
+    Devuelve (sesión, dict[concepto_id → stock_disponible_sumado]). Los
+    conceptos sin stock en estos depósitos simplemente no aparecen en el
+    dict (el caller resuelve con .get(id, 0.0)).
+
+    Si alguno de los nombres pedidos no existe en el ERP, lo avisa por
+    stderr pero no rompe (procesa los que sí encontró). Si NINGUNO
+    matchea, levanta ApiError (configuración inválida).
+    """
+    session, depositos = api_get(session, "/api/inventarios/getDepositos")
+    if not isinstance(depositos, list):
+        raise ApiError(
+            "getDepositos devolvió una respuesta inesperada: "
+            f"{type(depositos).__name__}, se esperaba lista"
+        )
+    objetivo = {n.strip().upper() for n in nombres}
+    resueltos: dict[str, int] = {}
+    for d in depositos:
+        nombre_norm = str(d.get("Nombre") or "").strip().upper()
+        if nombre_norm in objetivo:
+            resueltos[nombre_norm] = d.get("Id")
+
+    faltantes = objetivo - set(resueltos)
+    if faltantes:
+        print(
+            f"ADVERTENCIA load_stock_depositos: no se encontraron los "
+            f"depósitos {sorted(faltantes)} en el ERP "
+            f"(disponibles: {sorted(str(d.get('Nombre') or '').strip() for d in depositos)})",
+            file=sys.stderr,
+        )
+    if not resueltos:
+        raise ApiError(
+            f"load_stock_depositos: ninguno de los depósitos {sorted(objetivo)} "
+            f"existe en el ERP"
+        )
+
+    stock_por_concepto: dict[int, float] = {}
+    for dep_id in resueltos.values():
+        session, items = api_paginate(
+            session, f"/api/inventarios/getStockByDeposito?id={dep_id}"
+        )
+        for it in items:
+            cid = it.get("Id")
+            if cid is None:
+                continue
+            try:
+                cid_int = int(cid)
+            except (TypeError, ValueError):
+                continue
+            stock_por_concepto[cid_int] = (
+                stock_por_concepto.get(cid_int, 0.0)
+                + _safe_float(it.get("StockConReservas"))
+            )
+    return session, stock_por_concepto
+
+
 def load_clientes_api(
     session: ApiSession,
     vendedores_map: dict[int, str] | None = None,
@@ -394,11 +481,31 @@ def load_clientes_api(
     return session, df
 
 
+def _stock_de(
+    concepto: dict, stock_por_concepto: dict[int, float] | None
+) -> float:
+    """Stock de un concepto, según la fuente de stock activa.
+
+    Si `stock_por_concepto` está presente (mapa concepto_id → stock
+    disponible sumado de los depósitos de inventario), devuelve ese
+    valor — 0.0 si el concepto no tiene stock en esos depósitos. Si es
+    None, cae al campo `Stock` consolidado del propio concepto (legacy).
+    """
+    if stock_por_concepto is not None:
+        cid = concepto.get("Id")
+        try:
+            return stock_por_concepto.get(int(cid), 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return _safe_float(concepto.get("Stock"))
+
+
 def load_productos_api(
     session: ApiSession,
     subrubros_map: dict[int, str] | None = None,
     rubros_map: dict[int, str] | None = None,
     conceptos_items: list[dict] | None = None,
+    stock_por_concepto: dict[int, float] | None = None,
 ) -> tuple[ApiSession, pd.DataFrame]:
     """Carga el maestro de productos desde la API.
 
@@ -420,6 +527,14 @@ def load_productos_api(
         Stock       → stock       (float, unidades en stock)
         StockMinimo → stock_minimo (float, umbral "mínimo" del ERP)
         PrecioFinal → precio      (float, neto sin IVA — bruto / 1.22)
+
+    Stock por depósito (decisión 2026-06-30):
+        Si se pasa `stock_por_concepto` (mapa concepto_id → stock
+        disponible sumado de VENTAS+MFLEX, ver `load_stock_depositos`),
+        el `stock` sale de ahí en lugar del campo `Stock` consolidado.
+        Un producto sin stock en esos depósitos queda en 0.0. Si es None
+        (modo legacy / self-test sin credenciales), se usa el `Stock`
+        consolidado de todos los depósitos como antes.
 
     Optimización:
         Si ya se pullearon los conceptos (ej. llamando load_combos_api
@@ -450,7 +565,7 @@ def load_productos_api(
                 "nombre": str(c.get("Nombre") or "").strip(),
                 "sub_rubro": smap.get(id_sub, f"ID_{id_sub}"),
                 "rubro": rmap.get(id_rub, f"ID_{id_rub}"),
-                "stock": _safe_float(c.get("Stock")),
+                "stock": _stock_de(c, stock_por_concepto),
                 "stock_minimo": _safe_float(c.get("StockMinimo")),
                 "precio": _precio_neto(c.get("PrecioFinal")),
             }
@@ -468,6 +583,7 @@ def load_productos_api(
 def load_combos_api(
     session: ApiSession,
     conceptos_items: list[dict] | None = None,
+    stock_por_concepto: dict[int, float] | None = None,
 ) -> tuple[ApiSession, pd.DataFrame]:
     """Carga el maestro de combos desde la API, incluyendo stock derivado.
 
@@ -503,15 +619,21 @@ def load_combos_api(
         session, conceptos_items = _fetch_all_conceptos(session)
 
     # Mapa concepto_id → stock disponible (para resolver componentes).
-    stock_by_id: dict[int, float] = {}
-    for c in conceptos_items:
-        cid = c.get("Id")
-        if cid is None:
-            continue
-        try:
-            stock_by_id[int(cid)] = _safe_float(c.get("Stock"))
-        except (TypeError, ValueError):
-            continue
+    # Si se pasó `stock_por_concepto` (stock disponible de VENTAS+MFLEX), el
+    # stock derivado del combo se calcula con el stock de sus componentes
+    # en esos depósitos. Si es None, cae al `Stock` consolidado (legacy).
+    if stock_por_concepto is not None:
+        stock_by_id: dict[int, float] = dict(stock_por_concepto)
+    else:
+        stock_by_id = {}
+        for c in conceptos_items:
+            cid = c.get("Id")
+            if cid is None:
+                continue
+            try:
+                stock_by_id[int(cid)] = _safe_float(c.get("Stock"))
+            except (TypeError, ValueError):
+                continue
 
     rows = []
     for c in conceptos_items:
@@ -527,12 +649,13 @@ def load_combos_api(
         try:
             session, detail = api_get(session, f"/api/conceptos/?id={combo_id}")
         except ApiError:
-            # Si falla el detalle, caemos de vuelta al Stock del listado.
+            # Si falla el detalle, caemos de vuelta al stock del propio
+            # combo (filtrado por depósito si hay mapa, consolidado si no).
             rows.append(
                 {
                     "sku": str(c.get("Codigo") or "").strip(),
                     "nombre": str(c.get("Nombre") or "").strip(),
-                    "stock": int(_safe_float(c.get("Stock"))),
+                    "stock": int(_stock_de(c, stock_por_concepto)),
                     "precio": precio_combo,
                 }
             )
@@ -1026,6 +1149,46 @@ def _self_test() -> None:
     tipos_extras = {c.get("Tipo") for c in conceptos} - {"Producto", "Combo"}
     if tipos_extras:
         print(f"    (ojo: conceptos con Tipo inesperado: {tipos_extras})")
+
+    # --- Stock por depósito (VENTAS + MFLEX) ---
+    session, stock_dep = load_stock_depositos(session)
+    assert isinstance(stock_dep, dict) and len(stock_dep) > 0, (
+        "load_stock_depositos devolvió un mapa vacío"
+    )
+    assert all(isinstance(k, int) for k in stock_dep), "keys deben ser concepto_id int"
+    suma_dep = sum(stock_dep.values())
+    print(
+        f"OK  load_stock_depositos ({len(stock_dep)} conceptos con stock en "
+        f"{DEPOSITOS_INVENTARIO}, {suma_dep:,.0f} unidades sumadas)"
+    )
+    # El stock filtrado por depósito debe ser ≤ al consolidado de todos
+    # los depósitos (VENTAS+MFLEX es un subconjunto). Lo verificamos a
+    # nivel total contra el `Stock` consolidado del listado de conceptos.
+    suma_consolidada = sum(
+        _safe_float(c.get("Stock"))
+        for c in conceptos
+        if c.get("Tipo") == "Producto" and _safe_float(c.get("Stock")) > 0
+    )
+    assert suma_dep <= suma_consolidada + 1e-6, (
+        f"stock VENTAS+MFLEX ({suma_dep}) > consolidado ({suma_consolidada}); "
+        "imposible si son subconjunto"
+    )
+    print(
+        f"    (sanity: {suma_dep:,.0f} en 2 depósitos ≤ {suma_consolidada:,.0f} "
+        f"consolidado, {100*suma_dep/suma_consolidada:.0f}% del total)"
+    )
+
+    # Los loaders con stock filtrado producen el mismo schema y un stock
+    # total que coincide con el mapa de depósitos (productos).
+    session, df_prod_dep = load_productos_api(
+        session, conceptos_items=conceptos, stock_por_concepto=stock_dep,
+    )
+    assert list(df_prod_dep.columns) == list(df_prod.columns), "schema cambió"
+    print(
+        f"OK  load_productos_api con stock por depósito "
+        f"(stock total {df_prod_dep['stock'].sum():,.0f} vs "
+        f"{df_prod['stock'].sum():,.0f} consolidado)"
+    )
 
     # Smoke extra: vendedor como ID_<n> cuando no hay mapping.
     vendedores_unicos = set(df_cli["vendedor"].unique())

@@ -1664,3 +1664,84 @@ real, no se rompe — ver memoria `feedback_comisiones_invariante`.
 +10% a +13% en compensación mensual.
 
 **Confirmado por:** Mariano, sesión 2026-05-21.
+
+---
+
+## 2026-06-30 — Stock de Inventario solo de depósitos VENTAS + MFLEX
+
+**Decisión:** Todos los cálculos de la tab Inventario (KPIs, semanas de
+stock, stock valorizado, stock derivado de combos) usan únicamente las
+unidades **disponibles** (`StockConReservas` = físico − reservado) de los
+depósitos **VENTAS** y **MFLEX**, no el stock consolidado de los 10
+depósitos del ERP.
+
+**Contexto:** La decisión 2026-04-18 ("Tab Inventario") había fijado el
+stock como **consolidado por SKU, sin desglose por depósito**, con el
+argumento de que "Contabilium UY no expone endpoint de depósitos". Eso
+era incorrecto: el discovery posterior de inventario (registrado en
+`_learning/errors.md`, 2026-05-13) encontró que **sí existen** los
+endpoints `/api/inventarios/getDepositos` y
+`/api/inventarios/getStockByDeposito`. GSU usa los depósitos no-VENTAS
+(COMPRAS, INSUMOS, MUESTRAS, SCRAP, REPROCESO, DIFERENCIAS, INGRESOS,
+DEVOLUCIONES) para mercadería que no está disponible para la venta, así
+que el consolidado inflaba el stock disponible.
+
+**Medida elegida — disponible (StockConReservas), no físico:** En la
+misma sesión se evaluó primero usar `StockActual` (físico, por
+continuidad y para esquivar el bug de reservas fantasma), pero Mariano
+decidió **descontar las unidades reservadas**: el número que tiene que
+ver el Jefe de Ventas es lo realmente comprometible para vender, no lo
+físico. Se usa entonces `StockConReservas` (= StockActual −
+StockReservado) por depósito. Ejemplo de referencia: `EPP PU 500 E` →
+físico VENTAS 234 + MFLEX 55 = 289, pero con 12 reservadas en VENTAS el
+disponible es **277**.
+
+**Caveat de reservas fantasma:** `StockReservado` es el campo que el bug
+de Contabilium (ver `feedback_contabilium_facturacion_libera_reservas`)
+puede inflar — facturar por API bajaba StockActual pero dejaba la reserva
+colgada. Ya está mitigado (el facturador cancela la orden post-emisión +
+existe el cleanup), así que las reservas deberían estar limpias. Si
+aparece stock disponible más bajo de lo esperado, ese bug es el primer
+sospechoso.
+
+**Implementación:**
+- Constante `DEPOSITOS_INVENTARIO = ("VENTAS", "MFLEX")` en
+  `api_loader.py`. Match por nombre normalizado `.strip().upper()`
+  porque `getDepositos` devuelve `" MFLEX"` con un espacio adelante.
+- Función nueva `api_loader.load_stock_depositos(session)`: resuelve los
+  IDs de depósito por nombre (`getDepositos`), pagina
+  `getStockByDeposito?id=<dep>` para cada uno (mismo patrón
+  Items/TotalItems que el resto), y devuelve un mapa
+  `dict[concepto_id → StockConReservas sumado de los 2 depósitos]`. Si falta
+  algún depósito avisa por stderr; si faltan los dos, levanta `ApiError`.
+- `load_productos_api` y `load_combos_api` aceptan kwarg
+  `stock_por_concepto`. Cuando se pasa, el `stock` sale de ese mapa
+  (0.0 si el concepto no está en VENTAS+MFLEX); helper `_stock_de`. Si
+  es None (self-test sin credenciales / modo legacy), cae al `Stock`
+  consolidado como antes — backward-compatible.
+- `app._api_sync_maestros` pullea el mapa una vez y lo inyecta a ambos
+  loaders. Costo: ~2 pulls paginados extra (~18 s) al sync de maestros,
+  cacheado con el mismo TTL.
+- Los **combos derivados** quedan automáticamente calculados con el
+  stock de componentes en esos 2 depósitos (el `stock_by_id` se arma
+  desde el mapa filtrado).
+
+**Aguas abajo sin cambios:** `metrics.inventario_semanas_stock`,
+`valor_stock` y las vistas solo consumen la columna `stock`, así que el
+cambio quedó localizado en `api_loader.py` + el cableo en `app.py`.
+
+**Validación:** `_exploracion-api-contabilium/smoke_stock_depositos.py`
+cruza, para una muestra de SKU, el stock filtrado contra el
+`StockConReservas` por depósito de `getStockBySKU` (verdad de terreno) y
+verifica que el filtrado nunca supere el consolidado. Pasó: 6/6 SKU
+cuadran al decimal. Caso de referencia: `EPP PU 500 E` → VENTAS 234 +
+MFLEX 55 = 289 físico, menos 12 reservadas en VENTAS = **277 disponible**
+(consolidado de los 10 depósitos era 489). `NSS 10` tenía 4 consolidado
+pero 0 en VENTAS+MFLEX → ahora 0. Self-test online de `api_loader.py`
+extendido con el mismo chequeo.
+
+**Caveat de cache:** como cambia la fuente del `stock`, post-deploy hay
+que tocar "Resync forzado" + "Sincronizar" para que el maestro cacheado
+se regenere con el stock por depósito.
+
+**Confirmado por:** Mariano, sesión 2026-06-30.

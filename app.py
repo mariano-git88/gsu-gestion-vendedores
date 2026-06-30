@@ -172,14 +172,20 @@ def _api_sync_maestros():
         session, vendedores_map=VENDEDORES, clientes_items=clientes_items,
     )
     session, conceptos_items = api_loader._fetch_all_conceptos(session)
+    # Stock de Inventario = físico de VENTAS + MFLEX (no el consolidado
+    # de todos los depósitos). Ver decisión 2026-06-30.
+    session, stock_por_concepto = api_loader.load_stock_depositos(session)
     session, df_prod = api_loader.load_productos_api(
         session,
         subrubros_map=SUBRUBROS,
         rubros_map=RUBROS,
         conceptos_items=conceptos_items,
+        stock_por_concepto=stock_por_concepto,
     )
     session, df_comb = api_loader.load_combos_api(
-        session, conceptos_items=conceptos_items,
+        session,
+        conceptos_items=conceptos_items,
+        stock_por_concepto=stock_por_concepto,
     )
     return df_cli, df_prod, df_comb, clientes_items
 

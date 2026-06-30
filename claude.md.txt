@@ -427,8 +427,22 @@ endpoint adicional** — los campos se agregan al pull de maestros.
 - `df_productos` ahora incluye columnas `stock` (float, unidades),
   `stock_minimo` (float, umbral que GSU setea en el ERP) y `precio`
   (float, **PrecioFinal / 1.22** — neto sin IVA básico UY).
+- **El `stock` NO es el consolidado de todos los depósitos.** Es el
+  **disponible** (`StockConReservas` = físico − reservado) sumado de
+  **VENTAS + MFLEX** solamente (decisión 2026-06-30). Se obtiene con
+  `api_loader.load_stock_depositos`
+  (paginado de `/api/inventarios/getStockByDeposito` para cada depósito,
+  resuelto por nombre vía `/api/inventarios/getDepositos`), que devuelve
+  un mapa `concepto_id → stock` que se inyecta a `load_productos_api` y
+  `load_combos_api` con el kwarg `stock_por_concepto`. Un producto sin
+  stock en esos dos depósitos queda en 0. Constante
+  `DEPOSITOS_INVENTARIO = ("VENTAS", "MFLEX")` en `api_loader.py` (match
+  por nombre normalizado `.strip().upper()` — el ERP devuelve `" MFLEX"`
+  con un espacio adelante). Esto agrega ~2 pulls paginados (~18 s) al
+  sync de maestros.
 - `df_combos` incluye columna `stock` **derivada de componentes**:
-  `stock_combo = floor(min(stock_componente / cantidad_requerida))`.
+  `stock_combo = floor(min(stock_componente / cantidad_requerida))`,
+  donde el stock de cada componente es también el de VENTAS + MFLEX.
   También trae `precio` (PrecioFinal del combo, neto sin IVA).
   Requiere N+1 sobre los combos (9 en GSU ≈ 1 s adicional).
 - Constante `IVA_BASICO_UY = 1.22` en `api_loader.py`. Helper
@@ -453,9 +467,15 @@ endpoint adicional** — los campos se agregan al pull de maestros.
   UYU netos sin IVA). Visible en la tab Inventario como cuarto KPI
   arriba y como columna en la tabla. Comparable con los montos del
   Resumen (que también son netos). Ver decisión 2026-04-29.
-- **Consolidado por SKU** (sin desglose por depósito — Contabilium UY
-  no expone endpoint de depósitos y Mariano confirmó que con
-  consolidado alcanza).
+- **Solo depósitos VENTAS + MFLEX** (decisión 2026-06-30). El stock de
+  toda la tab Inventario (KPIs, semanas de stock, valor de stock, stock
+  de combos) cuenta únicamente las unidades físicas de esos dos
+  depósitos, no el consolidado de los 10 que tiene el ERP. Reemplaza la
+  decisión vieja 2026-04-18 ("consolidado, sin desglose por depósito")
+  que asumía erróneamente que Contabilium UY no exponía endpoint de
+  depósitos — sí lo expone (`/api/inventarios/getDepositos` +
+  `getStockByDeposito`). Por SKU (consolidado dentro de los 2 depósitos,
+  sin desglose VENTAS vs MFLEX).
 - **Stock de combos derivado** (no el `Stock` que trae Contabilium
   directamente). Si un combo tiene un componente faltante, el combo
   no se puede armar aunque Contabilium diga otra cosa. Decisión
