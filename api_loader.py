@@ -49,8 +49,21 @@ import requests
 BASE_URL = "https://rest.contabilium.com.uy"
 USER_AGENT = "GSU-Dashboard/1.0"
 DEFAULT_TIMEOUT = 30  # segundos por request
-MAX_RETRIES = 3       # para errores transitorios (429, 5xx, red)
+MAX_RETRIES = 5       # para errores transitorios (429, 5xx, red)
 EXPIRY_MARGIN = 60    # regenerar token 60s antes de que venza
+
+# --- Control de rate limit (Contabilium devuelve 429 si vamos rápido) ---
+# El sync de maestros dispara cientos de requests paginadas seguidas
+# (clientes + conceptos + stock por depósito). Sin espaciarlas, Contabilium
+# corta con HTTP 429. Dos defensas:
+#   1. MIN_REQUEST_INTERVAL: pausa mínima proactiva entre requests para no
+#      superar el límite de ráfaga.
+#   2. RETRY_BASE_429: al recibir 429, esperar bastante (respetando el
+#      header Retry-After si viene) porque el límite es por ventana de
+#      tiempo y un backoff corto no alcanza a que se reponga.
+MIN_REQUEST_INTERVAL = 0.35  # segundos mínimos entre dos GET consecutivos
+RETRY_BASE_429 = 6           # backoff base (seg) por intento ante un 429
+_last_request_ts = 0.0       # timestamp del último GET (throttle global)
 
 # IVA básico UY 22%. `PrecioFinal` de Contabilium viene bruto con IVA;
 # para que el "valor de stock" sea comparable con el `monto` neto del
@@ -224,6 +237,36 @@ def _refrescar_si_expirado(session: ApiSession) -> ApiSession:
 # Cliente HTTP con retry
 # =====================================================================
 
+def _throttle() -> None:
+    """Espacia los GET para no gatillar el rate limit (429) de Contabilium.
+
+    Mantiene al menos MIN_REQUEST_INTERVAL segundos entre requests
+    consecutivos usando un timestamp global. Es una defensa proactiva:
+    evita el 429 en vez de recuperarse de él.
+    """
+    global _last_request_ts
+    ahora = time.time()
+    espera = MIN_REQUEST_INTERVAL - (ahora - _last_request_ts)
+    if espera > 0:
+        time.sleep(espera)
+    _last_request_ts = time.time()
+
+
+def _retry_after_segundos(response: requests.Response, fallback: float) -> float:
+    """Devuelve cuántos segundos esperar tras un 429.
+
+    Usa el header `Retry-After` (en segundos) si el servidor lo manda; si
+    no viene o no es parseable, cae en `fallback`.
+    """
+    valor = response.headers.get("Retry-After")
+    if valor:
+        try:
+            return max(float(valor), fallback)
+        except (TypeError, ValueError):
+            pass
+    return fallback
+
+
 def api_get(session: ApiSession, path: str) -> tuple[ApiSession, dict | list]:
     """GET autenticado con retry en errores transitorios.
 
@@ -247,6 +290,7 @@ def api_get(session: ApiSession, path: str) -> tuple[ApiSession, dict | list]:
     }
     last_error = "desconocido"
     for attempt in range(1, MAX_RETRIES + 1):
+        _throttle()
         try:
             r = requests.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
         except requests.RequestException as e:
@@ -268,7 +312,16 @@ def api_get(session: ApiSession, path: str) -> tuple[ApiSession, dict | list]:
             last_error = "401 (token regenerado)"
             continue
 
-        if r.status_code == 429 or r.status_code >= 500:
+        if r.status_code == 429:
+            last_error = "HTTP 429"
+            if attempt == MAX_RETRIES:
+                raise ApiError(f"GET {path}: {last_error} tras {MAX_RETRIES} intentos")
+            # Backoff más largo: el 429 es por ventana de tiempo. Respetar
+            # Retry-After si el servidor lo manda; si no, backoff creciente.
+            time.sleep(_retry_after_segundos(r, RETRY_BASE_429 * attempt))
+            continue
+
+        if r.status_code >= 500:
             last_error = f"HTTP {r.status_code}"
             if attempt == MAX_RETRIES:
                 raise ApiError(f"GET {path}: {last_error} tras {MAX_RETRIES} intentos")
