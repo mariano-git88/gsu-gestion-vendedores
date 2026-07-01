@@ -34,6 +34,7 @@ Referencias:
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -64,6 +65,14 @@ EXPIRY_MARGIN = 60    # regenerar token 60s antes de que venza
 MIN_REQUEST_INTERVAL = 0.35  # segundos mínimos entre dos GET consecutivos
 RETRY_BASE_429 = 6           # backoff base (seg) por intento ante un 429
 _last_request_ts = 0.0       # timestamp del último GET (throttle global)
+_throttle_lock = threading.Lock()  # el throttle global se comparte entre threads
+
+# IMPORTANTE — throttle vs concurrencia: `load_fc_api` baja el detalle de los
+# comprobantes en paralelo (ThreadPool de `max_workers`). El throttle proactivo
+# serializaría ese batch y haría el sync lentísimo, así que esas llamadas pasan
+# `throttle=False` a `api_get`. El throttle se mantiene en las llamadas
+# SECUENCIALES (paginación de maestros e inventario), que es donde Contabilium
+# devolvía 429. La ráfaga concurrente de reads ya funcionaba bien sin throttle.
 
 # IVA básico UY 22%. `PrecioFinal` de Contabilium viene bruto con IVA;
 # para que el "valor de stock" sea comparable con el `monto` neto del
@@ -243,13 +252,18 @@ def _throttle() -> None:
     Mantiene al menos MIN_REQUEST_INTERVAL segundos entre requests
     consecutivos usando un timestamp global. Es una defensa proactiva:
     evita el 429 en vez de recuperarse de él.
+
+    Thread-safe: el sleep ocurre DENTRO del lock a propósito, para que dos
+    threads no calculen la espera contra el mismo timestamp y salgan
+    juntos. Sólo lo usan las llamadas secuenciales (ver nota de diseño
+    arriba); la carga concurrente pasa `throttle=False`.
     """
     global _last_request_ts
-    ahora = time.time()
-    espera = MIN_REQUEST_INTERVAL - (ahora - _last_request_ts)
-    if espera > 0:
-        time.sleep(espera)
-    _last_request_ts = time.time()
+    with _throttle_lock:
+        espera = MIN_REQUEST_INTERVAL - (time.time() - _last_request_ts)
+        if espera > 0:
+            time.sleep(espera)
+        _last_request_ts = time.time()
 
 
 def _retry_after_segundos(response: requests.Response, fallback: float) -> float:
@@ -267,12 +281,19 @@ def _retry_after_segundos(response: requests.Response, fallback: float) -> float
     return fallback
 
 
-def api_get(session: ApiSession, path: str) -> tuple[ApiSession, dict | list]:
+def api_get(
+    session: ApiSession, path: str, *, throttle: bool = True
+) -> tuple[ApiSession, dict | list]:
     """GET autenticado con retry en errores transitorios.
 
     Parámetros:
       session: ApiSession activa.
       path: ruta relativa a BASE_URL, ej. "/api/clientes/search?page=1".
+      throttle: si True (default), aplica el throttle proactivo global
+        entre requests. Poner en False para las llamadas que corren en
+        paralelo (ThreadPool de `load_fc_api`), donde el throttle
+        serializaría el batch y haría el sync lentísimo. Ver nota de
+        diseño en la sección de constantes.
 
     Devuelve una tupla (sesión_posiblemente_refrescada, payload). La
     sesión puede venir refrescada si el token había expirado o si el
@@ -290,7 +311,8 @@ def api_get(session: ApiSession, path: str) -> tuple[ApiSession, dict | list]:
     }
     last_error = "desconocido"
     for attempt in range(1, MAX_RETRIES + 1):
-        _throttle()
+        if throttle:
+            _throttle()
         try:
             r = requests.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
         except requests.RequestException as e:
@@ -886,7 +908,11 @@ def load_fc_api(
     session_snapshot = session  # sesión pre-refrescada, usada por todos los threads
 
     def _fetch_detail(cid: int) -> tuple[int, dict]:
-        _, payload = api_get(session_snapshot, f"/api/comprobantes/?id={cid}")
+        # throttle=False: corre en paralelo (ThreadPool); el throttle
+        # proactivo serializaría el batch. Ver nota de diseño en constantes.
+        _, payload = api_get(
+            session_snapshot, f"/api/comprobantes/?id={cid}", throttle=False
+        )
         if not isinstance(payload, dict):
             raise ApiError(f"GetById de comprobante {cid} no devolvió un dict")
         return cid, payload
