@@ -23,6 +23,8 @@ Si falta el histórico, muestra un aviso y no rompe.
 Si la fuente es Manual (xlsx sin stock), degrada con aviso.
 """
 
+from io import BytesIO
+
 import pandas as pd
 import streamlit as st
 
@@ -132,6 +134,111 @@ def render(
             "Suma de stock × precio neto de cada SKU. UYU sin IVA "
             "(PrecioFinal / 1.22). Comparable con los montos del Resumen."
         ),
+    )
+
+    # ===== Stock muerto (con stock, sin ventas en N días) =====
+    st.divider()
+    st.markdown("### 🪦 Stock muerto")
+    st.caption(
+        "Artículos **con stock** que **no vendieron ni una unidad** en la "
+        "ventana elegida. Sirve para detectar mercadería inmovilizada / a "
+        "discontinuar. Se toma la venta bruta (una devolución no cuenta como "
+        "venta). Tablas descargables completas."
+    )
+
+    ventanas = [30, 60, 120]
+    tablas_muerto = {d: metrics.stock_muerto(inv, df_hist12, d) for d in ventanas}
+
+    km = st.columns(3)
+    for i, d in enumerate(ventanas):
+        km[i].metric(
+            f"Sin ventas {d} días",
+            f"{len(tablas_muerto[d]):,}",
+            help=f"SKUs con stock que no vendieron nada en los últimos {d} días.",
+        )
+
+    col_m1, col_m2 = st.columns([1, 2])
+    _ventana_sel = col_m1.radio(
+        "Ventana",
+        options=ventanas,
+        index=1,  # default 60 días
+        format_func=lambda d: f"{d} días",
+        horizontal=True,
+        key="inv_muerto_ventana",
+    )
+    _excluir_sin_valor = col_m2.checkbox(
+        "Excluir artículos sin valor de stock ($0, típicamente marketing/SC)",
+        value=False,
+        key="inv_muerto_excl0",
+        help="Oculta ítems con valor de stock 0 (precio $0), que suelen ser "
+             "material promocional, no producto comercial.",
+    )
+
+    def _filtrar_muerto(t: pd.DataFrame) -> pd.DataFrame:
+        if _excluir_sin_valor and "valor_stock" in t.columns:
+            return t[t["valor_stock"] > 0]
+        return t
+
+    tabla_muerto = _filtrar_muerto(tablas_muerto[_ventana_sel])
+
+    _col_cfg_muerto = {
+        "sku": st.column_config.TextColumn("SKU", width="small"),
+        "nombre": st.column_config.TextColumn("Nombre"),
+        "tipo": st.column_config.TextColumn("Tipo", width="small"),
+        "sub_rubro": st.column_config.TextColumn("Sub-rubro", width="small"),
+        "stock": st.column_config.NumberColumn("Stock", format="%.0f"),
+        "precio": None,
+        "valor_stock": st.column_config.NumberColumn(
+            "Valor (UYU)", format="%.0f", help="Stock × precio neto sin IVA."
+        ),
+        "ultima_venta": st.column_config.DateColumn(
+            "Última venta", format="DD/MM/YYYY",
+            help="Última venta en el histórico. Vacío = nunca vendido en 12m.",
+        ),
+        "dias_sin_venta": st.column_config.NumberColumn(
+            "Días sin venta", format="%.0f",
+            help="Días desde la última venta. Vacío = nunca vendido.",
+        ),
+    }
+
+    if tabla_muerto.empty:
+        st.success(
+            f"No hay artículos con stock sin ventas en los últimos "
+            f"{_ventana_sel} días con los filtros actuales."
+        )
+    else:
+        st.dataframe(
+            tabla_muerto, use_container_width=True, hide_index=True,
+            column_config=_col_cfg_muerto,
+        )
+        valor_inmov = float(tabla_muerto["valor_stock"].sum()) \
+            if "valor_stock" in tabla_muerto.columns else 0.0
+        st.caption(
+            f"{len(tabla_muerto):,} artículos sin ventas en {_ventana_sel} "
+            f"días. Valor de stock inmovilizado: $ {valor_inmov:,.0f} UYU."
+        )
+
+    # Descargas: CSV de la ventana seleccionada + Excel con las 3 ventanas.
+    col_dl1, col_dl2 = st.columns(2)
+    col_dl1.download_button(
+        f"⬇️ CSV — sin ventas {_ventana_sel}d",
+        data=tabla_muerto.to_csv(index=False).encode("utf-8"),
+        file_name=f"stock_muerto_{_ventana_sel}d.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+    _buf_muerto = BytesIO()
+    with pd.ExcelWriter(_buf_muerto, engine="openpyxl") as _w:
+        for d in ventanas:
+            _filtrar_muerto(tablas_muerto[d]).to_excel(
+                _w, index=False, sheet_name=f"{d} dias"
+            )
+    col_dl2.download_button(
+        "⬇️ Excel — 30 / 60 / 120 días",
+        data=_buf_muerto.getvalue(),
+        file_name="stock_muerto.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
     )
 
     # ===== Filtros =====

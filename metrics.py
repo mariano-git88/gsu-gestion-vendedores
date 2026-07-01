@@ -710,6 +710,76 @@ def ventas_semanales_por_sku(
     return result[cols].reset_index(drop=True)
 
 
+def stock_muerto(
+    inv: pd.DataFrame,
+    df_hist: pd.DataFrame,
+    dias: int,
+    hoy: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """SKUs con stock > 0 que NO vendieron ni una unidad neta en los
+    últimos `dias` días ("stock muerto").
+
+    Args:
+        inv: salida de `inventario_semanas_stock` (sku, nombre, tipo,
+            sub_rubro, stock, precio, valor_stock, ...).
+        df_hist: histórico de ventas (columnas sku, fecha, unidades).
+        dias: ventana de inactividad (ej. 30, 60, 120).
+        hoy: referencia temporal (default: hoy).
+
+    Devuelve las filas de `inv` con stock > 0 cuyo SKU no tuvo venta neta
+    positiva en la ventana, enriquecidas con:
+      - ultima_venta: fecha de la última venta positiva (NaT si nunca
+        vendió dentro del histórico disponible).
+      - dias_sin_venta: días desde la última venta (NaN si nunca).
+    Ordenado con los nunca-vendidos primero, luego por mayor antigüedad y
+    mayor valor de stock inmovilizado.
+    """
+    cols_out = [
+        "sku", "nombre", "tipo", "sub_rubro", "stock", "precio",
+        "valor_stock", "ultima_venta", "dias_sin_venta",
+    ]
+    if inv is None or inv.empty or "stock" not in inv.columns:
+        return pd.DataFrame(columns=cols_out)
+    if hoy is None:
+        hoy = pd.Timestamp.today().normalize()
+
+    base = inv[inv["stock"] > 0].copy()
+    base["sku"] = base["sku"].astype(str)
+    if base.empty:
+        return pd.DataFrame(columns=cols_out)
+
+    # "Sin ventas" = ninguna línea de venta BRUTA (unidades > 0) en la
+    # ventana. Se usa bruto y no neto a propósito: una devolución no debe
+    # convertir una venta real en "stock muerto" (ni al revés). Se computa
+    # `h_pos` (solo líneas de venta positiva) una vez y se reusa para
+    # `vendidos` (dentro de la ventana) y `ultima` (última venta global).
+    if df_hist is not None and not df_hist.empty:
+        h = df_hist.copy()
+        h["fecha"] = pd.to_datetime(h["fecha"], errors="coerce")
+        h_pos = h[(h["unidades"] > 0) & h["fecha"].notna()]
+        desde = hoy - pd.Timedelta(days=dias)
+        en_ventana = h_pos[(h_pos["fecha"] >= desde) & (h_pos["fecha"] <= hoy)]
+        vendidos = set(en_ventana["sku"].astype(str))
+        ultima = h_pos.groupby(h_pos["sku"].astype(str))["fecha"].max()
+    else:
+        vendidos = set()
+        ultima = pd.Series(dtype="datetime64[ns]")
+
+    muerto = base[~base["sku"].isin(vendidos)].copy()
+    if muerto.empty:
+        return pd.DataFrame(columns=cols_out)
+
+    muerto["ultima_venta"] = muerto["sku"].map(ultima)
+    muerto["dias_sin_venta"] = (hoy - muerto["ultima_venta"]).dt.days
+    muerto = muerto.sort_values(
+        ["dias_sin_venta", "valor_stock"],
+        ascending=[False, False],
+        na_position="first",  # nunca vendidos (NA) primero
+    )
+    out_cols = [c for c in cols_out if c in muerto.columns]
+    return muerto[out_cols].reset_index(drop=True)
+
+
 def inventario_semanas_stock(
     df_productos: pd.DataFrame,
     df_combos: pd.DataFrame,
