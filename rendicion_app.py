@@ -265,75 +265,56 @@ c2.metric("✅ OK (automatizables)", n_ok)
 c3.metric("⚠️ A revisar", n_rev)
 c4.metric("Descartadas (sin factura)", len(descartadas))
 
-# --- Reporte completo (vista de solo lectura) ---
-def _color_estado(fila):
-    color = "#e7f6ec" if fila["Estado"] == rendicion.ESTADO_OK else "#fdecea"
-    return [f"background-color: {color}"] * len(fila)
+# --- Reporte + aprobación en UNA sola tabla editable ---
+st.subheader("Reporte y aprobación")
+st.caption(
+    "Cada fila trae su clasificación (✅ OK / ⚠️ Revisar) y el motivo. La "
+    "columna **Aprobar** (a la izquierda) define qué cobranzas quedan "
+    "automatizables: las OK vienen pre-marcadas; revisá las ⚠️ y marcá las "
+    "que valides (o desmarcá una OK que no quieras automatizar)."
+)
 
-st.subheader("Reporte")
-st.dataframe(
-    df.style.apply(_color_estado, axis=1),
+# Tabla del reporte con la casilla Aprobar embebida. Estado con emoji para
+# que se lea de un vistazo (el data_editor no soporta colores de fila).
+df_ed = df.copy()
+df_ed["Estado"] = df_ed["Estado"].map(
+    {rendicion.ESTADO_OK: "✅ OK", rendicion.ESTADO_REVISAR: "⚠️ Revisar"}
+).fillna(df_ed["Estado"])
+df_ed.insert(0, "Aprobar", df["Estado"] == rendicion.ESTADO_OK)
+
+edited = st.data_editor(
+    df_ed,
     use_container_width=True,
     hide_index=True,
+    key="editor_reporte",
+    column_config={
+        "Aprobar": st.column_config.CheckboxColumn(
+            "Aprobar",
+            help="Marcá las cobranzas que quedan automatizables. Las OK vienen "
+                 "pre-marcadas; marcá las ⚠️ que verifiques manualmente.",
+            default=False,
+        ),
+    },
+    disabled=[c for c in df_ed.columns if c != "Aprobar"],
 )
+
+aprobadas = edited[edited["Aprobar"]].drop(columns=["Aprobar"])
+pendientes = edited[~edited["Aprobar"]].drop(columns=["Aprobar"])
+
+st.metric("👍 Automatizables (aprobadas)", len(aprobadas), help=(
+    f"De {len(df)} filas: {n_ok} OK y {n_rev} a revisar. "
+    "Cambia al marcar/desmarcar la casilla Aprobar."
+))
 
 if descartadas:
     with st.expander(f"Filas descartadas ({len(descartadas)}) — sin Nº de factura"):
         st.dataframe(pd.DataFrame(descartadas), use_container_width=True, hide_index=True)
 
-# --- Aprobación de las filas a revisar ---
-st.divider()
-st.subheader("Aprobación de cobranzas")
-st.caption(
-    "Las filas **OK** ya son automatizables. Para las que están **A revisar**, "
-    "marcá la casilla **Aprobar** cuando verifiques que están bien: se suman a "
-    "las automatizables."
-)
-
-df_ok = df[df["Estado"] == rendicion.ESTADO_OK].copy()
-df_rev = df[df["Estado"] == rendicion.ESTADO_REVISAR].copy()
-
-if df_rev.empty:
-    st.success("No hay filas a revisar: todas las cobranzas quedaron OK.")
-    aprobadas = df_rev.copy()
-else:
-    df_rev_ed = df_rev.copy()
-    df_rev_ed.insert(0, "Aprobar", False)
-    edited = st.data_editor(
-        df_rev_ed,
-        use_container_width=True,
-        hide_index=True,
-        key="editor_revisar",
-        column_config={
-            "Aprobar": st.column_config.CheckboxColumn(
-                "Aprobar",
-                help="Marcá si verificaste manualmente que esta cobranza está "
-                     "OK para automatizar.",
-                default=False,
-            ),
-        },
-        disabled=[c for c in df_rev_ed.columns if c != "Aprobar"],
-    )
-    aprobadas = edited[edited["Aprobar"]].drop(columns=["Aprobar"])
-    st.caption(f"{len(aprobadas)} de {len(df_rev)} filas a revisar aprobadas.")
-
-# --- Resumen de automatizables ---
-filas_aprob = set(aprobadas["Fila"]) if not aprobadas.empty else set()
-pendientes = df_rev[~df_rev["Fila"].isin(filas_aprob)]
-automatizables = (
-    pd.concat([df_ok, aprobadas], ignore_index=True) if filas_aprob else df_ok
-)
-
-m1, m2, m3 = st.columns(3)
-m1.metric("✅ OK automáticas", len(df_ok))
-m2.metric("👍 Aprobadas por Valeria", len(filas_aprob))
-m3.metric("Total automatizables", len(automatizables))
-
 # --- Descarga Excel (reporte + automatizables + pendientes + descartadas) ---
 buf = io.BytesIO()
 with pd.ExcelWriter(buf, engine="openpyxl") as xl:
     df.to_excel(xl, index=False, sheet_name="Reporte completo")
-    automatizables.to_excel(xl, index=False, sheet_name="Automatizables")
+    aprobadas.to_excel(xl, index=False, sheet_name="Automatizables")
     if not pendientes.empty:
         pendientes.to_excel(xl, index=False, sheet_name="Pendientes revision")
     if descartadas:
