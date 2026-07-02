@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import hmac
 import io
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
@@ -157,18 +157,14 @@ def _cargar_indice(fecha_desde_iso: str, fecha_hasta_iso: str) -> dict:
 # Helpers
 # =====================================================================
 
+DIAS_DEFAULT = 90  # ventana de búsqueda de facturas por defecto
+
+
 def _rango_default() -> tuple[date, date]:
-    """Facturas a cobrar suelen ser de los últimos ~90 días. Default
-    amplio para no perder facturas viejas en cuenta corriente."""
+    """Default: últimos DIAS_DEFAULT días. Cubre el grueso de las cobranzas
+    (facturas recientes) sin bajar de más. Se puede ampliar en la UI."""
     hoy = date.today()
-    desde = date(hoy.year, hoy.month, 1)
-    # retroceder ~3 meses
-    m = hoy.month - 3
-    y = hoy.year
-    while m <= 0:
-        m += 12
-        y -= 1
-    return date(y, m, 1), hoy
+    return hoy - timedelta(days=DIAS_DEFAULT), hoy
 
 
 def _fmt(v: float) -> str:
@@ -188,8 +184,25 @@ st.caption(
 with st.sidebar:
     st.header("Parámetros")
     d_ini, d_fin = _rango_default()
-    fecha_desde = st.date_input("Facturas desde", value=d_ini, format="DD/MM/YYYY")
-    fecha_hasta = st.date_input("Facturas hasta", value=d_fin, format="DD/MM/YYYY")
+    # El rango de fechas es una opción secundaria: por defecto se buscan las
+    # facturas de los últimos 90 días. Solo hace falta tocarlo si se cobran
+    # facturas más viejas. Va en un expander colapsado.
+    with st.expander("📅 Rango de fechas de facturas"):
+        st.caption(
+            "Ventana de **emisión** de facturas donde el tool busca (no es la "
+            "fecha del recibo). Default: últimos 90 días. Ampliá el «desde» si "
+            "cobrás facturas más viejas; cuanto más ancho, más tarda."
+        )
+        fecha_desde = st.date_input(
+            "Facturas desde", value=d_ini, format="DD/MM/YYYY"
+        )
+        fecha_hasta = st.date_input(
+            "Facturas hasta", value=d_fin, format="DD/MM/YYYY"
+        )
+    st.caption(
+        f"Buscando facturas: **{fecha_desde.strftime('%d/%m/%Y')} → "
+        f"{fecha_hasta.strftime('%d/%m/%Y')}**"
+    )
     tolerancia = st.number_input(
         "Tolerancia ± ($)",
         min_value=0.0, value=rendicion.TOLERANCIA_DEFAULT, step=10.0,
