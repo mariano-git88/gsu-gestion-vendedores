@@ -146,6 +146,25 @@ def render(
         "venta). Tablas descargables completas."
     )
 
+    # Cobertura de datos: el histórico de 12 meses es opt-in y puede quedar
+    # viejo (el botón "Sincronizar" NO lo refresca). Si no llega hasta hoy,
+    # una venta reciente no se cuenta y el SKU aparece como muerto por error.
+    _cobertura = pd.to_datetime(df_hist12["fecha"], errors="coerce").max()
+    if pd.notna(_cobertura):
+        st.caption(
+            f"Ventas contadas hasta **{_cobertura.strftime('%d/%m/%Y')}** "
+            "(según el histórico de 12 meses cargado)."
+        )
+        if _cobertura.normalize() < pd.Timestamp.today().normalize():
+            st.warning(
+                f"⚠️ El histórico llega solo hasta el "
+                f"{_cobertura.strftime('%d/%m/%Y')}. Las ventas posteriores NO "
+                "se cuentan, así que un artículo vendido después de esa fecha "
+                "puede figurar acá por error. Para actualizarlo, tocá "
+                "**«Recargar histórico (12 meses)»** en la sidebar — el botón "
+                "«Sincronizar» no refresca este snapshot."
+            )
+
     ventanas = [30, 60, 120]
     tablas_muerto = {d: metrics.stock_muerto(inv, df_hist12, d) for d in ventanas}
 

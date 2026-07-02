@@ -636,6 +636,13 @@ with st.sidebar:
         try:
             _fd_hist = date(_hoy.year - 1, _hoy.month, 1)
             _fh_hist = _hoy
+            # "Recargar" (ya había un pull previo) debe FORZAR un pull
+            # fresco. Sin esto, dentro del mismo día la clave de caché
+            # (fecha_desde, fecha_hasta) no cambia y `_api_sync_fc_historico`
+            # devuelve el snapshot viejo — las ventas cargadas hoy en
+            # Contabilium NO aparecen aunque el usuario apriete "Recargar".
+            if _hist_ts is not None:
+                _api_sync_fc_historico.clear()
             df_fc_hist12, errors_hist = _api_sync_fc_historico(
                 _fd_hist.isoformat(), _fh_hist.isoformat()
             )
