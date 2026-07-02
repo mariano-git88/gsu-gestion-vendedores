@@ -182,6 +182,7 @@ class ResultadoFila:
     saldo_factura: float = 0.0
     descuento_aplica: bool = False
     descuento_asumido: bool = False   # True si se infirió por monto
+    es_pago_parcial: bool = False     # entrega / pago parcial: no lleva NC
     nc_esperada: float = 0.0
     cobro_esperado: float = 0.0
     diferencia: float = 0.0           # cobrado - cobro_esperado
@@ -434,19 +435,57 @@ def analizar_fila(
         )
         # Igual dejamos calculado el descuento agregado como referencia.
 
+    # --- Detectar entrega / pago parcial ---
+    # Una "entrega" es un pago parcial de lo que el cliente adeuda: NO lleva
+    # NC del 10% y no tiene un "cobro esperado" de 90/100%. Se detecta por la
+    # palabra "entrega" en Observaciones, o porque (sin flag explícito) el
+    # cobro no se acerca ni al 90% ni al 100% del total. Sin este chequeo, la
+    # inferencia por cercanía asumía 10% para cualquier monto < 100% (bug:
+    # una entrega de $5.000 caía como "10% asumido").
+    cobrado = fila.cobrado
+    esp_90 = round(res.total_factura * (1 - TASA_DESCUENTO), 2)
+    esp_100 = round(res.total_factura, 2)
+    obs_entrega = "entrega" in _norm(fila.observaciones)
+    cerca_90 = abs(cobrado - esp_90) <= tolerancia
+    cerca_100 = abs(cobrado - esp_100) <= tolerancia
+
+    if not fila.es_multifactura and (
+        obs_entrega or (fila.descuento_flag is None and not cerca_90 and not cerca_100)
+    ):
+        res.es_pago_parcial = True
+        res.estado = ESTADO_REVISAR
+        etiqueta = (
+            "Entrega / pago parcial" if obs_entrega
+            else "El cobro no coincide con el 90% ni el 100% de la factura"
+        )
+        res.motivos.append(
+            f"{etiqueta}: cobrado {cobrado:,.0f} de una factura de "
+            f"{esp_100:,.0f} (con IVA). No se asume descuento; definir "
+            "manualmente si corresponde NC y cómo imputar."
+        )
+        return res
+
     # --- Determinar si aplica el 10% ---
     if fila.descuento_flag is not None:
         res.descuento_aplica = fila.descuento_flag
-    else:
-        # Inferir por monto: ¿el cobrado se parece más a 90% o a 100%?
-        cobrado = fila.cobrado
-        esp_con_dto = res.total_factura * (1 - TASA_DESCUENTO)
-        esp_sin_dto = res.total_factura
-        res.descuento_aplica = abs(cobrado - esp_con_dto) < abs(cobrado - esp_sin_dto)
+    elif cerca_90:
+        res.descuento_aplica = True
         res.descuento_asumido = True
         res.motivos.append(
-            f"Descuento no especificado; asumido {'10%' if res.descuento_aplica else 'pago total'} por monto"
+            "Descuento no especificado; asumido 10% (el cobro coincide con el 90%)"
         )
+    elif cerca_100:
+        res.descuento_aplica = False
+        res.descuento_asumido = True
+        res.motivos.append(
+            "Descuento no especificado; asumido pago total (el cobro coincide con el 100%)"
+        )
+    else:
+        # Multi-factura sin flag: no se puede inferir por monto (el cobro se
+        # reparte). Ya está en REVISAR por multi-factura.
+        res.descuento_aplica = False
+        res.descuento_asumido = True
+        res.motivos.append("Descuento no determinado por monto (multi-factura)")
 
     # --- Calcular esperado ---
     if res.descuento_aplica:
@@ -533,16 +572,21 @@ def resultados_a_dataframe(resultados: list[ResultadoFila]) -> pd.DataFrame:
     filas = []
     for res in resultados:
         f = res.fila
+        if res.es_pago_parcial:
+            desc_label = "Entrega/parcial"
+        else:
+            desc_label = ("10%" if res.descuento_aplica else "No") + (
+                " (asumido)" if res.descuento_asumido else ""
+            )
         filas.append({
             "Fila": f.fila_excel,
             "Fecha": f.fecha.date() if f.fecha else None,
             "Cliente": f.nro_cliente,
             "Factura(s)": " / ".join(f.facturas),
             "Total Factura": round(res.total_factura, 2),
-            "Descuento": ("10%" if res.descuento_aplica else "No")
-            + (" (asumido)" if res.descuento_asumido else ""),
-            "NC Esperada": res.nc_esperada,
-            "Cobro Esperado": res.cobro_esperado,
+            "Descuento": desc_label,
+            "NC Esperada": None if res.es_pago_parcial else res.nc_esperada,
+            "Cobro Esperado": None if res.es_pago_parcial else res.cobro_esperado,
             "Efectivo": f.efectivo,
             "Cheque": f.cheque,
             "Nº Cheque": f.nro_cheque,
