@@ -244,17 +244,30 @@ if not filas:
 
 st.success(f"Planilla leída: {len(filas)} fila(s) con factura.")
 
-if not st.button("▶️ Analizar", type="primary"):
+# El análisis pega a la API (saldos), así que corre SOLO al tocar "Analizar"
+# y se guarda en session_state. Clave: cualquier interacción con la tabla
+# (marcar un checkbox) dispara un rerun de todo el script; si el análisis
+# viviera detrás del botón, el rerun lo perdería (el botón da True una sola
+# vez) y habría que re-analizar. Guardándolo, los reruns re-renderizan la
+# tabla desde el resultado guardado y el data_editor conserva las marcas
+# por su `key`.
+if st.button("▶️ Analizar", type="primary"):
+    indice = _cargar_indice(fecha_desde.isoformat(), fecha_hasta.isoformat())
+    resultados = rendicion.analizar(filas, indice, tolerancia=tolerancia)
+    with st.spinner("Verificando saldos de las facturas encontradas..."):
+        session = _api_session()
+        rendicion.verificar_saldos(session, resultados)
+    st.session_state.rend_df = rendicion.resultados_a_dataframe(resultados)
+    st.session_state.rend_descartadas = descartadas
+    # Nueva corrida: descartar marcas del editor previo (otra planilla/rango).
+    st.session_state.pop("editor_reporte", None)
+
+if "rend_df" not in st.session_state:
+    st.info("Tocá **▶️ Analizar** para procesar la planilla.")
     st.stop()
 
-# --- Analizar ---
-indice = _cargar_indice(fecha_desde.isoformat(), fecha_hasta.isoformat())
-resultados = rendicion.analizar(filas, indice, tolerancia=tolerancia)
-with st.spinner("Verificando saldos de las facturas encontradas..."):
-    session = _api_session()
-    rendicion.verificar_saldos(session, resultados)
-
-df = rendicion.resultados_a_dataframe(resultados)
+df = st.session_state.rend_df
+descartadas = st.session_state.get("rend_descartadas", [])
 n_ok = int((df["Estado"] == rendicion.ESTADO_OK).sum())
 n_rev = int((df["Estado"] == rendicion.ESTADO_REVISAR).sum())
 
