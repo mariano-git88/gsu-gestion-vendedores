@@ -307,8 +307,11 @@ def construir_indice_facturas(
           "sufijo": {sufijo_num: [comprobante, ...]},
         }
     `comprobante` = {id, numero, total, id_cliente, razon_social, tipo}.
-    El `total` sale de ImporteTotalBruto (con IVA), consistente con el
-    cobro real del vendedor. El `Saldo` NO viene en el search: se pide en
+    El `total` sale de `ImporteTotalNeto`, que es el total CON IVA — lo que
+    efectivamente se cobra. OJO: Contabilium tiene los nombres invertidos
+    respecto de lo intuitivo: `ImporteTotalNeto` = con IVA, y
+    `ImporteTotalBruto` = sin IVA (validado: Neto = Bruto × 1,22 en FAC y
+    NCF). El `Saldo` (también con IVA) NO viene en el search: se pide en
     detalle con `obtener_saldo_factura` solo para las facturas matcheadas.
 
     Caveat conocido (ver facturador.cargar_facturas_via_api): el server
@@ -327,7 +330,7 @@ def construir_indice_facturas(
         comp = {
             "id": it.get("Id") or it.get("ID") or 0,
             "numero": numero,
-            "total": api_loader.parse_monto_uy(it.get("ImporteTotalBruto")),
+            "total": api_loader.parse_monto_uy(it.get("ImporteTotalNeto")),
             "id_cliente": it.get("IdCliente"),
             "razon_social": str(it.get("RazonSocial") or "").strip(),
             "tipo": str(it.get("TipoFc") or "").strip(),
