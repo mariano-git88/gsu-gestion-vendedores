@@ -943,10 +943,29 @@ Estructura de carpetas y archivos del proyecto:
       `crear` y `emitirFE`, llamar a `DELETE /api/comprobantes/?id=` para
       revertir movimientos de stock + asientos.
     - **Esta excepción NO autoriza usar otros endpoints de escritura**
-      (`UpdateComprobante`, `DeleteComprobante` fuera de la limpieza de
-      borradores propios, `AnularComprobante*`, etc.). Si surge un
-      requerimiento nuevo de escritura, vuelve a discusión arquitectónica
-      antes de codear.
+      fuera de los ya sancionados abajo. Si surge un requerimiento nuevo
+      de escritura, vuelve a discusión arquitectónica antes de codear.
+
+  **Segunda excepción**: el módulo de **Rendición de Cobranzas** (Fase 2,
+  `rendicion_ejecutor.py`, tercer/enésimo entry point Streamlit
+  `rendicion_app.py`) escribe sobre el ERP para automatizar cobranzas:
+  crea la NC del 10% de descuento comercial (`POST /api/comprobantes/anularComprobante`
+  con ítem de texto libre) y el recibo + imputación (`POST /api/comprobantes/cobrar`).
+  Mismas garantías obligatorias que la facturación, adaptadas:
+    - **Aislado del flujo de lectura**: toda la escritura vive en
+      `rendicion_ejecutor.py`; `rendicion.py` (lógica) y el análisis son
+      solo GET. El ejecutor corre en `dry_run=True` por defecto.
+    - **Gate explícito** (tipear `CONFIRMAR`) + **vista previa** del plan
+      (NC, cobro, payloads) antes de cada cobranza.
+    - **De a UNA cobranza**, no en lote; no re-ejecuta una ya procesada.
+    - **Solo casos limpios** (1 factura, no NC, no pago parcial); el resto
+      queda para carga manual.
+    - **Reversa**: si la NC se crea pero el `cobrar` falla, se reporta el
+      id de la NC huérfana para anularla a mano.
+    - Reutiliza los helpers write-safe de `facturador` (retry solo en 401,
+      nunca retry ciego que duplicaría NC/recibo).
+    - **Fuera de esto**, sigue prohibido cualquier otro endpoint de
+      escritura desde flujos de lectura.
 - No pegar `contabilium_client_secret` ni el `access_token` en el
   chat, logs o commit. Vivir exclusivamente en
   `.streamlit/secrets.toml` (local, gitignored) y en Streamlit

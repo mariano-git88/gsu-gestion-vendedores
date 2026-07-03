@@ -194,6 +194,38 @@ class ResultadoFila:
     diferencia: float = 0.0           # cobrado - cobro_esperado
     facturas_detalle: list[dict] = field(default_factory=list)
 
+    @property
+    def es_ejecutable(self) -> bool:
+        """True si la Fase 2 puede ejecutar esta fila automáticamente.
+
+        Solo el caso limpio: UNA factura encontrada (no NC), no pago
+        parcial. Multi-factura (distribución desconocida) y entregas
+        quedan fuera aunque Valeria las apruebe — se cargan a mano.
+        """
+        if self.es_pago_parcial:
+            return False
+        if len(self.facturas_detalle) != 1:
+            return False
+        comp = self.facturas_detalle[0].get("comprobante")
+        if not comp:
+            return False
+        return str(comp.get("tipo") or "").upper() not in TIPOS_NOTA_CREDITO
+
+    def params_ejecucion(self) -> dict | None:
+        """Datos que necesita `rendicion_ejecutor` para esta fila, o None
+        si no es ejecutable."""
+        if not self.es_ejecutable:
+            return None
+        comp = self.facturas_detalle[0]["comprobante"]
+        return {
+            "id_factura": comp["id"],
+            "numero_factura": comp["numero"],
+            "aplica_nc": self.descuento_aplica,
+            "cobro_efectivo": self.fila.efectivo,
+            "cobro_cheque": self.fila.cheque,
+            "nro_cheque": self.fila.nro_cheque,
+        }
+
 
 # =====================================================================
 # Lectura de la planilla

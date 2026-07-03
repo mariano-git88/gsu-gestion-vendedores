@@ -44,6 +44,12 @@ TASA_DESCUENTO = 0.10
 IVA_BASICO = 22.0
 CONCEPTO_NC = "10% DTO. COMERCIAL"
 
+# IdCaja del efectivo en Suprabond — extraído de un recibo REAL de Valeria
+# (recibo 0002-00013287, cobranza en efectivo). El cheque, en cambio, va con
+# IdCaja=null / IdBanco=null y el nº de cheque en NroReferencia (validado en
+# el recibo 0002-00013288, cheque BROU nº 332100). Ver memoria del proyecto.
+IDCAJA_EFECTIVO = 824
+
 
 class EjecutorError(Exception):
     """Falla al ejecutar una cobranza contra Contabilium."""
@@ -147,15 +153,24 @@ def planificar(
         }
 
     # --- Body del cobro/imputación (cobrar) ---
+    # Se manda al endpoint documentado POST /api/comprobantes/cobrar con la
+    # forma `Pagos[]` del Postman. Los valores de caja/banco/referencia ya NO
+    # son inciertos: salen de los recibos REALES de Valeria (2026-07-03):
+    #   - EFECTIVO → IDCaja=824, IDBanco=null.
+    #   - CHEQUE   → IDCaja=null, IDBanco=null, NroReferencia=<nº cheque>
+    #                (el cheque precargado se referencia solo por su número).
+    # La NC (10%) se imputa como un pago con IDNotaCredito. NOTA: el recibo
+    # real, leído por GET /api/cobranzas?id=, representa la NC en `Detalle[]`
+    # como línea NEGATIVA (imputación) y no como forma de pago; asumimos que
+    # `cobrar` traduce el pago-NC a ese Detalle internamente. Es lo único que
+    # queda por confirmar EN VIVO en el primer test real.
     pagos: list[dict] = []
     if aplica_nc:
         pagos.append({
-            # Pago con la NC recién creada. El IDNotaCredito se rellena al
-            # ejecutar (placeholder en dry-run).
             "FormaDePago": "NotaCredito",
             "IDBanco": None,
             "IDCaja": None,
-            "IDNotaCredito": "<ID_NC_A_CREAR>",
+            "IDNotaCredito": "<ID_NC_A_CREAR>",  # se rellena al ejecutar
             "Importe": nc_con_iva,
             "NroReferencia": "",
             "IDComprobanteAsociado": "",
@@ -164,7 +179,7 @@ def planificar(
         pagos.append({
             "FormaDePago": "Efectivo",
             "IDBanco": None,
-            "IDCaja": None,   # INCIERTO: puede requerir una caja concreta
+            "IDCaja": IDCAJA_EFECTIVO,   # 824 (caja real de Suprabond)
             "IDNotaCredito": None,
             "Importe": round(cobro_efectivo, 2),
             "NroReferencia": "",
@@ -173,11 +188,11 @@ def planificar(
     if cobro_cheque > 0:
         pagos.append({
             "FormaDePago": "Cheque",
-            "IDBanco": None,   # INCIERTO
+            "IDBanco": None,
             "IDCaja": None,
             "IDNotaCredito": None,
             "Importe": round(cobro_cheque, 2),
-            "NroReferencia": nro_cheque,  # INCIERTO: ¿así se referencia el cheque precargado?
+            "NroReferencia": nro_cheque,  # cheque precargado, referenciado por nº
             "IDComprobanteAsociado": "",
         })
 

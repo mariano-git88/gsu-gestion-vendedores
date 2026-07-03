@@ -28,13 +28,14 @@ from __future__ import annotations
 
 import hmac
 import io
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import streamlit as st
 
 import api_loader
 import rendicion
+import rendicion_ejecutor
 import theme
 
 # =====================================================================
@@ -258,9 +259,11 @@ if st.button("▶️ Analizar", type="primary"):
         session = _api_session()
         rendicion.verificar_saldos(session, resultados)
     st.session_state.rend_df = rendicion.resultados_a_dataframe(resultados)
+    st.session_state.rend_resultados = resultados  # objetos, para la ejecución
     st.session_state.rend_descartadas = descartadas
-    # Nueva corrida: descartar marcas del editor previo (otra planilla/rango).
+    # Nueva corrida: descartar marcas del editor previo y ejecuciones previas.
     st.session_state.pop("editor_reporte", None)
+    st.session_state.pop("rend_ejecutadas", None)
 
 if "rend_df" not in st.session_state:
     st.info("Tocá **▶️ Analizar** para procesar la planilla.")
@@ -339,9 +342,162 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
+# =====================================================================
+# Fase 2 — Ejecución en Contabilium (ESCRITURA)
+# =====================================================================
+
+st.divider()
+st.subheader("⚙️ Ejecutar en Contabilium (Fase 2)")
+st.warning(
+    "Esto **escribe en Contabilium de verdad**: crea la Nota de Crédito del "
+    "10%, el recibo, e imputa contra la factura. Se hace **de a una cobranza**, "
+    "con vista previa y confirmación. Empezá probando con **una factura chica**."
+)
+
+# ResultadoFila por nº de fila de Excel (para cruzar con la tabla de aprobación).
+_resultados = st.session_state.get("rend_resultados", [])
+_res_por_fila = {r.fila.fila_excel: r for r in _resultados}
+_filas_aprobadas = set(aprobadas["Fila"]) if not aprobadas.empty else set()
+
+# Ejecutables = aprobadas + auto-ejecutables (1 factura, no NC, no parcial).
+_ejecutables = {
+    f: _res_por_fila[f] for f in _filas_aprobadas
+    if f in _res_por_fila and _res_por_fila[f].es_ejecutable
+}
+_aprob_no_ejec = sorted(_filas_aprobadas - set(_ejecutables))
+
+st.session_state.setdefault("rend_ejecutadas", {})
+_ejecutadas = st.session_state.rend_ejecutadas
+
+if _aprob_no_ejec:
+    st.info(
+        "Filas aprobadas que **no** se pueden ejecutar automáticamente "
+        f"(multi-factura o entrega/pago parcial): {_aprob_no_ejec}. "
+        "Esas se cargan a mano en Contabilium."
+    )
+
+# Candidatas: ejecutables que todavía no se ejecutaron OK en esta sesión.
+_pendientes_ejec = {
+    f: r for f, r in _ejecutables.items()
+    if not _ejecutadas.get(f, {}).get("ok")
+}
+
+
+@st.cache_data(show_spinner=False)
+def _factura_detalle(_sess, id_factura: int) -> dict:
+    """Detalle de la factura para armar el plan. Cacheado por id para no
+    re-pegar a la API en cada rerun (el `_sess` va con guion bajo: no se
+    hashea)."""
+    _, fac = rendicion_ejecutor.obtener_factura(_sess, id_factura)
+    return fac
+
+
+if not _ejecutables:
+    st.caption(
+        "No hay cobranzas aprobadas auto-ejecutables. Marcá alguna OK (1 "
+        "factura, sin entrega) en la tabla de arriba."
+    )
+else:
+    st.caption(
+        f"{len(_ejecutables)} cobranza(s) aprobada(s) ejecutable(s); "
+        f"{len(_ejecutadas)} ya ejecutada(s) esta sesión."
+    )
+
+    if _pendientes_ejec:
+        opciones = {
+            f"Fila {f} · {r.params_ejecucion()['numero_factura']} · "
+            f"cliente {r.fila.nro_cliente} · cobrado ${r.fila.cobrado:,.0f}": f
+            for f, r in _pendientes_ejec.items()
+        }
+        sel_label = st.selectbox(
+            "Elegí UNA cobranza para ejecutar", options=list(opciones)
+        )
+        fila_sel = opciones[sel_label]
+        res_sel = _pendientes_ejec[fila_sel]
+        params = res_sel.params_ejecucion()
+
+        # --- Vista previa (dry-run) ---
+        try:
+            sess = _api_session()
+            fac = _factura_detalle(sess, params["id_factura"])
+            plan = rendicion_ejecutor.planificar(
+                fac,
+                aplica_nc=params["aplica_nc"],
+                cobro_efectivo=params["cobro_efectivo"],
+                cobro_cheque=params["cobro_cheque"],
+                nro_cheque=params["nro_cheque"],
+                fecha_emision_iso=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            )
+        except Exception as e:  # noqa: BLE001
+            st.error(f"No se pudo preparar la ejecución: {e}")
+            st.stop()
+
+        st.markdown("**Vista previa — esto es lo que se va a hacer:**")
+        pv1, pv2, pv3 = st.columns(3)
+        pv1.metric("Total factura (c/IVA)", f"$ {plan.total_con_iva:,.2f}")
+        pv2.metric("NC 10%" if plan.aplica_nc else "NC", f"$ {plan.nc_con_iva:,.2f}")
+        pv3.metric("Cobro (efec+cheque)",
+                   f"$ {plan.cobro_efectivo + plan.cobro_cheque:,.2f}")
+        st.caption(
+            f"Factura {plan.numero_factura} · saldo actual "
+            f"$ {plan.saldo_actual:,.2f} → quedará en $ 0."
+            + (f" · Cheque nº {plan.nro_cheque}" if plan.cobro_cheque else "")
+        )
+        for adv in plan.advertencias:
+            st.warning(f"⚠️ {adv}")
+
+        with st.expander("Ver los datos técnicos que se enviarán"):
+            if plan.body_nc:
+                st.markdown("**1) Nota de Crédito** (`/comprobantes/anularComprobante`)")
+                st.json(plan.body_nc)
+            st.markdown("**2) Recibo + imputación** (`/comprobantes/cobrar`)")
+            st.json(plan.body_cobro)
+
+        # --- Gate de confirmación ---
+        st.markdown("---")
+        confirm = st.text_input(
+            "Para ejecutar, escribí **CONFIRMAR** en mayúsculas:",
+            key=f"confirm_{fila_sel}",
+        )
+        if st.button(
+            "🚀 Ejecutar esta cobranza en Contabilium",
+            type="primary",
+            disabled=(confirm.strip() != "CONFIRMAR"),
+        ):
+            with st.spinner("Escribiendo en Contabilium…"):
+                sess = _api_session()
+                sess, resultado = rendicion_ejecutor.ejecutar(
+                    sess, plan, dry_run=False
+                )
+            st.session_state.rend_ejecutadas[fila_sel] = {
+                "ok": resultado.ok,
+                "pasos": resultado.pasos,
+                "error": resultado.error,
+                "id_nc": resultado.id_nc,
+                "numero_nc": resultado.numero_nc,
+                "numero_factura": plan.numero_factura,
+            }
+            st.rerun()
+    else:
+        st.success("Todas las cobranzas ejecutables ya se procesaron. 🎉")
+
+# --- Resultados de ejecuciones de esta sesión ---
+if _ejecutadas:
+    st.markdown("**Ejecuciones de esta sesión:**")
+    for f, r in sorted(_ejecutadas.items()):
+        icono = "✅" if r.get("ok") else "❌"
+        titulo = (
+            f"{icono} Fila {f} · {r.get('numero_factura','?')}"
+            + (f" · NC {r.get('numero_nc')}" if r.get("numero_nc") else "")
+        )
+        with st.expander(titulo, expanded=not r.get("ok")):
+            for paso in r.get("pasos", []):
+                st.write("•", paso)
+            if r.get("error"):
+                st.error(r["error"])
+
 st.caption(
-    "Fase 1 (simulador): las aprobaciones valen para esta sesión y quedan en "
-    "el Excel descargado. La creación real de NC + recibo + imputación en "
-    "Contabilium — y guardar las aprobaciones de forma persistente — son de "
-    "la Fase 2."
+    "Las ejecuciones son reales e inmediatas en Contabilium. Si una NC se "
+    "crea pero el recibo falla, el detalle de arriba muestra el nº de NC para "
+    "revertirla a mano. Las aprobaciones y ejecuciones valen para esta sesión."
 )
