@@ -37,6 +37,14 @@ import api_loader
 import rendicion
 import rendicion_ejecutor
 import theme
+import tutorial_rendicion
+
+
+# Modal del tutorial. Se abre desde la sidebar.
+@st.dialog("Tutorial — Rendición de Cobranzas", width="large")
+def _tutorial_dialog():
+    tutorial_rendicion.render()
+
 
 # =====================================================================
 # Page config + theme
@@ -183,6 +191,8 @@ st.caption(
 )
 
 with st.sidebar:
+    if st.button("📖 Tutorial", use_container_width=True, key="btn_tutorial"):
+        _tutorial_dialog()
     st.header("Parámetros")
     d_ini, d_fin = _rango_default()
     # El rango de fechas es una opción secundaria: por defecto se buscan las
