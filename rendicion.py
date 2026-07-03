@@ -52,6 +52,12 @@ import api_loader
 TASA_DESCUENTO = 0.10        # descuento comercial estándar (10%)
 TOLERANCIA_DEFAULT = 10.0    # ±$ para considerar que el cobro "cuadra"
 
+# TipoFc de Contabilium que NO son facturas cobrables sino notas de crédito
+# (reducen deuda). Si un vendedor pone uno de estos números en la columna
+# "Nro Factura", es un error: no se cobra contra una NC. Se detecta por tipo
+# (señal robusta) y se manda a REVISAR. Espejo de TIPOS_NEGATIVOS de api_loader.
+TIPOS_NOTA_CREDITO = frozenset({"NCF", "NCT", "NCE"})
+
 ESTADO_OK = "OK"
 ESTADO_REVISAR = "REVISAR"
 
@@ -403,6 +409,18 @@ def analizar_fila(
             res.estado = ESTADO_REVISAR
             res.motivos.append(f"{num}: {nota}")
         else:
+            # Detectar que el "número de factura" es en realidad una Nota de
+            # Crédito (el vendedor se equivocó): no se cobra contra una NC.
+            if str(comp.get("tipo") or "").upper() in TIPOS_NOTA_CREDITO:
+                res.estado = ESTADO_REVISAR
+                res.motivos.append(
+                    f"{num}: es una Nota de Crédito ({comp['tipo']}), no una "
+                    "factura. No se puede cobrar contra una NC — verificar el "
+                    "número con el vendedor."
+                )
+                # No lo sumamos a `encontrados`: su total es negativo y
+                # distorsionaría el cálculo de NC/cobro esperado.
+                continue
             encontrados.append(comp)
             if nota:
                 res.motivos.append(f"{num}: {nota}")
