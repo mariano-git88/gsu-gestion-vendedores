@@ -218,12 +218,15 @@ doc_by_id = {int(i): d for i, d in zip(df_cli["id_cliente"], df_cli["documento"]
 resumen = televentas_data.resumen_compras_rapido(headers, doc_by_id)
 leads = televentas_data.construir_leads(df_cli, resumen)
 
-# Enriquecimiento opcional de SKUs/subgrupos (para los filtros por producto)
+# Enriquecimiento opcional de SKUs/subgrupos (para filtros por producto +
+# sugerencias de "próximo mejor producto"). Se guardan a nivel módulo para
+# que la ficha 360 pueda usarlos.
+df_fc_det = None
+sku_sub = dict(zip(df_prod["sku"], df_prod["sub_rubro"])) if not df_prod.empty else {}
 if st.session_state.get("tv_enriquecido"):
     try:
-        df_fc = _enriquecer_skus(sess, desde.isoformat(), hoy.isoformat())
-        sku_sub = dict(zip(df_prod["sku"], df_prod["sub_rubro"])) if not df_prod.empty else {}
-        res_det = televentas_data.resumen_compras(df_fc, sku_subrubro_map=sku_sub)
+        df_fc_det = _enriquecer_skus(sess, desde.isoformat(), hoy.isoformat())
+        res_det = televentas_data.resumen_compras(df_fc_det, sku_subrubro_map=sku_sub)
         if not res_det.empty:
             for c in ("skus_comprados", "subrubros_comprados", "top_skus"):
                 leads = leads.drop(columns=[c]).merge(
@@ -284,8 +287,46 @@ def _ficha_360(lead):
     dias = lead.get("dias_sin_compra")
     c.metric("Días sin comprar", f"{int(dias)}" if pd.notna(dias) else "—")
     c.metric("Ticket promedio", _fmt_money(lead.get("ticket_prom")))
+
+    # Guardrail: no pisar al vendedor de calle si compró hace muy poco.
+    if lead.get("atendido_reciente"):
+        st.warning(
+            f"🚧 Compró hace {int(dias)} días — probablemente su vendedor de "
+            "calle lo atendió recién. Evitá pisarlo salvo que sea a pedido suyo.")
+    # Alerta de deuda.
+    deuda = float(lead.get("deuda_total") or 0.0)
+    vencida = float(lead.get("deuda_vencida") or 0.0)
+    if deuda > 0.5:
+        txt = f"💰 Deuda pendiente: **{deuda:,.2f} UYU**"
+        if vencida > 0.5:
+            txt += f" · de la cual **{vencida:,.2f} UYU vencida**"
+        st.error(txt)
     if str(lead.get("observaciones") or "").strip():
         st.info(f"📝 Nota de entrega: {lead['observaciones']}")
+
+    # Próximo mejor producto (requiere el detalle enriquecido).
+    if df_fc_det is not None:
+        sug = televentas_data.sugerencias_producto(
+            lead["documento"], df_fc_det, sku_sub)
+        nombres = dict(zip(df_prod["sku"], df_prod["nombre"])) if not df_prod.empty else {}
+        col_r, col_c = st.columns(2)
+        with col_r:
+            st.markdown("**🔁 Volvé a ofrecerle** (dejó de comprar)")
+            if sug["recompra"]:
+                for sk, _m in sug["recompra"]:
+                    st.write(f"• {sk} — {nombres.get(sk, '')[:40]}")
+            else:
+                st.caption("—")
+        with col_c:
+            st.markdown("**➕ Podés sumarle** (popular en lo suyo)")
+            if sug["cross"]:
+                for sk, _m in sug["cross"]:
+                    st.write(f"• {sk} — {nombres.get(sk, '')[:40]}")
+            else:
+                st.caption("—")
+    else:
+        st.caption("💡 Activá «Cargar detalle de productos» (arriba) para ver "
+                   "sugerencias de qué ofrecerle.")
 
     msg = (f"Hola {nombre}! Te contacto de Suprabond (GSU). "
            "¿Cómo andás de stock? Tenemos novedades para tu ferretería.")
@@ -517,18 +558,22 @@ with tab_leads:
         f_nocompro = c1.selectbox("NO compró subgrupo", ["(cualquiera)"] + subrubros)
         f_tel = c2.checkbox("Solo con teléfono", value=True)
         f_busq = c3.text_input("Buscar (nombre / RUT / código)")
+        f_guard = c1.checkbox("🚧 Ocultar atendidos recién (no pisar al vendedor)", value=False)
+        f_deuda = c2.checkbox("💰 Solo con deuda", value=False)
 
     filt = televentas_data.filtrar_leads(
         leads, segmentos=seg_map.get(camp), departamentos=f_dep or None,
         vendedores=f_vend or None, con_telefono=f_tel,
         compro_subrubro=None if f_compro == "(cualquiera)" else f_compro,
         no_compro_subrubro=None if f_nocompro == "(cualquiera)" else f_nocompro,
-        busqueda=f_busq or None, documentos=docs_imp)
+        busqueda=f_busq or None, documentos=docs_imp,
+        ocultar_atendido_reciente=f_guard, solo_con_deuda=f_deuda)
     st.caption(f"**{len(filt)}** leads. Hacé click en una fila para abrir la ficha 👇")
 
     cols_show = [c for c in ["codigo", "nombre_fantasia", "razon_social", "ciudad",
                              "departamento", "telefono", "segmento", "dias_sin_compra",
-                             "ticket_prom", "estado", "proximo_seguimiento"] if c in filt.columns]
+                             "ticket_prom", "deuda_total", "estado", "proximo_seguimiento"]
+                 if c in filt.columns]
     if filt.empty:
         st.info("No hay leads con estos filtros.")
     else:
@@ -537,6 +582,7 @@ with tab_leads:
             on_select="rerun", selection_mode="single-row", key="tabla_leads",
             column_config={
                 "ticket_prom": st.column_config.NumberColumn("Ticket prom", format="%.2f UYU"),
+                "deuda_total": st.column_config.NumberColumn("Deuda", format="%.2f UYU"),
                 "dias_sin_compra": st.column_config.NumberColumn("Días s/compra", format="%.0f"),
             })
         sel = ev.selection.rows if ev and ev.selection else []

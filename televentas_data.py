@@ -30,6 +30,10 @@ import api_loader
 DIAS_ACTIVO = 90        # < 90 días → activo
 DIAS_DORMIDO = 180      # 90–180 → dormido reciente; > 180 → dormido profundo
 
+# Si el cliente compró hace menos de esto, probablemente su vendedor de
+# calle lo atendió recién → televentas NO debería pisarlo (guardrail).
+DIAS_ATENDIDO_RECIENTE = 15
+
 
 # =====================================================================
 # 1. Maestro de clientes enriquecido (red)
@@ -192,8 +196,8 @@ def resumen_compras_rapido(
     """
     cols = [
         "ultima_compra", "primera_compra", "dias_sin_compra", "num_facturas",
-        "monto_total", "ticket_prom", "skus_comprados", "subrubros_comprados",
-        "top_skus",
+        "monto_total", "ticket_prom", "deuda_total", "deuda_vencida",
+        "skus_comprados", "subrubros_comprados", "top_skus",
     ]
     if not headers:
         return pd.DataFrame(columns=cols)
@@ -202,33 +206,44 @@ def resumen_compras_rapido(
 
     reg: dict[str, dict] = {}
     for h in headers:
-        if str(h.get("TipoFc") or "").upper() != "FAC":
-            continue
         idc = h.get("IdCliente")
         doc = doc_by_id.get(int(idc)) if idc is not None else None
         if not doc:
+            continue
+        r = reg.setdefault(doc, {"ultima": None, "primera": None, "n": 0,
+                                 "monto": 0.0, "deuda": 0.0, "deuda_venc": 0.0})
+        # Saldo (deuda) — sobre TODOS los comprobantes (FAC suma, NCF resta).
+        saldo = api_loader.parse_monto_uy(h.get("Saldo"))
+        r["deuda"] += saldo
+        if saldo > 0.5:
+            venc = api_loader.parse_fecha_iso(h.get("FechaVencimiento"))
+            if venc is not None and pd.Timestamp(venc) < hoy:
+                r["deuda_venc"] += saldo
+        # Actividad de compra — solo FAC.
+        if str(h.get("TipoFc") or "").upper() != "FAC":
             continue
         fecha = api_loader.parse_fecha_iso(h.get("FechaEmision"))
         if fecha is None:
             continue
         monto = api_loader.parse_monto_uy(h.get("ImporteTotalNeto"))
-        r = reg.setdefault(doc, {"ultima": fecha, "primera": fecha, "n": 0, "monto": 0.0})
-        r["ultima"] = max(r["ultima"], fecha)
-        r["primera"] = min(r["primera"], fecha)
+        r["ultima"] = fecha if r["ultima"] is None else max(r["ultima"], fecha)
+        r["primera"] = fecha if r["primera"] is None else min(r["primera"], fecha)
         r["n"] += 1
         r["monto"] += monto
 
     filas = []
     for doc, r in reg.items():
-        ultima = pd.Timestamp(r["ultima"])
+        ultima = pd.Timestamp(r["ultima"]) if r["ultima"] else pd.NaT
         filas.append({
             "documento": doc,
             "ultima_compra": ultima,
-            "primera_compra": pd.Timestamp(r["primera"]),
-            "dias_sin_compra": int((hoy - ultima).days),
+            "primera_compra": pd.Timestamp(r["primera"]) if r["primera"] else pd.NaT,
+            "dias_sin_compra": int((hoy - ultima).days) if r["ultima"] else None,
             "num_facturas": r["n"],
             "monto_total": round(r["monto"], 2),
             "ticket_prom": round(r["monto"] / r["n"], 2) if r["n"] else 0.0,
+            "deuda_total": round(r["deuda"], 2),
+            "deuda_vencida": round(r["deuda_venc"], 2),
             "skus_comprados": set(),
             "subrubros_comprados": set(),
             "top_skus": [],
@@ -277,11 +292,19 @@ def construir_leads(
         df = df.merge(df_resumen, how="left", left_on="documento", right_index=True)
     else:
         for c in ("ultima_compra", "primera_compra", "dias_sin_compra",
-                  "num_facturas", "monto_total", "ticket_prom",
-                  "skus_comprados", "subrubros_comprados", "top_skus"):
+                  "num_facturas", "monto_total", "ticket_prom", "deuda_total",
+                  "deuda_vencida", "skus_comprados", "subrubros_comprados", "top_skus"):
             df[c] = pd.NA
+    # Deuda puede faltar si el resumen vino de un camino que no la calcula.
+    for c in ("deuda_total", "deuda_vencida"):
+        if c not in df.columns:
+            df[c] = 0.0
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
     df["segmento"] = df["dias_sin_compra"].apply(_segmento)
+    # Guardrail: comprado hace muy poco → atendido por su vendedor de calle.
+    df["atendido_reciente"] = df["dias_sin_compra"].apply(
+        lambda d: (d is not None and not pd.isna(d) and d < DIAS_ATENDIDO_RECIENTE))
     # Columnas de conjunto: rellenar NaN con set/list vacíos para no romper filtros.
     for c in ("skus_comprados", "subrubros_comprados"):
         df[c] = df[c].apply(lambda v: v if isinstance(v, set) else set())
@@ -292,6 +315,57 @@ def construir_leads(
 # =====================================================================
 # 4. Helpers de filtrado (puros)
 # =====================================================================
+
+def sugerencias_producto(
+    documento: str,
+    df_fc: pd.DataFrame,
+    sku_subrubro_map: dict[str, str],
+    hoy: pd.Timestamp | None = None,
+    n: int = 5,
+) -> dict[str, list[tuple[str, str]]]:
+    """Sugerencias de "próximo mejor producto" para un cliente. PURA.
+
+    Requiere el detalle de facturación (df_fc, camino pesado/enriquecido).
+    Devuelve dos listas de (sku, motivo):
+      - "recompra": SKUs que el cliente compraba pero NO en los últimos 90
+        días (dejó de comprar → reofrecer).
+      - "cross": SKUs populares (por cantidad de clientes que los compran)
+        DENTRO de los subgrupos que el cliente ya compra, que él todavía no
+        lleva (venta cruzada relevante).
+    """
+    empty = {"recompra": [], "cross": []}
+    if df_fc is None or df_fc.empty:
+        return empty
+    if hoy is None:
+        hoy = pd.Timestamp.today().normalize()
+
+    fac = df_fc[(df_fc["tipo"] == "FAC") & (df_fc["sku"].astype(str).str.len() > 0)].copy()
+    if fac.empty:
+        return empty
+    fac["fecha"] = pd.to_datetime(fac["fecha"], errors="coerce")
+    fac["documento"] = fac["documento"].astype(str)
+
+    mine = fac[fac["documento"] == str(documento)]
+    sus_skus = set(mine["sku"].astype(str))
+    if not sus_skus:
+        return empty
+    sus_subs = {sku_subrubro_map.get(s) for s in sus_skus if sku_subrubro_map.get(s)}
+
+    # Recompra: comprados alguna vez pero no en los últimos 90 días.
+    recientes = set(mine[mine["fecha"] >= hoy - pd.Timedelta(days=90)]["sku"].astype(str))
+    recompra = [s for s in sus_skus if s not in recientes][:n]
+
+    # Cross-sell: populares en los subgrupos del cliente que él no compra.
+    fac["sub"] = fac["sku"].astype(str).map(sku_subrubro_map)
+    rel = fac[fac["sub"].isin(sus_subs)]
+    pop = rel.groupby("sku")["documento"].nunique().sort_values(ascending=False)
+    cross = [s for s in pop.index if s not in sus_skus][:n]
+
+    return {
+        "recompra": [(s, "dejó de comprarlo") for s in recompra],
+        "cross": [(s, "popular en lo que ya compra") for s in cross],
+    }
+
 
 def matchear_seleccion(
     df_subido: pd.DataFrame, leads: pd.DataFrame,
@@ -368,15 +442,24 @@ def filtrar_leads(
     dias_sin_compra_min: int | None = None,
     busqueda: str | None = None,
     documentos: set[str] | None = None,
+    ocultar_atendido_reciente: bool = False,
+    solo_con_deuda: bool = False,
 ) -> pd.DataFrame:
     """Aplica los filtros del CRM sobre la tabla de leads. Todos opcionales
     y combinables (AND). Devuelve el subconjunto.
 
     `documentos`: si se pasa, restringe a esos documentos (usado para
-    trabajar solo sobre una lista importada)."""
+    trabajar solo sobre una lista importada).
+    `ocultar_atendido_reciente`: saca los que compraron hace muy poco
+    (guardrail de no pisar al vendedor de calle).
+    `solo_con_deuda`: deja solo los que tienen deuda pendiente."""
     df = leads
     if documentos is not None:
         df = df[df["documento"].astype(str).isin(documentos)]
+    if ocultar_atendido_reciente and "atendido_reciente" in df.columns:
+        df = df[~df["atendido_reciente"].fillna(False)]
+    if solo_con_deuda and "deuda_total" in df.columns:
+        df = df[df["deuda_total"].fillna(0) > 0.5]
     if segmentos:
         df = df[df["segmento"].isin(segmentos)]
     if departamentos:
