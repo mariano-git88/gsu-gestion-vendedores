@@ -293,6 +293,67 @@ def construir_leads(
 # 4. Helpers de filtrado (puros)
 # =====================================================================
 
+def matchear_seleccion(
+    df_subido: pd.DataFrame, leads: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Cruza una planilla subida (de leads seleccionados) con los leads.
+
+    Busca en el archivo una columna identificadora (documento/RUT o
+    código/nro cliente) y matchea contra los leads por documento, por
+    código exacto, o por el número del código (ej "4001" ↔ "04001-C").
+
+    Devuelve (df_matched, no_encontrados):
+      - df_matched: subset de `leads` (con las columnas del lead) para los
+        clientes hallados, con columnas extra codigo/razon_social listas
+        para persistir la importación.
+      - no_encontrados: lista de identificadores del archivo sin match.
+    """
+    import re as _re
+    if df_subido is None or df_subido.empty or leads is None or leads.empty:
+        return leads.iloc[0:0], []
+
+    # Detectar la columna identificadora.
+    cols_norm = {str(c).strip().lower(): c for c in df_subido.columns}
+    def _pick(*claves):
+        for k in claves:
+            for cn, orig in cols_norm.items():
+                if k in cn:
+                    return orig
+        return None
+    col_doc = _pick("documento", "rut", "cedula", "cédula", "ci")
+    col_cod = _pick("codigo", "código", "nro cliente", "nro. cliente", "cod cliente", "cliente")
+    col_id = col_doc or col_cod
+    if col_id is None:
+        col_id = df_subido.columns[0]  # fallback: primera columna
+
+    # Índices de match sobre los leads.
+    by_doc = {str(d).strip(): str(d).strip() for d in leads["documento"]}
+    by_cod = {str(c).strip().upper(): str(d).strip()
+              for c, d in zip(leads["codigo"], leads["documento"]) if str(c).strip()}
+    by_num = {}
+    for c, d in zip(leads["codigo"], leads["documento"]):
+        digs = _re.sub(r"\D", "", str(c or ""))
+        if digs:
+            by_num[digs.lstrip("0") or "0"] = str(d).strip()
+
+    docs, faltan = [], []
+    for val in df_subido[col_id].astype(str):
+        v = val.strip()
+        if not v or v.lower() == "nan":
+            continue
+        vu = v.upper()
+        vnum = _re.sub(r"\D", "", v).lstrip("0") or "0"
+        doc = by_doc.get(v) or by_cod.get(vu) or by_num.get(vnum)
+        if doc:
+            docs.append(doc)
+        else:
+            faltan.append(v)
+
+    docs_set = set(docs)
+    matched = leads[leads["documento"].astype(str).isin(docs_set)].copy()
+    return matched, faltan
+
+
 def filtrar_leads(
     leads: pd.DataFrame,
     *,
@@ -306,10 +367,16 @@ def filtrar_leads(
     compro_sku: str | None = None,
     dias_sin_compra_min: int | None = None,
     busqueda: str | None = None,
+    documentos: set[str] | None = None,
 ) -> pd.DataFrame:
     """Aplica los filtros del CRM sobre la tabla de leads. Todos opcionales
-    y combinables (AND). Devuelve el subconjunto."""
+    y combinables (AND). Devuelve el subconjunto.
+
+    `documentos`: si se pasa, restringe a esos documentos (usado para
+    trabajar solo sobre una lista importada)."""
     df = leads
+    if documentos is not None:
+        df = df[df["documento"].astype(str).isin(documentos)]
     if segmentos:
         df = df[df["segmento"].isin(segmentos)]
     if departamentos:

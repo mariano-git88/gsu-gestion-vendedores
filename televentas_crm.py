@@ -25,6 +25,18 @@ import gsheets  # reutiliza _open_sheet / _ensure_worksheet / errores
 GsheetsError = gsheets.GsheetsError
 
 TAB_ACTIVIDAD = "actividad_televentas"
+TAB_IMPORTACIONES = "importaciones_televentas"
+
+# Cada fila = un cliente perteneciente a una lista importada (nombrada).
+# Append-only; una importación se identifica por su `nombre`.
+IMPORTACIONES_COLS = [
+    "nombre",         # nombre de la lista, ej "SELECCIONADOS POR ERNESTO 04 07 26"
+    "documento",      # RUT/CI del cliente (join con los leads)
+    "codigo",         # código Contabilium (informativo)
+    "razon_social",   # informativo
+    "fecha_carga",    # "YYYY-MM-DD HH:MM"
+    "agente",         # quién la subió
+]
 
 ACTIVIDAD_COLS = [
     "timestamp",            # "YYYY-MM-DD HH:MM" — cuándo se registró
@@ -122,6 +134,67 @@ def leer_actividad(gsheets_section: dict) -> pd.DataFrame:
     df["documento"] = df["documento"].astype(str).str.strip()
     df["monto_pedido"] = pd.to_numeric(df["monto_pedido"], errors="coerce").fillna(0.0)
     return df
+
+
+def guardar_importacion(
+    gsheets_section: dict, nombre: str, filas: list[dict],
+    agente: str, timestamp: str,
+) -> int:
+    """Guarda una lista importada (append). `filas` = list de
+    {documento, codigo, razon_social}. Devuelve cuántas filas escribió."""
+    nombre = (nombre or "").strip()
+    if not nombre:
+        raise ValueError("La importación necesita un nombre.")
+    filas_validas = [f for f in filas if str(f.get("documento") or "").strip()]
+    if not filas_validas:
+        return 0
+
+    sh = gsheets._open_sheet(gsheets_section)
+    ws = gsheets._ensure_worksheet(sh, TAB_IMPORTACIONES, cols=len(IMPORTACIONES_COLS))
+    header = ws.row_values(1)
+    if not header or header[: len(IMPORTACIONES_COLS)] != IMPORTACIONES_COLS:
+        ws.update("A1", [IMPORTACIONES_COLS], value_input_option="RAW")
+
+    rows = [[nombre, str(f.get("documento") or "").strip(),
+             str(f.get("codigo") or ""), str(f.get("razon_social") or ""),
+             timestamp, agente or ""] for f in filas_validas]
+    ws.append_rows(rows, value_input_option="USER_ENTERED")
+    return len(rows)
+
+
+def leer_importaciones(gsheets_section: dict) -> pd.DataFrame:
+    """Lee todas las listas importadas. DataFrame vacío con schema si no hay."""
+    sh = gsheets._open_sheet(gsheets_section)
+    ws = gsheets._ensure_worksheet(sh, TAB_IMPORTACIONES, cols=len(IMPORTACIONES_COLS))
+    filas = ws.get_all_values()
+    if not filas:
+        ws.update("A1", [IMPORTACIONES_COLS], value_input_option="RAW")
+        return pd.DataFrame(columns=IMPORTACIONES_COLS)
+    if filas[0][: len(IMPORTACIONES_COLS)] != IMPORTACIONES_COLS:
+        if all(not c for c in filas[0]):
+            ws.update("A1", [IMPORTACIONES_COLS], value_input_option="RAW")
+            return pd.DataFrame(columns=IMPORTACIONES_COLS)
+        raise GsheetsError(f"Encabezados inesperados en '{TAB_IMPORTACIONES}'.")
+    if len(filas) < 2:
+        return pd.DataFrame(columns=IMPORTACIONES_COLS)
+    df = pd.DataFrame(filas[1:], columns=IMPORTACIONES_COLS[: len(filas[0])])
+    df["documento"] = df["documento"].astype(str).str.strip()
+    return df
+
+
+def nombres_importaciones(df_imp: pd.DataFrame) -> list[str]:
+    """Nombres de listas importadas, más recientes primero."""
+    if df_imp is None or df_imp.empty:
+        return []
+    orden = df_imp.drop_duplicates("nombre", keep="last")["nombre"].tolist()
+    return list(reversed(orden))
+
+
+def documentos_de_importacion(df_imp: pd.DataFrame, nombre: str) -> set[str]:
+    """Set de documentos que pertenecen a la lista `nombre`."""
+    if df_imp is None or df_imp.empty:
+        return set()
+    return set(df_imp.loc[df_imp["nombre"] == nombre, "documento"].astype(str))
 
 
 def estado_actual_por_lead(df_actividad: pd.DataFrame) -> pd.DataFrame:

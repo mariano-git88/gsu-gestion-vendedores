@@ -127,6 +127,19 @@ def _cargar_actividad(_gs) -> pd.DataFrame:
     return televentas_crm.leer_actividad(dict(_gs))
 
 
+@st.cache_data(ttl=300, show_spinner="Cargando listas importadas…")
+def _cargar_importaciones(_gs) -> pd.DataFrame:
+    return televentas_crm.leer_importaciones(dict(_gs))
+
+
+def _leer_archivo_subido(uploaded) -> pd.DataFrame:
+    """Lee un .csv / .xlsx / .xls subido, todo como texto."""
+    nombre = uploaded.name.lower()
+    if nombre.endswith(".csv"):
+        return pd.read_csv(uploaded, dtype=str)
+    return pd.read_excel(uploaded, dtype=str)
+
+
 @st.cache_data(ttl=21600, show_spinner="Enriqueciendo con detalle de productos (lento)…")
 def _enriquecer_skus(_s, desde: str, hasta: str) -> pd.DataFrame:
     """Carga PESADA (detalle línea por línea) para poblar los SKUs/subgrupos
@@ -228,6 +241,14 @@ if _gs:
         df_act = _cargar_actividad(_gs)
     except Exception as e:  # noqa: BLE001
         st.warning(f"No se pudo leer el CRM: {e}")
+# Listas importadas (para trabajar sobre una selección puntual)
+df_imp = pd.DataFrame(columns=televentas_crm.IMPORTACIONES_COLS)
+if _gs:
+    try:
+        df_imp = _cargar_importaciones(_gs)
+    except Exception as e:  # noqa: BLE001
+        st.warning(f"No se pudieron leer las listas importadas: {e}")
+
 estado_crm = televentas_crm.estado_actual_por_lead(df_act)
 if not estado_crm.empty:
     leads = leads.merge(estado_crm, how="left", left_on="documento", right_index=True)
@@ -454,13 +475,26 @@ def _cargar_pedido(lead):
                 st.error(f"No se pudo cargar el pedido: {e}")
 
 
-tab_leads, tab_seg, tab_nuevo, tab_tablero = st.tabs(
-    ["🎯 Leads", "📅 Seguimientos de hoy", "➕ Cliente nuevo", "📊 Actividad"])
+tab_leads, tab_listas, tab_seg, tab_nuevo, tab_tablero = st.tabs(
+    ["🎯 Leads", "📋 Listas importadas", "📅 Seguimientos de hoy",
+     "➕ Cliente nuevo", "📊 Actividad"])
 
 # =====================================================================
 # TAB 1 — Leads
 # =====================================================================
 with tab_leads:
+    # Trabajar sobre una lista importada (o toda la base)
+    nombres_imp = televentas_crm.nombres_importaciones(df_imp)
+    lista_sel = st.selectbox(
+        "📋 Trabajar con lista importada",
+        ["(Toda la base)"] + nombres_imp,
+        help="Elegí una lista subida en la pestaña «Listas importadas» para "
+             "trabajar solo sobre esos clientes.")
+    docs_imp = None
+    if lista_sel != "(Toda la base)":
+        docs_imp = televentas_crm.documentos_de_importacion(df_imp, lista_sel)
+        st.caption(f"Trabajando sobre **{lista_sel}** — {len(docs_imp)} clientes.")
+
     st.subheader("Campañas rápidas")
     camp = st.radio("Cola de llamado",
                     ["Todos", "Recuperar dormidos (>90d)", "Sin compras en la ventana",
@@ -489,7 +523,7 @@ with tab_leads:
         vendedores=f_vend or None, con_telefono=f_tel,
         compro_subrubro=None if f_compro == "(cualquiera)" else f_compro,
         no_compro_subrubro=None if f_nocompro == "(cualquiera)" else f_nocompro,
-        busqueda=f_busq or None)
+        busqueda=f_busq or None, documentos=docs_imp)
     st.caption(f"**{len(filt)}** leads. Hacé click en una fila para abrir la ficha 👇")
 
     cols_show = [c for c in ["codigo", "nombre_fantasia", "razon_social", "ciudad",
@@ -511,6 +545,64 @@ with tab_leads:
             _ficha_360(leads[leads["documento"] == doc_sel].iloc[0])
         else:
             st.info("👆 Seleccioná una fila para ver la ficha del cliente.")
+
+
+# =====================================================================
+# TAB — Listas importadas
+# =====================================================================
+with tab_listas:
+    st.subheader("📋 Subir una lista de leads")
+    st.caption(
+        "Subí un Excel/CSV con los clientes seleccionados (ej. por Ernesto). "
+        "La app los cruza con la base por **código** o **documento/RUT**. "
+        "Después podés trabajar solo sobre esa lista desde la pestaña Leads.")
+    if not _gs:
+        st.info("Configurá `[gsheets_televentas]` para guardar listas.")
+    else:
+        up = st.file_uploader("Archivo (.xlsx / .xls / .csv)", type=["xlsx", "xls", "csv"])
+        if up is not None:
+            try:
+                df_sub = _leer_archivo_subido(up)
+                matched, faltan = televentas_data.matchear_seleccion(df_sub, leads)
+                st.success(f"{len(matched)} clientes encontrados de {len(df_sub)} filas.")
+                if faltan:
+                    st.warning(f"{len(faltan)} sin match (revisá código/RUT): {faltan[:15]}"
+                               + (" …" if len(faltan) > 15 else ""))
+                if not matched.empty:
+                    st.dataframe(matched[["codigo", "nombre_fantasia", "razon_social",
+                                          "ciudad", "telefono"]],
+                                 use_container_width=True, hide_index=True)
+                    nombre_imp = st.text_input(
+                        "Nombre de la lista",
+                        placeholder="SELECCIONADOS POR ERNESTO 04 07 26")
+                    if st.button("💾 Guardar lista", type="primary",
+                                 disabled=not nombre_imp.strip()):
+                        filas = [{"documento": r["documento"], "codigo": r["codigo"],
+                                  "razon_social": r["razon_social"]}
+                                 for _, r in matched.iterrows()]
+                        try:
+                            n = televentas_crm.guardar_importacion(
+                                dict(_gs), nombre_imp, filas,
+                                st.session_state.get("tv_agente", ""),
+                                datetime.now().strftime("%Y-%m-%d %H:%M"))
+                            _cargar_importaciones.clear()
+                            st.success(f"Lista «{nombre_imp}» guardada con {n} clientes. "
+                                       "Ya podés elegirla en la pestaña Leads.")
+                        except Exception as e:  # noqa: BLE001
+                            st.error(f"No se pudo guardar: {e}")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"No se pudo leer el archivo: {e}")
+
+    st.divider()
+    st.markdown("**Listas guardadas**")
+    if df_imp.empty:
+        st.caption("Todavía no hay listas importadas.")
+    else:
+        resumen_imp = (df_imp.groupby("nombre")
+                       .agg(clientes=("documento", "nunique"),
+                            fecha=("fecha_carga", "max"))
+                       .reset_index().sort_values("fecha", ascending=False))
+        st.dataframe(resumen_imp, use_container_width=True, hide_index=True)
 
 
 # =====================================================================
