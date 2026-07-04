@@ -160,6 +160,85 @@ def resumen_compras(
 
 
 # =====================================================================
+# 2b. Resumen RÁPIDO por encabezados (sin el N+1 de detalle) — red
+# =====================================================================
+
+def cargar_headers_facturacion(
+    session: api_loader.ApiSession, desde: str, hasta: str,
+) -> tuple[api_loader.ApiSession, list[dict]]:
+    """Pagina SOLO los encabezados de comprobantes (sin traer el detalle
+    línea por línea). Es MUCHO más rápido que `load_fc_api` (que hace un
+    GET por comprobante) y alcanza para los datos que el CRM necesita de
+    entrada: última compra, ticket, antigüedad. El detalle de SKUs se
+    carga aparte, opcional (`resumen_compras` + load_fc_api)."""
+    path = f"/api/comprobantes/search?fechaDesde={desde}&fechaHasta={hasta}"
+    return api_loader.api_paginate(session, path)
+
+
+def resumen_compras_rapido(
+    headers: list[dict],
+    doc_by_id: dict[int, str],
+    hoy: pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Resumen de compras por cliente a partir de los ENCABEZADOS.
+
+    `headers`: items de /api/comprobantes/search (traen IdCliente,
+    FechaEmision, ImporteTotalNeto (con IVA), TipoFc).
+    `doc_by_id`: mapa IdCliente → documento (del maestro de clientes).
+
+    Devuelve el MISMO schema que `resumen_compras` (indexado por
+    documento), pero con `skus_comprados`/`subrubros_comprados`/`top_skus`
+    VACÍOS — el detalle de productos se enriquece aparte, opcional.
+    """
+    cols = [
+        "ultima_compra", "primera_compra", "dias_sin_compra", "num_facturas",
+        "monto_total", "ticket_prom", "skus_comprados", "subrubros_comprados",
+        "top_skus",
+    ]
+    if not headers:
+        return pd.DataFrame(columns=cols)
+    if hoy is None:
+        hoy = pd.Timestamp.today().normalize()
+
+    reg: dict[str, dict] = {}
+    for h in headers:
+        if str(h.get("TipoFc") or "").upper() != "FAC":
+            continue
+        idc = h.get("IdCliente")
+        doc = doc_by_id.get(int(idc)) if idc is not None else None
+        if not doc:
+            continue
+        fecha = api_loader.parse_fecha_iso(h.get("FechaEmision"))
+        if fecha is None:
+            continue
+        monto = api_loader.parse_monto_uy(h.get("ImporteTotalNeto"))
+        r = reg.setdefault(doc, {"ultima": fecha, "primera": fecha, "n": 0, "monto": 0.0})
+        r["ultima"] = max(r["ultima"], fecha)
+        r["primera"] = min(r["primera"], fecha)
+        r["n"] += 1
+        r["monto"] += monto
+
+    filas = []
+    for doc, r in reg.items():
+        ultima = pd.Timestamp(r["ultima"])
+        filas.append({
+            "documento": doc,
+            "ultima_compra": ultima,
+            "primera_compra": pd.Timestamp(r["primera"]),
+            "dias_sin_compra": int((hoy - ultima).days),
+            "num_facturas": r["n"],
+            "monto_total": round(r["monto"], 2),
+            "ticket_prom": round(r["monto"] / r["n"], 2) if r["n"] else 0.0,
+            "skus_comprados": set(),
+            "subrubros_comprados": set(),
+            "top_skus": [],
+        })
+    if not filas:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(filas).set_index("documento")
+
+
+# =====================================================================
 # 3. Construcción de la lista de leads (puro)
 # =====================================================================
 
