@@ -516,14 +516,25 @@ def _cargar_pedido(lead):
                 st.error(f"No se pudo cargar el pedido: {e}")
 
 
-tab_leads, tab_listas, tab_seg, tab_nuevo, tab_tablero = st.tabs(
-    ["🎯 Leads", "📋 Listas importadas", "📅 Seguimientos de hoy",
-     "➕ Cliente nuevo", "📊 Actividad"])
+# Navegación por secciones. Se usa `st.segmented_control` (no `st.tabs`) a
+# propósito: st.tabs renderiza el contenido de TODAS las tabs en el DOM y las
+# oculta por CSS, y durante cada rerun (esta app dispara muchos por botones y
+# tablas con on_select) el contenido oculto se ve apilado — parecía que cada
+# sección mostraba las demás. Con un selector + `if`, solo se ejecuta y
+# renderiza la sección activa: sin derrames y además más rápido.
+_SECCIONES = ["🎯 Leads", "📋 Listas importadas", "📅 Seguimientos de hoy",
+              "➕ Cliente nuevo", "📊 Actividad"]
+seccion = st.segmented_control(
+    "Sección", _SECCIONES, default=_SECCIONES[0],
+    key="tv_seccion", label_visibility="collapsed")
+if not seccion:                       # single-select permite deseleccionar → default
+    seccion = _SECCIONES[0]
+st.write("")  # respiro visual antes del contenido de la sección
 
 # =====================================================================
-# TAB 1 — Leads
+# SECCIÓN 1 — Leads
 # =====================================================================
-with tab_leads:
+if seccion == _SECCIONES[0]:
     # Trabajar sobre una lista importada (o toda la base)
     nombres_imp = televentas_crm.nombres_importaciones(df_imp)
     lista_sel = st.selectbox(
@@ -594,9 +605,9 @@ with tab_leads:
 
 
 # =====================================================================
-# TAB — Listas importadas
+# SECCIÓN — Listas importadas
 # =====================================================================
-with tab_listas:
+if seccion == _SECCIONES[1]:
     st.subheader("📋 Subir una lista de leads")
     st.caption(
         "Subí un Excel/CSV con los clientes seleccionados (ej. por Ernesto). "
@@ -652,9 +663,9 @@ with tab_listas:
 
 
 # =====================================================================
-# TAB 2 — Seguimientos de hoy
+# SECCIÓN 2 — Seguimientos de hoy
 # =====================================================================
-with tab_seg:
+if seccion == _SECCIONES[2]:
     st.subheader("📅 Seguimientos para hoy (y atrasados)")
     due = leads[(leads["proximo_seguimiento"].astype(str).str.len() == 10)
                 & (leads["proximo_seguimiento"].astype(str) <= hoy.isoformat())]
@@ -668,9 +679,9 @@ with tab_seg:
 
 
 # =====================================================================
-# TAB 3 — Cliente nuevo
+# SECCIÓN 3 — Cliente nuevo
 # =====================================================================
-with tab_nuevo:
+if seccion == _SECCIONES[3]:
     st.subheader("➕ Alta de cliente nuevo")
     st.caption("Se crea en Contabilium. Después «Resincronizar» para verlo en los leads.")
     with st.form("nuevo_cliente"):
@@ -713,9 +724,9 @@ with tab_nuevo:
 
 
 # =====================================================================
-# TAB 4 — Actividad
+# SECCIÓN 4 — Actividad
 # =====================================================================
-with tab_tablero:
+if seccion == _SECCIONES[4]:
     st.subheader("📊 Actividad de televentas")
     if df_act.empty:
         st.info("Todavía no hay gestiones registradas.")
