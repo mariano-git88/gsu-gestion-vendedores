@@ -342,10 +342,17 @@ def construir_indice_facturas(
 
     Devuelve (sesión, indice) donde indice tiene forma:
         {
-          "fuerte": {norm_factura: comprobante},
+          "fuerte": {norm_factura: [comprobante, ...]},
           "sufijo": {sufijo_num: [comprobante, ...]},
         }
     `comprobante` = {id, numero, total, id_cliente, razon_social, tipo}.
+
+    OJO: `fuerte` mapea a una LISTA, no a un solo comprobante. En Contabilium
+    las facturas (FAC) y las notas de crédito (NCF/NCT/NCE) numeran por
+    secuencias SEPARADAS, así que un mismo `Numero` (ej. "A-00033352") puede
+    existir como factura Y como NC. Guardar ambos y elegir en `_buscar_factura`
+    (que prefiere la factura) evita que una NC reciente pise a la factura vieja
+    del mismo número — bug reportado por Valeria 2026-07-07.
     El `total` sale de `ImporteTotalNeto`, que es el total CON IVA — lo que
     efectivamente se cobra. OJO: Contabilium tiene los nombres invertidos
     respecto de lo intuitivo: `ImporteTotalNeto` = con IVA, y
@@ -360,7 +367,7 @@ def construir_indice_facturas(
     path = f"/api/comprobantes/search?fechaDesde={fecha_desde}&fechaHasta={fecha_hasta}"
     session, items = api_loader.api_paginate(session, path)
 
-    fuerte: dict[str, dict] = {}
+    fuerte: dict[str, list[dict]] = {}
     sufijo: dict[str, list[dict]] = {}
     for it in items:
         numero = str(it.get("Numero") or "").strip()
@@ -374,11 +381,17 @@ def construir_indice_facturas(
             "razon_social": str(it.get("RazonSocial") or "").strip(),
             "tipo": str(it.get("TipoFc") or "").strip(),
         }
-        fuerte[_norm_factura(numero)] = comp
+        # Acumular (no pisar): puede haber FAC y NC con el mismo número.
+        fuerte.setdefault(_norm_factura(numero), []).append(comp)
         suf = _sufijo_num(numero)
         if suf:
             sufijo.setdefault(suf, []).append(comp)
     return session, {"fuerte": fuerte, "sufijo": sufijo}
+
+
+def _es_factura(comp: dict) -> bool:
+    """True si el comprobante es una factura (no una nota de crédito)."""
+    return str(comp.get("tipo") or "").upper() not in TIPOS_NOTA_CREDITO
 
 
 def obtener_saldo_factura(
@@ -397,13 +410,31 @@ def _buscar_factura(numero: str, indice: dict) -> tuple[dict | None, str]:
 
     Devuelve (comprobante, nota). `comprobante` None si no matchea.
     `nota` describe cómo matcheó (para trazabilidad en el reporte).
+
+    Ante una colisión de número (una FAC y una NC con el mismo "A-000..."),
+    SIEMPRE prefiere la factura: el vendedor cobra la factura, no la NC. Si el
+    número solo matchea NC(s), devuelve una para que `analizar_fila` la marque
+    REVISAR con el mensaje 'es una Nota de Crédito' (el vendedor se equivocó de
+    número). Los números de factura son únicos dentro de su serie, así que
+    preferir FAC desambigua sin necesitar el cliente.
     """
     fuerte = indice.get("fuerte", {})
-    comp = fuerte.get(_norm_factura(numero))
-    if comp is not None:
-        return comp, ""
-    # Respaldo por sufijo numérico, solo si es inequívoco.
+    candidatos = fuerte.get(_norm_factura(numero), [])
+    if candidatos:
+        facturas = [c for c in candidatos if _es_factura(c)]
+        if len(facturas) == 1:
+            return facturas[0], ""
+        if len(facturas) > 1:
+            return None, "ambiguo: varias facturas con ese número"
+        return candidatos[0], ""  # solo NC(s) → se marcará REVISAR
+
+    # Respaldo por sufijo numérico, solo si es inequívoco (prefiriendo FAC).
     candidatos = indice.get("sufijo", {}).get(_sufijo_num(numero), [])
+    facturas = [c for c in candidatos if _es_factura(c)]
+    if len(facturas) == 1:
+        return facturas[0], "match por número (serie difiere de formato)"
+    if len(facturas) > 1:
+        return None, "ambiguo: varios comprobantes con ese número"
     if len(candidatos) == 1:
         return candidatos[0], "match por número (serie difiere de formato)"
     if len(candidatos) > 1:

@@ -58,3 +58,26 @@ VENDEDORES: dict[int, str] = {
 # Equivalente por-ID del conjunto histórico
 # {'OPJESICA@SUPRABOND.COM.UY', 'OPVALERIA@SUPRABOND.COM.UY'}.
 VENDEDORES_OP_EXCLUIDOS: frozenset[int] = frozenset({232, 260})
+
+
+# =====================================================================
+# Selector de vendedores para Televentas (alta de clientes nuevos)
+# =====================================================================
+#
+# Nombres "lindos" (no emails) de los vendedores comerciales ACTIVOS que
+# se pueden elegir al dar de alta un cliente nuevo desde el CRM de
+# Televentas. Es un subconjunto curado de VENDEDORES (excluye cuentas OP
+# y comerciales sin cartera actual).
+NOMBRE_VENDEDOR: dict[int, str] = {
+    237: "Mario",
+    346: "Arturo",
+    366: "Marcelo",
+    666: "Néstor",
+}
+
+# Cuenta a la que se asignan los clientes que capta la propia Vendedora
+# Televentas (opción "Televentas" en el selector). Corresponde a
+# OP@SUPRABOND.COM.UY, IdUsuarioAdicional 231 (confirmado por Mariano
+# 2026-07-05). Contabilium no expone un maestro de usuarios por API, por
+# eso el número se mantiene a mano acá.
+ID_VENDEDOR_TELEVENTAS: int | None = 231

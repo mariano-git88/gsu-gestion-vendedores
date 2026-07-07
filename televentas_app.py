@@ -29,7 +29,7 @@ import televentas_crm
 import televentas_data
 import theme
 from subrubros import SUBRUBROS
-from vendedores import VENDEDORES
+from vendedores import VENDEDORES, NOMBRE_VENDEDOR, ID_VENDEDOR_TELEVENTAS
 
 try:
     import tutorial_televentas
@@ -684,16 +684,22 @@ with tab_nuevo:
         depto = n1.text_input("Departamento")
         ciudad = n2.text_input("Ciudad")
         domicilio = st.text_input("Domicilio")
-        vend_nom = st.selectbox("Vendedor asignado", ["(ninguno)"] + list(VENDEDORES.values()))
+        # Selector curado: 4 comerciales activos + "Televentas" (→ cuenta OP@).
+        opciones_vend = {nom: vid for vid, nom in NOMBRE_VENDEDOR.items()}
+        opciones_vend["Televentas"] = ID_VENDEDOR_TELEVENTAS
+        vend_nom = st.selectbox("Vendedor asignado", list(opciones_vend))
         confirm_c = st.text_input("Escribí CONFIRMAR para crear")
         crear = st.form_submit_button("Crear cliente en Contabilium", type="primary")
     if crear:
+        id_vend = opciones_vend.get(vend_nom)
         if confirm_c.strip() != "CONFIRMAR":
             st.error("Escribí CONFIRMAR para crear.")
         elif not razon.strip():
             st.error("La razón social es obligatoria.")
+        elif vend_nom == "Televentas" and id_vend is None:
+            st.error("Falta configurar el ID de la cuenta Televentas "
+                     "(OP@SUPRABOND.COM.UY) en vendedores.py. Avisá a Mariano.")
         else:
-            id_vend = next((kk for kk, vv in VENDEDORES.items() if vv == vend_nom), None)
             try:
                 body = televentas_cliente.armar_body_cliente(
                     razon_social=razon, nombre_fantasia=fantasia, tipo_doc=tipo_doc,
