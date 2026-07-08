@@ -356,7 +356,9 @@ def ejecutar(
             res.pasos.append(f"NC creada: id={id_nc} nº={res.numero_nc}")
             if not id_nc:
                 raise EjecutorError(
-                    f"La NC se creó pero no devolvió Id reconocible: {resp_nc}"
+                    "NC creada pero no se pudo extraer su Id "
+                    "[build: fix-idComprobante]. Claves devueltas: "
+                    f"{list(resp_nc) if isinstance(resp_nc, dict) else resp_nc}"
                 )
             # Rellenar el IDNotaCredito en el pago-NC.
             for p in plan.body_cobro["Pagos"]:
