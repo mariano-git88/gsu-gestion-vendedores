@@ -68,9 +68,9 @@ def test_ejecutor_dryrun_no_escribe_igual():
     assert res.ok is True and res.dry_run is True
 
 
-def test_ejecutor_bloquea_nc_temporal():
-    """Freno de seguridad 2026-07-08: la imputación con NC no se ejecuta (queda
-    en pausa hasta corregir la estructura del recibo). No debe crear NC."""
+def test_ejecutor_no_ejecuta_nc():
+    """Confirmado 2026-07-08: la API no puede imputar una NC → el caso con NC no
+    se ejecuta (ni crea NC), se carga a mano. El pago total sin NC sí se ejecuta."""
     plan = rendicion_ejecutor.PlanEjecucion(
         id_factura=1, numero_factura="A-1", neto_factura=100.0,
         total_con_iva=122.0, saldo_actual=122.0, aplica_nc=True,
@@ -80,8 +80,31 @@ def test_ejecutor_bloquea_nc_temporal():
     )
     _, res = rendicion_ejecutor.ejecutar(None, plan, dry_run=False)
     assert res.ok is False
-    assert res.id_nc is None, "no debe haber creado NC"
-    assert "pausa" in (res.error or "").lower(), res.error
+    assert res.id_nc is None, "no debe crear NC"
+    assert "mano" in (res.error or "").lower(), res.error
+
+
+def test_planificar_nc_en_detalle_no_en_pagos():
+    """La NC va como línea NEGATIVA del Detalle, NO como forma de pago; el neto
+    del Detalle == la plata cobrada (fix 2026-07-08)."""
+    factura = {
+        "Id": 111, "Numero": "A-1", "ImporteTotalBruto": "10.000,00",
+        "ImporteTotalNeto": "12.200,00", "Saldo": "12.200,00", "TipoFc": "FAC",
+        "IdCliente": 5, "PuntoVenta": 2, "IDMoneda": 2, "TipoDeCambio": 1,
+    }
+    plan = rendicion_ejecutor.planificar(
+        factura, aplica_nc=True, cobro_efectivo=10980.0, cobro_cheque=0.0,
+        nro_cheque="", fecha_emision_iso="2026-07-08T00:00:00")
+    body = plan.body_cobro
+    assert "Detalle" in body, "el caso con NC debe mandar Detalle explícito"
+    formas = [p["FormaDePago"] for p in body["Pagos"]]
+    assert "NotaCredito" not in formas, ("la NC no va como forma de pago", formas)
+    importes = [d["Importe"] for d in body["Detalle"]]
+    assert 12200.0 in importes, ("falta la factura positiva", importes)
+    assert -1220.0 in importes, ("falta la NC negativa", importes)
+    assert abs(sum(importes) - 10980.0) < 0.01, ("neto Detalle != plata", sum(importes))
+    # el id de la NC va como placeholder hasta la ejecución
+    assert any(d.get("IDComprobante") == "<ID_NC_A_CREAR>" for d in body["Detalle"])
 
 
 def test_extraer_id_casing_contabilium():

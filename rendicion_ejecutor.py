@@ -152,56 +152,59 @@ def planificar(
             "Observaciones": f"Descuento comercial 10% s/ {numero} (automatizado GSU)",
         }
 
-    # --- Body del cobro/imputación (cobrar) ---
-    # Se manda al endpoint documentado POST /api/comprobantes/cobrar con la
-    # forma `Pagos[]` del Postman. Los valores de caja/banco/referencia ya NO
-    # son inciertos: salen de los recibos REALES de Valeria (2026-07-03):
-    #   - EFECTIVO → IDCaja=824, IDBanco=null.
-    #   - CHEQUE   → IDCaja=null, IDBanco=null, NroReferencia=<nº cheque>
-    #                (el cheque precargado se referencia solo por su número).
-    # La NC (10%) se imputa como un pago con IDNotaCredito. NOTA: el recibo
-    # real, leído por GET /api/cobranzas?id=, representa la NC en `Detalle[]`
-    # como línea NEGATIVA (imputación) y no como forma de pago; asumimos que
-    # `cobrar` traduce el pago-NC a ese Detalle internamente. Es lo único que
-    # queda por confirmar EN VIVO en el primer test real.
+    # --- Body del cobro/imputación (POST /api/comprobantes/cobrar) ---
+    # `Pagos[]` = SOLO plata real. La NC NO va como forma de pago: el 1er test
+    # real (2026-07-08) probó que Contabilium NO consume una NCF de descuento por
+    # esa vía (el `IDNotaCredito` quedó None aunque el `IDCaja` sí se guardó, o
+    # sea no es casing: rechaza la NC como pago) → queda como saldo a favor y el
+    # asiento no balancea. La NC va IMPUTADA en el `Detalle` como línea NEGATIVA,
+    # junto a la factura positiva — estructura confirmada leyendo recibos reales
+    # (RC-00013332/13333: NC negativa + factura positiva, formas de pago = plata,
+    # y el neto del Detalle == la plata; los centavos se cierran con una línea
+    # {IDComprobante:0, Importe:<ajuste>}).
+    # Valores de caja: EFECTIVO → IDCaja=824; CHEQUE → NroReferencia=<nº cheque>.
     pagos: list[dict] = []
-    if aplica_nc:
-        pagos.append({
-            "FormaDePago": "NotaCredito",
-            "IDBanco": None,
-            "IDCaja": None,
-            "IDNotaCredito": "<ID_NC_A_CREAR>",  # se rellena al ejecutar
-            "Importe": nc_con_iva,
-            "NroReferencia": "",
-            "IDComprobanteAsociado": "",
-        })
     if cobro_efectivo > 0:
         pagos.append({
-            "FormaDePago": "Efectivo",
-            "IDBanco": None,
-            "IDCaja": IDCAJA_EFECTIVO,   # 824 (caja real de Suprabond)
-            "IDNotaCredito": None,
-            "Importe": round(cobro_efectivo, 2),
-            "NroReferencia": "",
-            "IDComprobanteAsociado": "",
+            "FormaDePago": "Efectivo", "IDBanco": None, "IDCaja": IDCAJA_EFECTIVO,
+            "IDNotaCredito": None, "Importe": round(cobro_efectivo, 2),
+            "NroReferencia": "", "IDComprobanteAsociado": "",
         })
     if cobro_cheque > 0:
         pagos.append({
-            "FormaDePago": "Cheque",
-            "IDBanco": None,
-            "IDCaja": None,
-            "IDNotaCredito": None,
-            "Importe": round(cobro_cheque, 2),
-            "NroReferencia": nro_cheque,  # cheque precargado, referenciado por nº
-            "IDComprobanteAsociado": "",
+            "FormaDePago": "Cheque", "IDBanco": None, "IDCaja": None,
+            "IDNotaCredito": None, "Importe": round(cobro_cheque, 2),
+            "NroReferencia": nro_cheque, "IDComprobanteAsociado": "",
         })
 
-    body_cobro = {
-        "Id": id_fac,
-        "ImporteTotalNeto": total_civa,  # el total CON IVA de la factura
-        "Saldo": 0,
-        "Pagos": pagos,
-    }
+    cobrado = round(cobro_efectivo + cobro_cheque, 2)
+
+    if aplica_nc:
+        # Detalle explícito: factura (+) y NC (−). El neto debe dar igual a la
+        # plata; el resto se reconcilia con la línea de ajuste {IDComprobante:0}.
+        neto_detalle = round(total_civa - nc_con_iva, 2)
+        ajuste = round(cobrado - neto_detalle, 2)
+        detalle = [
+            {"IDComprobante": id_fac, "Importe": round(total_civa, 2)},
+            {"IDComprobante": "<ID_NC_A_CREAR>", "Importe": round(-nc_con_iva, 2)},
+        ]
+        if abs(ajuste) >= 0.005:
+            detalle.append({"IDComprobante": 0, "Importe": ajuste})
+        body_cobro = {
+            "Id": id_fac,
+            "ImporteTotalNeto": cobrado,   # el recibo vale la plata real
+            "Saldo": 0,
+            "Detalle": detalle,
+            "Pagos": pagos,
+        }
+    else:
+        # Pago total sin NC: el body simple ya funciona (Prueba A ✅).
+        body_cobro = {
+            "Id": id_fac,
+            "ImporteTotalNeto": total_civa,
+            "Saldo": 0,
+            "Pagos": pagos,
+        }
 
     # --- Chequeos de consistencia ---
     cobrado = round(cobro_efectivo + cobro_cheque, 2)
@@ -299,6 +302,21 @@ def _valor(resp, *claves):
     return None
 
 
+def _saldo(session, id_comprobante) -> tuple[api_loader.ApiSession, float]:
+    """Saldo pendiente de un comprobante (factura o NC). NaN si no se pudo leer.
+
+    Se usa para verificar, después de escribir, que la factura quedó saldada y
+    que la NC quedó consumida (ambas en ~0).
+    """
+    session, r = facturador._get(session, f"/api/comprobantes/?id={id_comprobante}")
+    if r.status_code != 200:
+        return session, float("nan")
+    try:
+        return session, api_loader.parse_monto_uy(r.json().get("Saldo"))
+    except Exception:  # noqa: BLE001
+        return session, float("nan")
+
+
 def ejecutar(
     session: api_loader.ApiSession,
     plan: PlanEjecucion,
@@ -339,24 +357,28 @@ def ejecutar(
         res.pasos.append(f"ERROR: {res.error}")
         return session, res
 
-    # --- FRENO DE SEGURIDAD (2026-07-08): imputación con NC EN PAUSA ---
-    # El 1er `cobrar` real mostró que mandar la NC como forma de pago en `Pagos[]`
-    # es INCORRECTO: Contabilium deja la NC como crédito flotante ("saldo a favor")
-    # y el asiento no balancea ("Debe y Haber no coinciden"). La estructura correcta
-    # (confirmada leyendo recibos reales: RC-00013332/13333) es la NC como línea
-    # NEGATIVA en el `Detalle` del recibo, con `FormasDePago` = solo la plata real
-    # (Detalle neto == plata). Falta confirmar el nombre del campo en el BODY del
-    # POST /cobrar (capturar el request real del Contabilium web). Hasta entonces,
-    # el caso con NC se bloquea para no seguir corrompiendo la cuenta corriente.
-    # El caso SIN NC (pago total) sí se ejecuta.
+    # --- LÍMITE DE LA API (confirmado 2026-07-08): NC no automatizable ---
+    # La API pública NO puede imputar una Nota de Crédito en un recibo. Probado
+    # en vivo de dos formas y ambas fallan:
+    #   (1) NC como forma de pago en Pagos[] → Contabilium la deja como saldo a
+    #       favor flotante y el asiento no balancea ("Debe y Haber no coinciden").
+    #   (2) NC como línea negativa en un `Detalle` explícito del body de `cobrar`
+    #       → `cobrar` IGNORA el Detalle (lo reconstruye desde `Id`+`Pagos`) y la
+    #       NC queda flotando (factura pagada solo por el efectivo).
+    # No hay endpoint público de imputación (revisado todo el Postman). El
+    # Contabilium web lo hace con endpoints internos con sesión, no expuestos.
+    # ⇒ Las cobranzas CON descuento (NC 10%) se cargan A MANO. La herramienta ya
+    # deja todo calculado en el reporte. El caso SIN NC (pago total) sí se ejecuta.
     if plan.aplica_nc:
         res.error = (
-            "Imputación automática con Nota de Crédito EN PAUSA (se está "
-            "corrigiendo la estructura del recibo). Esta cobranza con 10% de "
-            "descuento hacela A MANO en Contabilium. No se creó ninguna NC. "
-            "(El caso de pago total sin NC sí se puede ejecutar.)"
+            f"Cobranza con descuento 10%: cargala A MANO en Contabilium. La API "
+            f"pública no permite imputar una Nota de Crédito en el recibo (el "
+            f"`cobrar` solo aplica plata a una factura). Datos ya calculados: "
+            f"NC ${plan.nc_con_iva:,.2f} (c/IVA) + cobro "
+            f"${plan.cobro_efectivo + plan.cobro_cheque:,.2f}. No se creó ni la "
+            f"NC ni el recibo. (El pago total sin NC sí se ejecuta solo.)"
         )
-        res.pasos.append(f"BLOQUEADO (temporal): {res.error}")
+        res.pasos.append(f"NO EJECUTADO (NC no automatizable por la API): {res.error}")
         return session, res
 
     # --- ESCRITURA REAL ---
@@ -380,10 +402,10 @@ def ejecutar(
                     "[build: fix-idComprobante]. Claves devueltas: "
                     f"{list(resp_nc) if isinstance(resp_nc, dict) else resp_nc}"
                 )
-            # Rellenar el IDNotaCredito en el pago-NC.
-            for p in plan.body_cobro["Pagos"]:
-                if p.get("FormaDePago") == "NotaCredito":
-                    p["IDNotaCredito"] = id_nc
+            # Rellenar el id real de la NC en su línea del Detalle.
+            for d in plan.body_cobro.get("Detalle", []):
+                if d.get("IDComprobante") == "<ID_NC_A_CREAR>":
+                    d["IDComprobante"] = id_nc
 
         session, resp_cobro = _cobrar(session, plan.body_cobro)
         res.resp_cobro = resp_cobro
@@ -391,6 +413,30 @@ def ejecutar(
         if errs_c:
             raise EjecutorError(f"cobrar devolvió errores: {errs_c}")
         res.pasos.append("Cobro/imputación OK.")
+
+        # --- AUTO-VERIFICACIÓN post-escritura (red de seguridad) ---
+        # No confiamos en el HTTP 200: verificamos por API que la factura quedó
+        # saldada Y que la NC quedó CONSUMIDA (saldo ~0). Si la NC sigue con
+        # saldo, quedó flotando (imputación fallida) → marcar para revertir a
+        # mano, en el acto (no esperar a descubrirlo en el estado de cuenta).
+        if plan.aplica_nc and id_nc:
+            session, saldo_fac = _saldo(session, plan.id_factura)
+            session, saldo_nc = _saldo(session, id_nc)
+            res.pasos.append(
+                f"Verificación: saldo factura = {saldo_fac:,.2f} (esperado 0) · "
+                f"saldo NC = {saldo_nc:,.2f} (esperado 0)."
+            )
+            if abs(saldo_fac) > 1.0 or abs(saldo_nc) > 1.0:
+                res.ok = False
+                res.error = (
+                    f"El recibo se creó PERO la imputación quedó MAL: saldo "
+                    f"factura {saldo_fac:,.2f}, saldo NC {saldo_nc:,.2f} "
+                    f"(ambos deberían ser 0). REVERTIR a mano el recibo y la NC "
+                    f"(id={id_nc}) en Contabilium."
+                )
+                res.pasos.append(f"⚠️ {res.error}")
+                return session, res
+
         res.ok = True
     except EjecutorError as e:
         res.error = str(e)
