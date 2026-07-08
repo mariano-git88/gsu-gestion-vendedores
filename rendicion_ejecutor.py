@@ -339,6 +339,26 @@ def ejecutar(
         res.pasos.append(f"ERROR: {res.error}")
         return session, res
 
+    # --- FRENO DE SEGURIDAD (2026-07-08): imputación con NC EN PAUSA ---
+    # El 1er `cobrar` real mostró que mandar la NC como forma de pago en `Pagos[]`
+    # es INCORRECTO: Contabilium deja la NC como crédito flotante ("saldo a favor")
+    # y el asiento no balancea ("Debe y Haber no coinciden"). La estructura correcta
+    # (confirmada leyendo recibos reales: RC-00013332/13333) es la NC como línea
+    # NEGATIVA en el `Detalle` del recibo, con `FormasDePago` = solo la plata real
+    # (Detalle neto == plata). Falta confirmar el nombre del campo en el BODY del
+    # POST /cobrar (capturar el request real del Contabilium web). Hasta entonces,
+    # el caso con NC se bloquea para no seguir corrompiendo la cuenta corriente.
+    # El caso SIN NC (pago total) sí se ejecuta.
+    if plan.aplica_nc:
+        res.error = (
+            "Imputación automática con Nota de Crédito EN PAUSA (se está "
+            "corrigiendo la estructura del recibo). Esta cobranza con 10% de "
+            "descuento hacela A MANO en Contabilium. No se creó ninguna NC. "
+            "(El caso de pago total sin NC sí se puede ejecutar.)"
+        )
+        res.pasos.append(f"BLOQUEADO (temporal): {res.error}")
+        return session, res
+
     # --- ESCRITURA REAL ---
     id_nc = None
     try:

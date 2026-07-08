@@ -68,6 +68,22 @@ def test_ejecutor_dryrun_no_escribe_igual():
     assert res.ok is True and res.dry_run is True
 
 
+def test_ejecutor_bloquea_nc_temporal():
+    """Freno de seguridad 2026-07-08: la imputación con NC no se ejecuta (queda
+    en pausa hasta corregir la estructura del recibo). No debe crear NC."""
+    plan = rendicion_ejecutor.PlanEjecucion(
+        id_factura=1, numero_factura="A-1", neto_factura=100.0,
+        total_con_iva=122.0, saldo_actual=122.0, aplica_nc=True,
+        nc_neto=10.0, nc_con_iva=12.2, cobro_efectivo=109.8,
+        cobro_cheque=0.0, nro_cheque="", body_nc={"x": 1},
+        body_cobro={"Id": 1, "Pagos": []},
+    )
+    _, res = rendicion_ejecutor.ejecutar(None, plan, dry_run=False)
+    assert res.ok is False
+    assert res.id_nc is None, "no debe haber creado NC"
+    assert "pausa" in (res.error or "").lower(), res.error
+
+
 def test_extraer_id_casing_contabilium():
     """anularComprobante devuelve `idComprobante` (minúscula) — 1er test real 2026-07-08."""
     assert rendicion_ejecutor._extraer_id({"idComprobante": 2496173, "errores": ""}) == 2496173
