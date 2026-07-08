@@ -1019,23 +1019,23 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-(
-    tab_asistente,
-    tab_resumen,
-    tab_sub_rubro,
-    tab_cobertura,
-    tab_analisis,
-    tab_cobranzas,
-    tab_inventario,
-    tab_salud,
-) = st.tabs(
-    [
-        "🤖 Asistente", "Resumen", "Sub-rubro", "Cobertura", "Análisis",
-        "Cobranzas", "Inventario", "Salud",
-    ]
-)
+# Navegación por secciones con `st.segmented_control` (no `st.tabs`): st.tabs
+# renderiza el contenido de TODAS las tabs en el DOM y durante cada rerun se ve
+# apilado (una sección muestra el contenido de las otras). Con selector + `if`
+# solo se ejecuta/renderiza la sección activa: sin derrame y más rápido (no
+# corre las 8 secciones por rerun). Ver feedback_streamlit_tabs_derrame.
+_SECCIONES = [
+    "🤖 Asistente", "Resumen", "Sub-rubro", "Cobertura", "Análisis",
+    "Cobranzas", "Inventario", "Salud",
+]
+seccion = st.segmented_control(
+    "Sección", _SECCIONES, default=_SECCIONES[0],
+    key="dash_seccion", label_visibility="collapsed")
+if not seccion:
+    seccion = _SECCIONES[0]
+st.write("")
 
-with tab_asistente:
+if seccion == _SECCIONES[0]:
     # Preferir df_hist12 (12 meses procesado) para que las preguntas
     # tipo "últimos 12 meses" tengan datos. Fallback: tri → mes → sem.
     _df_tri = st.session_state.get("df_tri")
@@ -1050,28 +1050,28 @@ with tab_asistente:
         df_productos=st.session_state.get("df_productos"),
         api_session=_api_session() if st.session_state.fuente_activa == "api" else None,
     )
-with tab_resumen:
+if seccion == _SECCIONES[1]:
     resumen.render(
         df_sem, df_mes, df_clientes, health_sem, health_mes,
         df_clientes_act=df_clientes_act,
     )
-with tab_sub_rubro:
+if seccion == _SECCIONES[2]:
     sub_rubro.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
-with tab_cobertura:
+if seccion == _SECCIONES[3]:
     cobertura.render(
         df_sem, df_mes, df_clientes, health_sem, health_mes,
         df_clientes_act=df_clientes_act,
     )
-with tab_analisis:
+if seccion == _SECCIONES[4]:
     analisis.render(
         df_sem, df_mes, df_clientes, health_sem, health_mes,
         df_clientes_act=df_clientes_act,
     )
-with tab_cobranzas:
+if seccion == _SECCIONES[5]:
     cobranzas.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
-with tab_inventario:
+if seccion == _SECCIONES[6]:
     inventario.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
-with tab_salud:
+if seccion == _SECCIONES[7]:
     st.subheader("Panel de salud de datos")
     # Encabezado con fuente activa + timestamp (para trazabilidad).
     if st.session_state.fuente_activa == "api":

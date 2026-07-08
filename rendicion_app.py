@@ -426,6 +426,22 @@ else:
         res_sel = _pendientes_ejec[fila_sel]
         params = res_sel.params_ejecucion()
 
+        # --- Nº de cheque: se ingresa/confirma acá (opción 2, decisión Valeria
+        # 2026-07-08). Se prellena con lo que el vendedor haya puesto en la
+        # planilla (queda como registro), pero el número que se IMPUTA es el que
+        # Valeria confirma con el cheque físico a la vista — así un typo del
+        # vendedor no rompe la imputación. ---
+        nro_cheque_conf = params["nro_cheque"]
+        if params["cobro_cheque"] > 0:
+            nro_cheque_conf = st.text_input(
+                "Nº de cheque (con el cheque a la vista)",
+                value=params["nro_cheque"],
+                key=f"chq_{fila_sel}",
+                help="El cheque ya está precargado en Contabilium y se referencia "
+                     "por su número. Verificá el número del cheque físico. Si el "
+                     "vendedor lo anotó en la planilla, viene precargado acá.",
+            )
+
         # --- Vista previa (dry-run) ---
         try:
             sess = _api_session()
@@ -435,7 +451,7 @@ else:
                 aplica_nc=params["aplica_nc"],
                 cobro_efectivo=params["cobro_efectivo"],
                 cobro_cheque=params["cobro_cheque"],
-                nro_cheque=params["nro_cheque"],
+                nro_cheque=nro_cheque_conf,
                 fecha_emision_iso=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             )
         except Exception as e:  # noqa: BLE001
@@ -469,10 +485,13 @@ else:
             "Para ejecutar, escribí **CONFIRMAR** en mayúsculas:",
             key=f"confirm_{fila_sel}",
         )
+        falta_cheque = params["cobro_cheque"] > 0 and not nro_cheque_conf.strip()
+        if falta_cheque:
+            st.info("Ingresá el **Nº de cheque** (arriba) para poder ejecutar.")
         if st.button(
             "🚀 Ejecutar esta cobranza en Contabilium",
             type="primary",
-            disabled=(confirm.strip() != "CONFIRMAR"),
+            disabled=(confirm.strip() != "CONFIRMAR" or falta_cheque),
         ):
             with st.spinner("Escribiendo en Contabilium…"):
                 sess = _api_session()

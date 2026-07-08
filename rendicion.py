@@ -501,10 +501,13 @@ def analizar_fila(
             f"({fila.efectivo + fila.cheque:,.0f})"
         )
     if fila.cheque and not fila.nro_cheque:
-        res.estado = ESTADO_REVISAR
+        # Opción 2 (decisión Valeria 2026-07-08): el Nº de cheque NO es obligatorio
+        # en la planilla. Valeria lo ingresa/confirma al ejecutar, con el cheque
+        # físico a la vista (evita que un typo del vendedor rompa la imputación).
+        # Si el vendedor igual lo anota en la planilla, se conserva como registro
+        # y prellena el campo de confirmación. Acá solo una nota, sin REVISAR.
         res.motivos.append(
-            "Cobro con cheque sin Nº de cheque: no se puede imputar el "
-            "cheque ya cargado en Contabilium sin su número"
+            "Nº de cheque no viene en la planilla; se ingresa al confirmar la ejecución."
         )
 
     # --- Multi-factura: se reporta pero requiere distribución manual ---

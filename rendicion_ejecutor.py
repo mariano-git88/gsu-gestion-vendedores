@@ -298,6 +298,15 @@ def ejecutar(
         res.ok = True
         return session, res
 
+    # --- Salvaguarda: nunca imputar un cheque sin su número ---
+    # El cheque se referencia en Contabilium por su NroReferencia (= nº de cheque).
+    # Sin él quedaría un valor no referenciable. En opción 2 el número lo confirma
+    # la UI antes de llegar acá; este guard es la red de seguridad del write path.
+    if plan.cobro_cheque > 0 and not str(plan.nro_cheque or "").strip():
+        res.error = "No se puede ejecutar: cobro con cheque sin Nº de cheque."
+        res.pasos.append(f"ERROR: {res.error}")
+        return session, res
+
     # --- ESCRITURA REAL ---
     id_nc = None
     try:

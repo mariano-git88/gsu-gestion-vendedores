@@ -316,14 +316,24 @@ with st.sidebar:
 
 st.title(f"Liquidación de Comisiones — {_label_mes(sel_y, sel_m)}")
 
-tab_calcular, tab_historico = st.tabs(["Calcular", "Histórico"])
+# Navegación por secciones con `st.segmented_control` (no `st.tabs`): st.tabs
+# renderiza el contenido de todas las tabs y durante los reruns se ve apilado
+# (contenido de una sección aparece en otra). Con selector + `if` solo se
+# renderiza la sección activa. Ver feedback_streamlit_tabs_derrame.
+_SECCIONES = ["Calcular", "Histórico"]
+seccion = st.segmented_control(
+    "Sección", _SECCIONES, default=_SECCIONES[0],
+    key="com_seccion", label_visibility="collapsed")
+if not seccion:
+    seccion = _SECCIONES[0]
+st.write("")
 
 
 # ---------------------------------------------------------------------
-# TAB CALCULAR
+# SECCIÓN CALCULAR
 # ---------------------------------------------------------------------
 
-with tab_calcular:
+if seccion == _SECCIONES[0]:
     _btn_col, _ = st.columns([1, 3])
     with _btn_col:
         _do_calcular = st.button(
@@ -780,10 +790,10 @@ with tab_calcular:
 
 
 # ---------------------------------------------------------------------
-# TAB HISTÓRICO
+# SECCIÓN HISTÓRICO
 # ---------------------------------------------------------------------
 
-with tab_historico:
+if seccion == _SECCIONES[1]:
     st.markdown("### Histórico acumulado de comisiones")
     st.caption(
         "Tabla actualizada automáticamente cada vez que tocás "
