@@ -267,6 +267,38 @@ def _cobrar(
     return session, (r.json() if r.text else {})
 
 
+def _extraer_id(resp) -> int | None:
+    """Id de un comprobante recién creado, tolerante al casing de Contabilium.
+
+    Contabilium devuelve la clave del Id con casing inconsistente según el
+    endpoint: `anularComprobante` devuelve **`idComprobante`** (minúsculas),
+    otros usan `Id` / `ID` / `IdComprobante`. Confirmado en el 1er test real
+    (2026-07-08): la NC se creó y devolvió `{'idComprobante': 2496173, ...}`,
+    pero el parseo buscaba `IdComprobante` y quedaba None → cortaba antes del
+    recibo. Ver [[feedback_contabilium_id_inconsistente]].
+    """
+    if not isinstance(resp, dict):
+        return None
+    for k, v in resp.items():
+        if k.lower() in ("id", "idcomprobante") and v:
+            return v
+    return None
+
+
+def _valor(resp, *claves):
+    """Primer valor no vacío entre varias claves (case-insensitive extra)."""
+    if not isinstance(resp, dict):
+        return None
+    for c in claves:
+        if resp.get(c):
+            return resp[c]
+    low = {k.lower(): v for k, v in resp.items()}
+    for c in claves:
+        if low.get(c.lower()):
+            return low[c.lower()]
+    return None
+
+
 def ejecutar(
     session: api_loader.ApiSession,
     plan: PlanEjecucion,
@@ -313,9 +345,14 @@ def ejecutar(
         if plan.aplica_nc:
             session, resp_nc = _crear_nc(session, plan.body_nc)
             res.resp_nc = resp_nc
-            id_nc = resp_nc.get("Id") or resp_nc.get("ID") or resp_nc.get("IdComprobante")
+            # Contabilium puede devolver los errores del comprobante en el body
+            # aun con HTTP 200 → tratarlos como fallo.
+            errs = _valor(resp_nc, "errores", "Errores")
+            if errs:
+                raise EjecutorError(f"anularComprobante devolvió errores: {errs}")
+            id_nc = _extraer_id(resp_nc)
             res.id_nc = id_nc
-            res.numero_nc = resp_nc.get("Numero")
+            res.numero_nc = _valor(resp_nc, "Numero", "numero")
             res.pasos.append(f"NC creada: id={id_nc} nº={res.numero_nc}")
             if not id_nc:
                 raise EjecutorError(
@@ -328,6 +365,9 @@ def ejecutar(
 
         session, resp_cobro = _cobrar(session, plan.body_cobro)
         res.resp_cobro = resp_cobro
+        errs_c = _valor(resp_cobro, "errores", "Errores")
+        if errs_c:
+            raise EjecutorError(f"cobrar devolvió errores: {errs_c}")
         res.pasos.append("Cobro/imputación OK.")
         res.ok = True
     except EjecutorError as e:

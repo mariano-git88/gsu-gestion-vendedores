@@ -68,6 +68,23 @@ def test_ejecutor_dryrun_no_escribe_igual():
     assert res.ok is True and res.dry_run is True
 
 
+def test_extraer_id_casing_contabilium():
+    """anularComprobante devuelve `idComprobante` (minúscula) — 1er test real 2026-07-08."""
+    assert rendicion_ejecutor._extraer_id({"idComprobante": 2496173, "errores": ""}) == 2496173
+    assert rendicion_ejecutor._extraer_id({"Id": 5}) == 5
+    assert rendicion_ejecutor._extraer_id({"ID": 7}) == 7
+    assert rendicion_ejecutor._extraer_id({"IdComprobante": 9}) == 9
+    assert rendicion_ejecutor._extraer_id({"errores": "x"}) is None
+    assert rendicion_ejecutor._extraer_id(None) is None
+
+
+def test_valor_errores():
+    """errores vacío no dispara; errores con texto sí se detecta."""
+    assert not rendicion_ejecutor._valor({"errores": ""}, "errores", "Errores")
+    assert rendicion_ejecutor._valor({"errores": "falló"}, "errores", "Errores") == "falló"
+    assert rendicion_ejecutor._valor({"Errores": "x"}, "errores", "Errores") == "x"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     fallos = 0
