@@ -68,9 +68,10 @@ def render() -> None:
         **Tips para que salga bien:**
         - Si la cobranza lleva descuento, poné **10%** en la columna
           Descuento. Si es pago total (sin descuento), poné **No**.
-        - Si se cobra con **cheque**, primero cargá el cheque en
-          Contabilium y anotá su **número** en la planilla.
-        - Un cheque sin número no se puede procesar → va a "Revisar".
+        - Si se cobra con **cheque**, cargá el cheque en Contabilium.
+          El **número del cheque lo confirmás vos al ejecutar** (con el
+          cheque a la vista), así no importa si el vendedor lo tipeó mal.
+          Si igual lo anota en la planilla, mejor: te queda de registro.
         """
     )
 
@@ -110,21 +111,29 @@ def render() -> None:
         ### Paso final — Ejecutar en Contabilium ⚙️
 
         Esta es la parte que **sí escribe** en Contabilium. Por eso es
-        **de a una cobranza** y con confirmación:
+        **de a una cobranza** y con confirmación.
+
+        **Antes (solo para las de 10%):** en la barra izquierda abrí
+        **«🔐 Conexión a Contabilium»**, poné tu **usuario y contraseña**
+        de Contabilium y tocá **Conectar**. Es tu login de siempre; queda
+        solo en esta sesión, no se guarda. *(Las de pago total sin
+        descuento no lo necesitan.)*
 
         **5) Bajá a «⚙️ Ejecutar en Contabilium».**
 
         **6) Elegí una cobranza** del desplegable.
 
         **7) Mirá la vista previa.** Te muestra la factura, la NC del
-        10% y el cobro. Podés abrir "Ver los datos técnicos" si querés
-        ver el detalle.
+        10% y el cobro. Si hay **cheque**, confirmá su **número** ahí (con
+        el cheque a la vista). Podés abrir "Ver los datos técnicos" para
+        el detalle.
 
         **8) Escribí `CONFIRMAR`** en el recuadro (en mayúsculas). Recién
         ahí se habilita el botón.
 
-        **9) Tocá «🚀 Ejecutar esta cobranza».** La app crea la NC, el
-        recibo e imputa. Te avisa el número de NC que quedó.
+        **9) Tocá «🚀 Ejecutar esta cobranza».** La app crea la NC y el
+        recibo, imputa todo, y **verifica sola** que la factura y la NC
+        queden en **$0**. Te muestra el **número de recibo**.
 
         Repetí con la siguiente cobranza.
         """
@@ -171,6 +180,16 @@ def render() -> None:
         **¿Subir la planilla ya cambia algo en Contabilium?**
         No. Subir y analizar es solo mirar. Nada se crea hasta que hacés
         el paso 8–9 (CONFIRMAR + Ejecutar).
+
+        **¿Por qué me pide usuario y contraseña de Contabilium?**
+        Para las cobranzas con 10%, el recibo se crea en Contabilium con
+        tu propio usuario (queda registrado a tu nombre). Lo ponés una vez
+        al abrir la app; **no se guarda en ningún lado** (solo mientras la
+        app está abierta). Si la sesión vence, la app se reconecta sola.
+
+        **Me da error de usuario/contraseña.**
+        Es el mismo login con el que entrás a Contabilium. Revisá que esté
+        bien escrito. Si seguís sin poder, avisá a Mariano.
 
         **No encuentra una factura que sé que existe.**
         Seguramente su fecha quedó fuera del rango de búsqueda. Abrí
