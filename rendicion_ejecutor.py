@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 
 import api_loader
 import facturador  # _get / _post write-safe (401 retry, sin retry ciego)
+import rendicion_web  # recibo con NC vía endpoints internos del web (cobranzase.aspx)
 
 TASA_DESCUENTO = 0.10
 IVA_BASICO = 22.0
@@ -94,7 +95,8 @@ class PlanEjecucion:
     cobro_cheque: float
     nro_cheque: str
     body_nc: dict | None       # None si no aplica NC (pago total)
-    body_cobro: dict           # con placeholder de IDNotaCredito en dry-run
+    body_cobro: dict           # solo para el caso SIN NC (cobrar público)
+    id_cliente: int | None = None   # IdCliente = idPersona del web (recibo con NC)
     advertencias: list[str] = field(default_factory=list)
 
 
@@ -228,7 +230,8 @@ def planificar(
         total_con_iva=total_civa, saldo_actual=saldo, aplica_nc=aplica_nc,
         nc_neto=nc_neto, nc_con_iva=nc_con_iva, cobro_efectivo=cobro_efectivo,
         cobro_cheque=cobro_cheque, nro_cheque=nro_cheque, body_nc=body_nc,
-        body_cobro=body_cobro, advertencias=advertencias,
+        body_cobro=body_cobro, id_cliente=factura.get("IdCliente"),
+        advertencias=advertencias,
     )
 
 
@@ -242,6 +245,8 @@ class ResultadoEjecucion:
     dry_run: bool
     id_nc: int | None = None
     numero_nc: str | None = None
+    id_recibo: int | None = None       # id del recibo (caso con NC, vía web)
+    numero_recibo: str | None = None   # nº del recibo
     pasos: list[str] = field(default_factory=list)   # log legible
     error: str | None = None
     resp_nc: dict | None = None
@@ -322,14 +327,23 @@ def ejecutar(
     plan: PlanEjecucion,
     *,
     dry_run: bool = True,
+    cookie: str | None = None,
+    fecha_ddmmyyyy: str | None = None,
 ) -> tuple[api_loader.ApiSession, ResultadoEjecucion]:
-    """Ejecuta el plan. Con `dry_run=True` (default) NO escribe: devuelve un
-    resultado describiendo lo que haría. Con `dry_run=False` crea la NC y el
-    recibo en Contabilium.
+    """Ejecuta el plan. `dry_run=True` (default) NO escribe: describe lo que haría.
 
-    Orden: primero la NC (para obtener su Id), luego el cobro imputando NC +
-    efectivo/cheque. Si la NC se crea pero el cobro falla, queda una NC
-    huérfana → se reporta su Id para poder revertirla manualmente.
+    Dos caminos según el descuento:
+      - SIN NC (pago total): `POST /api/comprobantes/cobrar` (API pública).
+      - CON NC (descuento 10%): HÍBRIDO → crea la NC por API pública
+        (`anularComprobante`) y el recibo que la imputa por los endpoints
+        INTERNOS del web (`rendicion_web`, requiere `cookie` de sesión), porque
+        la API pública no puede imputar una NC.
+
+    Siempre auto-verifica después de escribir (factura→0, y NC→0 si aplica). Si la
+    NC se crea pero el recibo falla, se reporta su Id para revertir a mano.
+
+    `fecha_ddmmyyyy`: fecha del recibo (hoy) en formato DD/MM/YYYY; la pasa el
+    caller porque los scripts del entorno no usan datetime.now().
     """
     res = ResultadoEjecucion(ok=False, dry_run=dry_run)
 
@@ -337,14 +351,19 @@ def ejecutar(
         res.pasos.append("DRY-RUN — no se escribió nada en Contabilium.")
         if plan.aplica_nc:
             res.pasos.append(
-                f"1) Crearía NC 10% por {plan.nc_con_iva:,.2f} (con IVA) "
-                f"vía POST /api/comprobantes/anularComprobante."
+                f"1) Crearía NC 10% por {plan.nc_con_iva:,.2f} (c/IVA) vía "
+                f"POST /api/comprobantes/anularComprobante."
             )
-        res.pasos.append(
-            f"2) Imputaría {'NC + ' if plan.aplica_nc else ''}"
-            f"cobro ({plan.cobro_efectivo + plan.cobro_cheque:,.2f}) "
-            f"vía POST /api/comprobantes/cobrar → saldo 0."
-        )
+            res.pasos.append(
+                f"2) Crearía el recibo imputando factura + NC, cobrando "
+                f"{plan.cobro_efectivo + plan.cobro_cheque:,.2f}, vía los endpoints "
+                f"internos del web → factura y NC a saldo 0."
+            )
+        else:
+            res.pasos.append(
+                f"Imputaría el cobro ({plan.cobro_efectivo + plan.cobro_cheque:,.2f}) "
+                f"vía POST /api/comprobantes/cobrar → saldo 0."
+            )
         res.ok = True
         return session, res
 
@@ -357,91 +376,104 @@ def ejecutar(
         res.pasos.append(f"ERROR: {res.error}")
         return session, res
 
-    # --- LÍMITE DE LA API (confirmado 2026-07-08): NC no automatizable ---
-    # La API pública NO puede imputar una Nota de Crédito en un recibo. Probado
-    # en vivo de dos formas y ambas fallan:
-    #   (1) NC como forma de pago en Pagos[] → Contabilium la deja como saldo a
-    #       favor flotante y el asiento no balancea ("Debe y Haber no coinciden").
-    #   (2) NC como línea negativa en un `Detalle` explícito del body de `cobrar`
-    #       → `cobrar` IGNORA el Detalle (lo reconstruye desde `Id`+`Pagos`) y la
-    #       NC queda flotando (factura pagada solo por el efectivo).
-    # No hay endpoint público de imputación (revisado todo el Postman). El
-    # Contabilium web lo hace con endpoints internos con sesión, no expuestos.
-    # ⇒ Las cobranzas CON descuento (NC 10%) se cargan A MANO. La herramienta ya
-    # deja todo calculado en el reporte. El caso SIN NC (pago total) sí se ejecuta.
-    if plan.aplica_nc:
-        res.error = (
-            f"Cobranza con descuento 10%: cargala A MANO en Contabilium. La API "
-            f"pública no permite imputar una Nota de Crédito en el recibo (el "
-            f"`cobrar` solo aplica plata a una factura). Datos ya calculados: "
-            f"NC ${plan.nc_con_iva:,.2f} (c/IVA) + cobro "
-            f"${plan.cobro_efectivo + plan.cobro_cheque:,.2f}. No se creó ni la "
-            f"NC ni el recibo. (El pago total sin NC sí se ejecuta solo.)"
-        )
-        res.pasos.append(f"NO EJECUTADO (NC no automatizable por la API): {res.error}")
-        return session, res
-
     # --- ESCRITURA REAL ---
     id_nc = None
     try:
         if plan.aplica_nc:
+            # ===== HÍBRIDO: NC por API pública + recibo por web interno =====
+            if not cookie:
+                res.error = ("Falta la cookie de Contabilium para el recibo con "
+                             "NC. Pegala en la app (barra lateral).")
+                res.pasos.append(res.error)
+                return session, res
+
+            # 1) Crear la NC (API pública).
             session, resp_nc = _crear_nc(session, plan.body_nc)
             res.resp_nc = resp_nc
-            # Contabilium puede devolver los errores del comprobante en el body
-            # aun con HTTP 200 → tratarlos como fallo.
             errs = _valor(resp_nc, "errores", "Errores")
             if errs:
                 raise EjecutorError(f"anularComprobante devolvió errores: {errs}")
             id_nc = _extraer_id(resp_nc)
             res.id_nc = id_nc
-            res.numero_nc = _valor(resp_nc, "Numero", "numero")
-            res.pasos.append(f"NC creada: id={id_nc} nº={res.numero_nc}")
             if not id_nc:
-                raise EjecutorError(
-                    "NC creada pero no se pudo extraer su Id "
-                    "[build: fix-idComprobante]. Claves devueltas: "
-                    f"{list(resp_nc) if isinstance(resp_nc, dict) else resp_nc}"
-                )
-            # Rellenar el id real de la NC en su línea del Detalle.
-            for d in plan.body_cobro.get("Detalle", []):
-                if d.get("IDComprobante") == "<ID_NC_A_CREAR>":
-                    d["IDComprobante"] = id_nc
+                raise EjecutorError(f"NC creada pero sin Id reconocible: {resp_nc}")
+            # Leer la NC recién creada: nº y saldo real (montos exactos).
+            session, nc_det = api_loader.api_get(session, f"/api/comprobantes/?id={id_nc}")
+            res.numero_nc = nc_det.get("Numero") if isinstance(nc_det, dict) else None
+            total_nc = (api_loader.parse_monto_uy(nc_det.get("Saldo"))
+                        if isinstance(nc_det, dict) else plan.nc_con_iva)
+            res.pasos.append(f"NC creada: id={id_nc} nº={res.numero_nc} (${total_nc:,.2f})")
 
+            # 2) Repartir la plata para que las formas sumen el neto (factura − NC).
+            #    Política (con Mariano 2026-07-09): cierre exacto en $0; el cheque
+            #    va como se rindió y el efectivo absorbe el redondeo (centavos).
+            saldo_fac = plan.saldo_actual
+            neto = round(saldo_fac - total_nc, 2)
+            imp_cheque = round(plan.cobro_cheque, 2)
+            imp_efectivo = round(neto - imp_cheque, 2)
+
+            # 3) Crear el recibo por los endpoints internos del web.
+            r = rendicion_web.crear_recibo_con_nc(
+                cookie,
+                id_persona=plan.id_cliente,
+                id_factura=plan.id_factura,
+                nombre_factura=f"FAC {plan.numero_factura} (Saldo: UYU {saldo_fac:,.2f})",
+                saldo_factura=saldo_fac,
+                id_nc=id_nc, total_nc=total_nc,
+                importe_efectivo=imp_efectivo, importe_cheque=imp_cheque,
+                nro_cheque=plan.nro_cheque, fecha_ddmmyyyy=fecha_ddmmyyyy,
+            )
+            res.pasos.extend(r["pasos"])
+            res.id_recibo = r["id_recibo"]
+            res.numero_recibo = r["nro_recibo"]
+
+            # 4) Auto-verificación: factura y NC deben quedar en saldo ~0.
+            session, sf = _saldo(session, plan.id_factura)
+            session, sn = _saldo(session, id_nc)
+            res.pasos.append(
+                f"Verificación: saldo factura = {sf:,.2f} · saldo NC = {sn:,.2f} "
+                "(ambos esperado 0)."
+            )
+            if abs(sf) > 1.0 or abs(sn) > 1.0:
+                res.error = (
+                    f"El recibo {res.numero_recibo} se creó PERO la imputación "
+                    f"quedó MAL: saldo factura {sf:,.2f}, saldo NC {sn:,.2f} "
+                    f"(ambos deberían ser 0). REVERTIR a mano el recibo y la NC "
+                    f"(id={id_nc}) en Contabilium."
+                )
+                res.pasos.append(f"⚠️ {res.error}")
+                return session, res
+            res.ok = True
+            return session, res
+
+        # ===== SIN NC: cobro total por la API pública (funciona) =====
         session, resp_cobro = _cobrar(session, plan.body_cobro)
         res.resp_cobro = resp_cobro
         errs_c = _valor(resp_cobro, "errores", "Errores")
         if errs_c:
             raise EjecutorError(f"cobrar devolvió errores: {errs_c}")
         res.pasos.append("Cobro/imputación OK.")
-
-        # --- AUTO-VERIFICACIÓN post-escritura (red de seguridad) ---
-        # No confiamos en el HTTP 200: verificamos por API que la factura quedó
-        # saldada Y que la NC quedó CONSUMIDA (saldo ~0). Si la NC sigue con
-        # saldo, quedó flotando (imputación fallida) → marcar para revertir a
-        # mano, en el acto (no esperar a descubrirlo en el estado de cuenta).
-        if plan.aplica_nc and id_nc:
-            session, saldo_fac = _saldo(session, plan.id_factura)
-            session, saldo_nc = _saldo(session, id_nc)
-            res.pasos.append(
-                f"Verificación: saldo factura = {saldo_fac:,.2f} (esperado 0) · "
-                f"saldo NC = {saldo_nc:,.2f} (esperado 0)."
-            )
-            if abs(saldo_fac) > 1.0 or abs(saldo_nc) > 1.0:
-                res.ok = False
-                res.error = (
-                    f"El recibo se creó PERO la imputación quedó MAL: saldo "
-                    f"factura {saldo_fac:,.2f}, saldo NC {saldo_nc:,.2f} "
-                    f"(ambos deberían ser 0). REVERTIR a mano el recibo y la NC "
-                    f"(id={id_nc}) en Contabilium."
-                )
-                res.pasos.append(f"⚠️ {res.error}")
-                return session, res
-
+        session, sf = _saldo(session, plan.id_factura)
+        res.pasos.append(f"Verificación: saldo factura = {sf:,.2f} (esperado 0).")
+        if abs(sf) > 1.0:
+            res.error = (f"El recibo se creó pero la factura quedó con saldo "
+                         f"{sf:,.2f} (esperado 0). Revisar en Contabilium.")
+            res.pasos.append(f"⚠️ {res.error}")
+            return session, res
         res.ok = True
-    except EjecutorError as e:
+
+    except rendicion_web.CookieExpirada as e:
+        res.error = str(e)
+        res.pasos.append(f"COOKIE VENCIDA: {e}")
+        if id_nc and not res.id_recibo:
+            res.pasos.append(
+                f"⚠️ Quedó una NC creada (id={id_nc}) SIN imputar (el recibo no se "
+                "llegó a crear). Revertir la NC a mano y reintentar con cookie nueva."
+            )
+    except (EjecutorError, rendicion_web.WebError) as e:
         res.error = str(e)
         res.pasos.append(f"ERROR: {e}")
-        if id_nc:
+        if id_nc and not res.id_recibo:
             res.pasos.append(
                 f"⚠️ Quedó una NC creada (id={id_nc}) SIN imputar. "
                 "Revertir manualmente en Contabilium."

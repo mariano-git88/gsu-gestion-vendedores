@@ -36,6 +36,7 @@ import streamlit as st
 import api_loader
 import rendicion
 import rendicion_ejecutor
+import rendicion_web
 import theme
 import tutorial_rendicion
 
@@ -223,6 +224,26 @@ with st.sidebar:
     if st.button("🔄 Refrescar facturas de Contabilium"):
         _cargar_indice.clear()
         st.rerun()
+
+    # Cookie de sesión del web de Contabilium — necesaria SOLO para las cobranzas
+    # con NC (el recibo con descuento se crea vía el web; la API pública no puede
+    # imputar una NC). Las de pago total sin NC no la necesitan.
+    with st.expander("🔐 Cookie de Contabilium (recibos con NC)"):
+        st.caption(
+            "Las cobranzas **con descuento 10%** crean el recibo vía el sitio de "
+            "Contabilium, que necesita tu sesión. Pegá la cookie del navegador "
+            "(F12 → Network → un request → Headers → línea `cookie:`). Dura ~20 h; "
+            "si vence, re-pegala. Las de pago total sin NC no la necesitan."
+        )
+        cookie_in = st.text_area(
+            "Cookie", value=st.session_state.get("rend_cookie", ""),
+            height=90, key="rend_cookie_input", label_visibility="collapsed",
+            placeholder="ASP.NET_SessionId=...; Secure-1CBL=...",
+        )
+        st.session_state.rend_cookie = cookie_in
+        if st.button("Verificar cookie"):
+            ok, msg = rendicion_web.verificar_cookie(cookie_in)
+            (st.success if ok else st.error)(msg)
 
 archivo = st.file_uploader(
     "Planilla de Rendición de Cobranzas (.xlsx)", type=["xlsx"]
@@ -473,11 +494,18 @@ else:
             st.warning(f"⚠️ {adv}")
 
         with st.expander("Ver los datos técnicos que se enviarán"):
-            if plan.body_nc:
-                st.markdown("**1) Nota de Crédito** (`/comprobantes/anularComprobante`)")
+            if plan.aplica_nc:
+                st.markdown("**1) Nota de Crédito** (`/api/comprobantes/anularComprobante`)")
                 st.json(plan.body_nc)
-            st.markdown("**2) Recibo + imputación** (`/comprobantes/cobrar`)")
-            st.json(plan.body_cobro)
+                st.markdown(
+                    "**2) Recibo** — se crea vía los endpoints internos del web de "
+                    "Contabilium (`cobranzase.aspx`), imputando la **factura (+)** y "
+                    "la **NC (−)**, y cobrando el neto en efectivo/cheque. Requiere "
+                    "la cookie de sesión (la API pública no puede imputar una NC)."
+                )
+            else:
+                st.markdown("**Recibo** (`/api/comprobantes/cobrar`)")
+                st.json(plan.body_cobro)
 
         # --- Gate de confirmación ---
         st.markdown("---")
@@ -486,17 +514,26 @@ else:
             key=f"confirm_{fila_sel}",
         )
         falta_cheque = params["cobro_cheque"] > 0 and not nro_cheque_conf.strip()
+        _cookie = st.session_state.get("rend_cookie", "")
+        falta_cookie = plan.aplica_nc and not _cookie.strip()
         if falta_cheque:
             st.info("Ingresá el **Nº de cheque** (arriba) para poder ejecutar.")
+        if falta_cookie:
+            st.info(
+                "Esta cobranza tiene **descuento 10%**: pegá la **cookie de "
+                "Contabilium** (barra lateral 🔐) para poder crear el recibo. "
+                "Las de pago total sin NC no la necesitan."
+            )
         if st.button(
             "🚀 Ejecutar esta cobranza en Contabilium",
             type="primary",
-            disabled=(confirm.strip() != "CONFIRMAR" or falta_cheque),
+            disabled=(confirm.strip() != "CONFIRMAR" or falta_cheque or falta_cookie),
         ):
             with st.spinner("Escribiendo en Contabilium…"):
                 sess = _api_session()
                 sess, resultado = rendicion_ejecutor.ejecutar(
-                    sess, plan, dry_run=False
+                    sess, plan, dry_run=False, cookie=_cookie,
+                    fecha_ddmmyyyy=datetime.now().strftime("%d/%m/%Y"),
                 )
             st.session_state.rend_ejecutadas[fila_sel] = {
                 "ok": resultado.ok,
@@ -504,6 +541,7 @@ else:
                 "error": resultado.error,
                 "id_nc": resultado.id_nc,
                 "numero_nc": resultado.numero_nc,
+                "numero_recibo": resultado.numero_recibo,
                 "numero_factura": plan.numero_factura,
             }
             st.rerun()
@@ -518,6 +556,7 @@ if _ejecutadas:
         titulo = (
             f"{icono} Fila {f} · {r.get('numero_factura','?')}"
             + (f" · NC {r.get('numero_nc')}" if r.get("numero_nc") else "")
+            + (f" · Recibo {r.get('numero_recibo')}" if r.get("numero_recibo") else "")
         )
         with st.expander(titulo, expanded=not r.get("ok")):
             for paso in r.get("pasos", []):

@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import rendicion
 import rendicion_ejecutor
+import rendicion_web
 
 
 def _indice_una_factura(numero, total):
@@ -68,20 +69,26 @@ def test_ejecutor_dryrun_no_escribe_igual():
     assert res.ok is True and res.dry_run is True
 
 
-def test_ejecutor_no_ejecuta_nc():
-    """Confirmado 2026-07-08: la API no puede imputar una NC → el caso con NC no
-    se ejecuta (ni crea NC), se carga a mano. El pago total sin NC sí se ejecuta."""
+def test_ejecutor_nc_requiere_cookie():
+    """Caso con NC vía híbrido (NC por API + recibo por web): SIN cookie no
+    ejecuta ni crea NC. El guard corta antes de tocar la red (session=None)."""
     plan = rendicion_ejecutor.PlanEjecucion(
         id_factura=1, numero_factura="A-1", neto_factura=100.0,
         total_con_iva=122.0, saldo_actual=122.0, aplica_nc=True,
         nc_neto=10.0, nc_con_iva=12.2, cobro_efectivo=109.8,
         cobro_cheque=0.0, nro_cheque="", body_nc={"x": 1},
-        body_cobro={"Id": 1, "Pagos": []},
+        body_cobro={"Id": 1}, id_cliente=555,
     )
-    _, res = rendicion_ejecutor.ejecutar(None, plan, dry_run=False)
+    _, res = rendicion_ejecutor.ejecutar(None, plan, dry_run=False, cookie=None)
     assert res.ok is False
-    assert res.id_nc is None, "no debe crear NC"
-    assert "mano" in (res.error or "").lower(), res.error
+    assert res.id_nc is None, "sin cookie no debe crear NC"
+    assert "cookie" in (res.error or "").lower(), res.error
+
+
+def test_web_cookie_vacia_no_toca_red():
+    """verificar_cookie('') devuelve (False, ...) sin salir a la red."""
+    ok, msg = rendicion_web.verificar_cookie("")
+    assert ok is False and "cookie" in msg.lower(), (ok, msg)
 
 
 def test_planificar_nc_en_detalle_no_en_pagos():

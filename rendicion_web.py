@@ -1,0 +1,200 @@
+"""
+rendicion_web.py — Alta de recibos vía los endpoints INTERNOS del Contabilium web.
+
+La API pública (`POST /api/comprobantes/cobrar`) NO puede imputar una Nota de
+Crédito en un recibo: solo aplica plata a una factura (probado en vivo, la NC
+queda flotando y el asiento no balancea). El Contabilium web SÍ lo hace, con
+endpoints internos con sesión (`cobranzase.aspx`). Este módulo los replica para
+el único caso que la API pública no cubre: **el recibo que imputa factura + NC**
+(descuento comercial 10%). Validado en vivo 2026-07-09 (recibo 13345: factura y
+NC quedaron en saldo 0).
+
+⚠️ Endpoints NO documentados ni soportados por Contabilium: pueden cambiar sin
+aviso y romper esto. Por eso el caller (`rendicion_ejecutor`) SIEMPRE
+auto-verifica los saldos después de escribir (factura→0, NC→0) y, si algo quedó
+mal, avisa para revertir a mano.
+
+Auth: cookie de sesión del navegador (Valeria la pega en la app; el token JWT
+`Secure-1CBL` dura ~20h → re-pegar ~1 vez por día). Ver la memoria
+`reference_contabilium_cobranza_web_interna` para la receta completa.
+
+El `sessionId` que hilvana el borrador server-side lo genera el cliente (un GUID).
+"""
+
+from __future__ import annotations
+
+import uuid
+
+import requests
+
+BASE = "https://app.contabilium.com.uy"
+TIMEOUT = 40
+
+# Constantes de Suprabond (extraídas de recibos/cobranzas reales).
+IDPUNTOVENTA = "874"
+IDCAJA_EFECTIVO = "824"
+IDMONEDA_UYU = "794"
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+
+
+class WebError(Exception):
+    """Falla al hablar con los endpoints internos del Contabilium web."""
+
+
+class CookieExpirada(WebError):
+    """La cookie de sesión venció o es inválida (hay que re-pegarla)."""
+
+
+def _headers(cookie: str) -> dict:
+    return {
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "User-Agent": _UA,
+        "Origin": BASE,
+        "Referer": f"{BASE}/cobranzase.aspx",
+        "Cookie": cookie.strip(),
+    }
+
+
+def _post(cookie: str, path: str, body: dict) -> dict:
+    """POST a un page-method y devuelve el JSON. Detecta cookie vencida.
+
+    Los page-methods de ASP.NET devuelven `{"d": ...}`. Si la sesión venció, el
+    server responde con un redirect/HTML de login (no JSON) o un 401/403.
+    """
+    if not cookie or not cookie.strip():
+        raise CookieExpirada("No hay cookie de Contabilium configurada.")
+    try:
+        r = requests.post(BASE + path, headers=_headers(cookie), json=body,
+                          timeout=TIMEOUT, allow_redirects=False)
+    except requests.RequestException as e:
+        raise WebError(f"{path}: error de red: {e}") from e
+    if r.status_code in (401, 403) or 300 <= r.status_code < 400:
+        raise CookieExpirada(
+            f"{path}: la cookie venció o es inválida (HTTP {r.status_code}). "
+            "Re-pegá la cookie de Contabilium."
+        )
+    if r.status_code != 200:
+        raise WebError(f"{path}: HTTP {r.status_code}: {r.text[:200]}")
+    txt = (r.text or "").lstrip()
+    if txt.startswith("<"):  # HTML = redirect a login ⇒ sesión caída
+        raise CookieExpirada(
+            f"{path}: respondió HTML (login), la cookie venció. Re-pegala."
+        )
+    try:
+        return r.json()
+    except ValueError as e:
+        raise WebError(f"{path}: respuesta no-JSON: {r.text[:200]}") from e
+
+
+# =====================================================================
+# Lecturas (sin escribir) — sirven para validar la cookie y prellenar
+# =====================================================================
+
+def obtener_ultimo_nro_recibo(cookie: str) -> str:
+    """Próximo nº de recibo (RC) del punto de venta. Read-only."""
+    j = _post(cookie, "/common.aspx/obtenerUltimoNroRecibo",
+              {"tipoComprobante": "RC", "idPunto": int(IDPUNTOVENTA), "modo": ""})
+    return j.get("d")
+
+
+def obtener_comprobantes_pendientes(cookie: str, id_persona) -> list[dict]:
+    """Comprobantes pendientes (facturas + NC) de un cliente. Read-only."""
+    j = _post(cookie, "/cobranzase.aspx/obtenerComprobantesPendientes",
+              {"id": int(id_persona), "idCobranza": 0})
+    return j.get("d") or []
+
+
+def verificar_cookie(cookie: str) -> tuple[bool, str]:
+    """Chequea que la cookie autentique, con una llamada read-only barata.
+    Devuelve (ok, mensaje)."""
+    try:
+        obtener_ultimo_nro_recibo(cookie)
+        return True, "Cookie válida."
+    except CookieExpirada as e:
+        return False, str(e)
+    except WebError as e:
+        return False, f"No se pudo validar la cookie: {e}"
+
+
+# =====================================================================
+# Escritura del recibo (factura + NC)
+# =====================================================================
+
+def crear_recibo_con_nc(
+    cookie: str,
+    *,
+    id_persona,
+    id_factura,
+    nombre_factura: str,
+    saldo_factura: float,
+    id_nc,
+    total_nc: float,
+    importe_efectivo: float,
+    importe_cheque: float = 0.0,
+    nro_cheque: str = "",
+    fecha_ddmmyyyy: str,
+) -> dict:
+    """Crea un recibo que imputa la factura (+) y la NC (−), cobrando en efectivo
+    y/o cheque. Replica el flujo del web: clearInFo → agregarItem×2 → agregarForma
+    → guardar. Devuelve {ok, id_recibo, nro_recibo, pasos}.
+
+    Las formas de pago deben sumar el neto (factura − NC); eso lo calcula el
+    caller (`rendicion_ejecutor`), acá solo se imputa lo recibido. Lanza
+    WebError/CookieExpirada si algo falla (el caller revierte / avisa).
+    """
+    sid = str(uuid.uuid4())
+    pasos: list[str] = []
+
+    _post(cookie, "/cobranzase.aspx/clearInFo", {"sessionId": sid})
+    pasos.append("clearInFo OK")
+
+    _post(cookie, "/cobranzase.aspx/agregarItem", {
+        "sessionId": sid, "id": 0, "idComprobante": str(id_factura),
+        "comprobante": nombre_factura,
+        "importe": str(round(saldo_factura, 2)), "saldo": str(round(saldo_factura, 2)),
+        "idMonedaCobranza": IDMONEDA_UYU, "idMonedaDefecto": IDMONEDA_UYU,
+        "tipoDeCambio": "1",
+    })
+    pasos.append(f"agregarItem factura +{saldo_factura:,.2f} OK")
+
+    _post(cookie, "/cobranzase.aspx/agregarItem", {
+        "sessionId": sid, "id": 0, "idComprobante": str(id_nc),
+        "comprobante": f"NCF (Saldo: UYU -{total_nc:,.2f})",
+        "importe": str(round(-total_nc, 2)), "saldo": str(round(-total_nc, 2)),
+        "idMonedaCobranza": IDMONEDA_UYU, "idMonedaDefecto": IDMONEDA_UYU,
+        "tipoDeCambio": "1",
+    })
+    pasos.append(f"agregarItem NC -{total_nc:,.2f} OK")
+
+    if importe_cheque and importe_cheque > 0:
+        _post(cookie, "/cobranzase.aspx/agregarForma", {
+            "sessionId": sid, "id": 0, "forma": "Cheque", "nroRef": nro_cheque or "",
+            "importe": str(round(importe_cheque, 2)), "idcheque": "", "idBanco": "",
+            "idNotaCredito": "", "idCaja": "", "fecha": fecha_ddmmyyyy,
+            "importeBrutoNC": "0", "idComprobanteAsociado": "0", "ComprobanteAsociado": "",
+        })
+        pasos.append(f"agregarForma cheque {importe_cheque:,.2f} (nº {nro_cheque}) OK")
+
+    if importe_efectivo and importe_efectivo > 0:
+        _post(cookie, "/cobranzase.aspx/agregarForma", {
+            "sessionId": sid, "id": 0, "forma": "Efectivo", "nroRef": "",
+            "importe": str(round(importe_efectivo, 2)), "idcheque": "", "idBanco": "",
+            "idNotaCredito": "", "idCaja": IDCAJA_EFECTIVO, "fecha": fecha_ddmmyyyy,
+            "importeBrutoNC": "0", "idComprobanteAsociado": "0", "ComprobanteAsociado": "",
+        })
+        pasos.append(f"agregarForma efectivo {importe_efectivo:,.2f} OK")
+
+    nro = obtener_ultimo_nro_recibo(cookie)
+    g = _post(cookie, "/cobranzase.aspx/guardar", {
+        "sessionId": sid, "id": 0, "idPersona": int(id_persona), "tipo": "RC",
+        "fecha": fecha_ddmmyyyy, "idPuntoVenta": IDPUNTOVENTA, "modo": "T",
+        "nroComprobante": nro, "obs": "", "idMoneda": IDMONEDA_UYU,
+        "tipoDeCambio": "1", "sobranteACuenta": False,
+    })
+    id_recibo = g.get("d")
+    pasos.append(f"guardar OK: recibo {nro} (id {id_recibo})")
+    if not id_recibo:
+        raise WebError(f"guardar no devolvió id de recibo: {g}")
+    return {"ok": True, "id_recibo": id_recibo, "nro_recibo": nro, "pasos": pasos}
