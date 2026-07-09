@@ -91,6 +91,16 @@ def test_web_cookie_vacia_no_toca_red():
     assert ok is False and "cookie" in msg.lower(), (ok, msg)
 
 
+def test_login_sin_credenciales():
+    """login('', '') levanta LoginError sin tocar la red."""
+    try:
+        rendicion_web.login("", "")
+        ok = False
+    except rendicion_web.LoginError:
+        ok = True
+    assert ok, "login('','') debe levantar LoginError sin red"
+
+
 def test_planificar_nc_en_detalle_no_en_pagos():
     """La NC va como línea NEGATIVA del Detalle, NO como forma de pago; el neto
     del Detalle == la plata cobrada (fix 2026-07-08)."""

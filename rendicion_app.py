@@ -225,25 +225,37 @@ with st.sidebar:
         _cargar_indice.clear()
         st.rerun()
 
-    # Cookie de sesión del web de Contabilium — necesaria SOLO para las cobranzas
-    # con NC (el recibo con descuento se crea vía el web; la API pública no puede
-    # imputar una NC). Las de pago total sin NC no la necesitan.
-    with st.expander("🔐 Cookie de Contabilium (recibos con NC)"):
+    # Conexión al web de Contabilium — necesaria SOLO para las cobranzas con NC
+    # (el recibo con descuento se crea vía el web; la API pública no puede imputar
+    # una NC). La app se loguea con usuario+contraseña; las de pago total no la usan.
+    with st.expander("🔐 Conexión a Contabilium (recibos con NC)"):
         st.caption(
-            "Las cobranzas **con descuento 10%** crean el recibo vía el sitio de "
-            "Contabilium, que necesita tu sesión. Pegá la cookie del navegador "
-            "(F12 → Network → un request → Headers → línea `cookie:`). Dura ~20 h; "
-            "si vence, re-pegala. Las de pago total sin NC no la necesitan."
+            "Las cobranzas **con descuento 10%** crean el recibo en Contabilium "
+            "con tu usuario. Ingresá tu **usuario y contraseña de Contabilium** "
+            "(quedan solo en esta sesión, no se guardan en ningún lado). Las de "
+            "pago total sin NC no lo necesitan."
         )
-        cookie_in = st.text_area(
-            "Cookie", value=st.session_state.get("rend_cookie", ""),
-            height=90, key="rend_cookie_input", label_visibility="collapsed",
-            placeholder="ASP.NET_SessionId=...; Secure-1CBL=...",
+        email_in = st.text_input(
+            "Usuario (email)", value=st.session_state.get("rend_email", ""),
+            key="rend_email_in", autocomplete="username",
         )
-        st.session_state.rend_cookie = cookie_in
-        if st.button("Verificar cookie"):
-            ok, msg = rendicion_web.verificar_cookie(cookie_in)
-            (st.success if ok else st.error)(msg)
+        pass_in = st.text_input(
+            "Contraseña", type="password",
+            value=st.session_state.get("rend_pass", ""),
+            key="rend_pass_in", autocomplete="current-password",
+        )
+        if st.button("Conectar"):
+            try:
+                with st.spinner("Conectando a Contabilium…"):
+                    st.session_state.rend_cookie = rendicion_web.login(email_in, pass_in)
+                st.session_state.rend_email = email_in.strip()
+                st.session_state.rend_pass = pass_in
+                st.success("Conectado a Contabilium ✓")
+            except rendicion_web.WebError as e:
+                st.session_state.rend_cookie = ""
+                st.error(str(e))
+        if st.session_state.get("rend_cookie"):
+            st.caption("✅ Conectado a Contabilium.")
 
 archivo = st.file_uploader(
     "Planilla de Rendición de Cobranzas (.xlsx)", type=["xlsx"]
@@ -520,15 +532,30 @@ else:
             st.info("Ingresá el **Nº de cheque** (arriba) para poder ejecutar.")
         if falta_cookie:
             st.info(
-                "Esta cobranza tiene **descuento 10%**: pegá la **cookie de "
-                "Contabilium** (barra lateral 🔐) para poder crear el recibo. "
-                "Las de pago total sin NC no la necesitan."
+                "Esta cobranza tiene **descuento 10%**: **conectate a Contabilium** "
+                "(barra lateral 🔐, usuario y contraseña) para poder crear el "
+                "recibo. Las de pago total sin NC no lo necesitan."
             )
         if st.button(
             "🚀 Ejecutar esta cobranza en Contabilium",
             type="primary",
             disabled=(confirm.strip() != "CONFIRMAR" or falta_cheque or falta_cookie),
         ):
+            # Refrescar la sesión ANTES de crear nada (evita una NC huérfana si la
+            # sesión venció a mitad de jornada): para el caso con NC, si hay
+            # credenciales guardadas, verificamos y reconectamos si hace falta.
+            if plan.aplica_nc and st.session_state.get("rend_pass"):
+                _ok = rendicion_web.verificar_cookie(_cookie)[0] if _cookie else False
+                if not _ok:
+                    try:
+                        _cookie = rendicion_web.login(
+                            st.session_state.get("rend_email", ""),
+                            st.session_state.get("rend_pass", ""),
+                        )
+                        st.session_state.rend_cookie = _cookie
+                    except rendicion_web.WebError as e:
+                        st.error(f"No se pudo reconectar a Contabilium: {e}")
+                        st.stop()
             with st.spinner("Escribiendo en Contabilium…"):
                 sess = _api_session()
                 sess, resultado = rendicion_ejecutor.ejecutar(

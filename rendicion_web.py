@@ -14,9 +14,10 @@ aviso y romper esto. Por eso el caller (`rendicion_ejecutor`) SIEMPRE
 auto-verifica los saldos después de escribir (factura→0, NC→0) y, si algo quedó
 mal, avisa para revertir a mano.
 
-Auth: cookie de sesión del navegador (Valeria la pega en la app; el token JWT
-`Secure-1CBL` dura ~20h → re-pegar ~1 vez por día). Ver la memoria
-`reference_contabilium_cobranza_web_interna` para la receta completa.
+Auth: la app se loguea con usuario+contraseña de Contabilium (`login()`, POST a
+internalapi.contabilium.com/api/login) y obtiene la sesión sola — Valeria escribe
+sus credenciales una vez, sin pegar cookies. El token dura ~20h; si vence, se
+reconecta. Ver `reference_contabilium_cobranza_web_interna` para la receta.
 
 El `sessionId` que hilvana el borrador server-side lo genera el cliente (un GUID).
 """
@@ -28,6 +29,7 @@ import uuid
 import requests
 
 BASE = "https://app.contabilium.com.uy"
+INTERNALAPI = "https://internalapi.contabilium.com"
 TIMEOUT = 40
 
 # Constantes de Suprabond (extraídas de recibos/cobranzas reales).
@@ -43,7 +45,58 @@ class WebError(Exception):
 
 
 class CookieExpirada(WebError):
-    """La cookie de sesión venció o es inválida (hay que re-pegarla)."""
+    """La sesión venció o es inválida (hay que reconectar)."""
+
+
+class LoginError(WebError):
+    """Falló el login (usuario/contraseña incorrectos o servicio caído)."""
+
+
+def login(email: str, password: str, country: str = "uy") -> str:
+    """Se loguea en Contabilium con usuario+contraseña y devuelve el string de
+    cookie de sesión listo para las llamadas del web (`Secure-1CBL` + `ASP.NET_SessionId`).
+
+    Reemplaza el pegado manual de cookies: la app pide las credenciales una vez y
+    llama a esto. Flujo (reverse-engineered de login.har 2026-07-09):
+      1. POST internalapi.contabilium.com/api/login {email, password, country} →
+         devuelve {"jwt": <token>} (el frontend lo usa como cookie Secure-1CBL).
+      2. Se golpea una página .aspx con ese JWT para que el server cree el
+         ASP.NET_SessionId (estado de sesión server-side).
+    Lanza LoginError si las credenciales son inválidas.
+    """
+    if not (email or "").strip() or not (password or ""):
+        raise LoginError("Falta usuario o contraseña.")
+    s = requests.Session()
+    s.headers.update({"User-Agent": _UA})
+    try:
+        r = s.post(f"{INTERNALAPI}/api/login",
+                   json={"email": email.strip(), "password": password, "country": country},
+                   headers={"Content-Type": "application/json"}, timeout=TIMEOUT)
+    except requests.RequestException as e:
+        raise WebError(f"login: error de red: {e}") from e
+    if r.status_code != 200:
+        raise LoginError(
+            f"No se pudo iniciar sesión (HTTP {r.status_code}). "
+            "Revisá el usuario y la contraseña de Contabilium."
+        )
+    try:
+        jwt = (r.json() or {}).get("jwt")
+    except ValueError:
+        raise LoginError("Respuesta inesperada del login de Contabilium.")
+    if not jwt:
+        raise LoginError("Usuario o contraseña incorrectos.")
+    # El JWT es la cookie Secure-1CBL en el dominio del app; con eso, pegarle a
+    # una página .aspx hace que el server devuelva el ASP.NET_SessionId.
+    s.cookies.set("Secure-1CBL", jwt, domain="app.contabilium.com.uy")
+    try:
+        s.get(f"{BASE}/cobranzase.aspx", timeout=TIMEOUT)
+    except requests.RequestException as e:
+        raise WebError(f"login: no se pudo abrir la sesión: {e}") from e
+    sid = s.cookies.get("ASP.NET_SessionId")
+    cookie = f"Secure-1CBL={jwt}"
+    if sid:
+        cookie += f"; ASP.NET_SessionId={sid}"
+    return cookie
 
 
 def _headers(cookie: str) -> dict:
