@@ -382,10 +382,33 @@ def ejecutar(
         if plan.aplica_nc:
             # ===== HÍBRIDO: NC por API pública + recibo por web interno =====
             if not cookie:
-                res.error = ("Falta la cookie de Contabilium para el recibo con "
-                             "NC. Pegala en la app (barra lateral).")
+                res.error = ("Conectate a Contabilium en la app (barra lateral 🔐, "
+                             "usuario y contraseña) para el recibo con NC.")
                 res.pasos.append(res.error)
                 return session, res
+
+            # CHEQUE + NC: el cheque precargado se referencia por su id interno
+            # (idcheque), no por su número. Lo resolvemos ANTES de crear la NC; si
+            # el cheque no está precargado en Contabilium, cortamos sin crear nada
+            # (evita NC huérfana).
+            idcheque = ""
+            if plan.cobro_cheque > 0:
+                try:
+                    idcheque = rendicion_web.buscar_idcheque(cookie, plan.nro_cheque)
+                except rendicion_web.WebError as e:
+                    res.error = f"No se pudieron consultar los cheques de Contabilium: {e}"
+                    res.pasos.append(res.error)
+                    return session, res
+                if not idcheque:
+                    res.error = (
+                        f"El cheque nº {plan.nro_cheque} no está precargado en "
+                        "Contabilium (o el número no coincide). Cargalo primero y "
+                        "reintentá. No se creó ninguna NC."
+                    )
+                    res.pasos.append(res.error)
+                    return session, res
+                res.pasos.append(
+                    f"Cheque nº {plan.nro_cheque} encontrado (idcheque={idcheque}).")
 
             # 1) Crear la NC (API pública).
             session, resp_nc = _crear_nc(session, plan.body_nc)
@@ -410,7 +433,10 @@ def ejecutar(
             saldo_fac = plan.saldo_actual
             neto = round(saldo_fac - total_nc, 2)
             imp_cheque = round(plan.cobro_cheque, 2)
-            imp_efectivo = round(neto - imp_cheque, 2)
+            # El efectivo absorbe el redondeo (cheque va como se rindió). Nunca
+            # negativo: si el cheque cubre de más por centavos, no se manda
+            # efectivo (queda un residuo mínimo que la auto-verificación tolera).
+            imp_efectivo = max(0.0, round(neto - imp_cheque, 2))
 
             # 3) Crear el recibo por los endpoints internos del web.
             r = rendicion_web.crear_recibo_con_nc(
@@ -421,7 +447,8 @@ def ejecutar(
                 saldo_factura=saldo_fac,
                 id_nc=id_nc, total_nc=total_nc,
                 importe_efectivo=imp_efectivo, importe_cheque=imp_cheque,
-                nro_cheque=plan.nro_cheque, fecha_ddmmyyyy=fecha_ddmmyyyy,
+                nro_cheque=plan.nro_cheque, idcheque=idcheque,
+                fecha_ddmmyyyy=fecha_ddmmyyyy,
             )
             res.pasos.extend(r["pasos"])
             res.id_recibo = r["id_recibo"]

@@ -24,6 +24,7 @@ El `sessionId` que hilvana el borrador server-side lo genera el cliente (un GUID
 
 from __future__ import annotations
 
+import re
 import uuid
 
 import requests
@@ -159,6 +160,31 @@ def obtener_comprobantes_pendientes(cookie: str, id_persona) -> list[dict]:
     return j.get("d") or []
 
 
+def obtener_cheques_disponibles(cookie: str, id_moneda: int = 794) -> list[dict]:
+    """Cheques precargados disponibles para imputar (valores en cartera).
+    Cada uno: {ID (id interno), Codigo (nº de cheque), Nombre, Importe, ...}."""
+    j = _post(cookie, "/common.aspx/obtenerChequesCobranzas",
+              {"EsPropio": False, "idMoneda": int(id_moneda)})
+    return j.get("d") or []
+
+
+def buscar_idcheque(cookie: str, nro_cheque: str, id_moneda: int = 794) -> str | None:
+    """Busca el id interno (`idcheque`) de un cheque precargado por su NÚMERO.
+
+    Contabilium referencia el cheque en el recibo por su id interno, no por el
+    número; hay que resolverlo con `obtenerChequesCobranzas` matcheando `Codigo`.
+    Devuelve el ID (str) o None si el cheque no está precargado.
+    """
+    objetivo = re.sub(r"\D", "", str(nro_cheque or ""))
+    if not objetivo:
+        return None
+    for ch in obtener_cheques_disponibles(cookie, id_moneda):
+        cod = re.sub(r"\D", "", str(ch.get("Codigo") or ""))
+        if cod and cod == objetivo:
+            return str(ch.get("ID"))
+    return None
+
+
 def verificar_cookie(cookie: str) -> tuple[bool, str]:
     """Chequea que la cookie autentique, con una llamada read-only barata.
     Devuelve (ok, mensaje)."""
@@ -187,6 +213,7 @@ def crear_recibo_con_nc(
     importe_efectivo: float,
     importe_cheque: float = 0.0,
     nro_cheque: str = "",
+    idcheque: str = "",
     fecha_ddmmyyyy: str,
 ) -> dict:
     """Crea un recibo que imputa la factura (+) y la NC (−), cobrando en efectivo
@@ -222,13 +249,15 @@ def crear_recibo_con_nc(
     pasos.append(f"agregarItem NC -{total_nc:,.2f} OK")
 
     if importe_cheque and importe_cheque > 0:
+        # El cheque precargado se referencia por su id interno (idcheque), que el
+        # caller resolvió con buscar_idcheque; el número va en nroRef.
         _post(cookie, "/cobranzase.aspx/agregarForma", {
             "sessionId": sid, "id": 0, "forma": "Cheque", "nroRef": nro_cheque or "",
-            "importe": str(round(importe_cheque, 2)), "idcheque": "", "idBanco": "",
-            "idNotaCredito": "", "idCaja": "", "fecha": fecha_ddmmyyyy,
+            "importe": str(round(importe_cheque, 2)), "idcheque": str(idcheque or ""),
+            "idBanco": "", "idNotaCredito": "", "idCaja": "", "fecha": fecha_ddmmyyyy,
             "importeBrutoNC": "0", "idComprobanteAsociado": "0", "ComprobanteAsociado": "",
         })
-        pasos.append(f"agregarForma cheque {importe_cheque:,.2f} (nº {nro_cheque}) OK")
+        pasos.append(f"agregarForma cheque {importe_cheque:,.2f} (nº {nro_cheque}, idcheque {idcheque}) OK")
 
     if importe_efectivo and importe_efectivo > 0:
         _post(cookie, "/cobranzase.aspx/agregarForma", {

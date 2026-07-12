@@ -81,14 +81,35 @@ def test_ejecutor_nc_requiere_cookie():
     )
     _, res = rendicion_ejecutor.ejecutar(None, plan, dry_run=False, cookie=None)
     assert res.ok is False
-    assert res.id_nc is None, "sin cookie no debe crear NC"
-    assert "cookie" in (res.error or "").lower(), res.error
+    assert res.id_nc is None, "sin conexión no debe crear NC"
+    assert "conectate" in (res.error or "").lower(), res.error
 
 
 def test_web_cookie_vacia_no_toca_red():
     """verificar_cookie('') devuelve (False, ...) sin salir a la red."""
     ok, msg = rendicion_web.verificar_cookie("")
     assert ok is False and "cookie" in msg.lower(), (ok, msg)
+
+
+def test_ejecutor_cheque_no_precargado_no_crea_nc():
+    """Cheque + NC: si el cheque NO está precargado en Contabilium, se corta
+    ANTES de crear la NC (evita huérfana). Se mockea la búsqueda (sin red)."""
+    plan = rendicion_ejecutor.PlanEjecucion(
+        id_factura=1, numero_factura="A-1", neto_factura=100.0,
+        total_con_iva=122.0, saldo_actual=122.0, aplica_nc=True,
+        nc_neto=10.0, nc_con_iva=12.2, cobro_efectivo=0.0,
+        cobro_cheque=109.8, nro_cheque="12345", body_nc={"x": 1},
+        body_cobro={"Id": 1}, id_cliente=5,
+    )
+    orig = rendicion_web.buscar_idcheque
+    rendicion_web.buscar_idcheque = lambda *a, **k: None  # cheque no precargado
+    try:
+        _, res = rendicion_ejecutor.ejecutar(None, plan, dry_run=False, cookie="c=1")
+    finally:
+        rendicion_web.buscar_idcheque = orig
+    assert res.ok is False
+    assert res.id_nc is None, "no debe crear NC si el cheque no está precargado"
+    assert "precargado" in (res.error or "").lower(), res.error
 
 
 def test_login_sin_credenciales():

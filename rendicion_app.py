@@ -458,6 +458,9 @@ else:
         fila_sel = opciones[sel_label]
         res_sel = _pendientes_ejec[fila_sel]
         params = res_sel.params_ejecucion()
+        # Fecha de la cobranza = la de la PLANILLA (fecha real de cobro), no la de
+        # hoy. Fallback a hoy si la fila no trae fecha.
+        _fecha_cobro = res_sel.fila.fecha or datetime.now()
 
         # --- Nº de cheque: se ingresa/confirma acá (opción 2, decisión Valeria
         # 2026-07-08). Se prellena con lo que el vendedor haya puesto en la
@@ -485,7 +488,7 @@ else:
                 cobro_efectivo=params["cobro_efectivo"],
                 cobro_cheque=params["cobro_cheque"],
                 nro_cheque=nro_cheque_conf,
-                fecha_emision_iso=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                fecha_emision_iso=_fecha_cobro.strftime("%Y-%m-%dT%H:%M:%S"),
             )
         except Exception as e:  # noqa: BLE001
             st.error(f"No se pudo preparar la ejecución: {e}")
@@ -499,7 +502,8 @@ else:
                    f"$ {plan.cobro_efectivo + plan.cobro_cheque:,.2f}")
         st.caption(
             f"Factura {plan.numero_factura} · saldo actual "
-            f"$ {plan.saldo_actual:,.2f} → quedará en $ 0."
+            f"$ {plan.saldo_actual:,.2f} → quedará en $ 0. · "
+            f"Fecha del recibo: **{_fecha_cobro:%d/%m/%Y}** (de la planilla)"
             + (f" · Cheque nº {plan.nro_cheque}" if plan.cobro_cheque else "")
         )
         for adv in plan.advertencias:
@@ -560,7 +564,7 @@ else:
                 sess = _api_session()
                 sess, resultado = rendicion_ejecutor.ejecutar(
                     sess, plan, dry_run=False, cookie=_cookie,
-                    fecha_ddmmyyyy=datetime.now().strftime("%d/%m/%Y"),
+                    fecha_ddmmyyyy=_fecha_cobro.strftime("%d/%m/%Y"),
                 )
             st.session_state.rend_ejecutadas[fila_sel] = {
                 "ok": resultado.ok,
