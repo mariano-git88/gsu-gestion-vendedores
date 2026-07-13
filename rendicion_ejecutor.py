@@ -122,8 +122,18 @@ def planificar(
     total_civa = api_loader.parse_monto_uy(factura.get("ImporteTotalNeto"))  # con IVA
     saldo = api_loader.parse_monto_uy(factura.get("Saldo"))
 
-    nc_neto = round(neto * TASA_DESCUENTO, 2) if aplica_nc else 0.0
-    nc_con_iva = round(total_civa * TASA_DESCUENTO, 2) if aplica_nc else 0.0
+    # El descuento (NC) es EXACTAMENTE lo que falta para saldar la factura con lo
+    # cobrado (≈10%), NO un 10% teórico. Así las formas de pago (lo realmente
+    # rendido en efectivo/cheque) balancean con (factura − NC) al centavo. Con un
+    # 10% teórico, un cheque de monto fijo puede diferir por centavos y Contabilium
+    # rechaza el recibo ("las formas de cobro deben coincidir").
+    cobro_total = round(cobro_efectivo + cobro_cheque, 2)
+    if aplica_nc:
+        nc_con_iva = round(saldo - cobro_total, 2)
+        nc_neto = round(nc_con_iva / (1 + IVA_BASICO / 100.0), 2)
+    else:
+        nc_con_iva = 0.0
+        nc_neto = 0.0
 
     advertencias: list[str] = []
 
@@ -432,11 +442,11 @@ def ejecutar(
             #    va como se rindió y el efectivo absorbe el redondeo (centavos).
             saldo_fac = plan.saldo_actual
             neto = round(saldo_fac - total_nc, 2)
-            imp_cheque = round(plan.cobro_cheque, 2)
-            # El efectivo absorbe el redondeo (cheque va como se rindió). Nunca
-            # negativo: si el cheque cubre de más por centavos, no se manda
-            # efectivo (queda un residuo mínimo que la auto-verificación tolera).
-            imp_efectivo = max(0.0, round(neto - imp_cheque, 2))
+            # Las formas deben sumar EXACTO el neto (factura − NC). El cheque va
+            # como se rindió, topeado al neto por si un centavo del IVA de la NC
+            # lo excede; el efectivo cubre el resto. Ambos ≥ 0 y suman el neto.
+            imp_cheque = round(min(round(plan.cobro_cheque, 2), neto), 2)
+            imp_efectivo = round(neto - imp_cheque, 2)
 
             # 3) Crear el recibo por los endpoints internos del web.
             r = rendicion_web.crear_recibo_con_nc(
