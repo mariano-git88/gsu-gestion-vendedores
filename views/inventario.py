@@ -38,10 +38,11 @@ def render(
     health_sem: dict | None = None,
     health_mes: dict | None = None,
 ) -> None:
-    """Firma uniforme con las otras vistas. Los args no se usan acá —
-    inventario va contra session_state (df_productos, df_combos,
-    df_hist12)."""
-    del df_sem, df_mes, df_clientes, health_sem, health_mes
+    """Firma uniforme con las otras vistas. df_sem/df_mes (facturación
+    fresca de la semana y el mes en curso) se usan para suplementar el
+    histórico 12m en la detección de stock muerto; el resto va contra
+    session_state (df_productos, df_combos, df_hist12)."""
+    del df_clientes, health_sem, health_mes
 
     st.subheader("Inventario")
     st.caption(
@@ -146,27 +147,40 @@ def render(
         "venta). Tablas descargables completas."
     )
 
-    # Cobertura de datos: el histórico de 12 meses es opt-in y puede quedar
-    # viejo (el botón "Sincronizar" NO lo refresca). Si no llega hasta hoy,
-    # una venta reciente no se cuenta y el SKU aparece como muerto por error.
-    _cobertura = pd.to_datetime(df_hist12["fecha"], errors="coerce").max()
+    # Ventas para detectar "muerto": el histórico 12m (opt-in, que
+    # «Sincronizar» NO refresca) SUPLEMENTADO con la facturación fresca de
+    # la semana y el mes en curso. Así una venta reciente —incluso de hoy—
+    # se cuenta y el SKU no aparece muerto por dato viejo. Como
+    # stock_muerto solo mira "vendió sí/no" (conjunto) + última fecha, la
+    # posible superposición de filas entre las tres fuentes no afecta.
+    _cols_v = ["sku", "fecha", "unidades"]
+    _fuentes_v = [
+        d[_cols_v] for d in (df_hist12, df_mes, df_sem)
+        if d is not None and not d.empty and set(_cols_v).issubset(d.columns)
+    ]
+    df_ventas = (
+        pd.concat(_fuentes_v, ignore_index=True) if _fuentes_v else df_hist12
+    )
+
+    # Cobertura de datos: hasta qué fecha llegan las ventas contadas (ya
+    # con la data fresca sumada). Si aun así no llega a hoy, avisamos.
+    _cobertura = pd.to_datetime(df_ventas["fecha"], errors="coerce").max()
     if pd.notna(_cobertura):
         st.caption(
             f"Ventas contadas hasta **{_cobertura.strftime('%d/%m/%Y')}** "
-            "(según el histórico de 12 meses cargado)."
+            "(histórico 12m + facturación fresca de la semana y el mes)."
         )
         if _cobertura.normalize() < pd.Timestamp.today().normalize():
             st.warning(
-                f"⚠️ El histórico llega solo hasta el "
-                f"{_cobertura.strftime('%d/%m/%Y')}. Las ventas posteriores NO "
-                "se cuentan, así que un artículo vendido después de esa fecha "
-                "puede figurar acá por error. Para actualizarlo, tocá "
-                "**«Recargar histórico (12 meses)»** en la sidebar — el botón "
-                "«Sincronizar» no refresca este snapshot."
+                f"⚠️ Las ventas contadas llegan hasta el "
+                f"{_cobertura.strftime('%d/%m/%Y')}. Si hubo ventas después, "
+                "un artículo puede figurar acá por error. Tocá "
+                "**«Sincronizar»** (trae la semana y el mes al día); para el "
+                "tramo más viejo, **«Recargar histórico (12 meses)»**."
             )
 
     ventanas = [30, 60, 120]
-    tablas_muerto = {d: metrics.stock_muerto(inv, df_hist12, d) for d in ventanas}
+    tablas_muerto = {d: metrics.stock_muerto(inv, df_ventas, d) for d in ventanas}
 
     km = st.columns(3)
     for i, d in enumerate(ventanas):
