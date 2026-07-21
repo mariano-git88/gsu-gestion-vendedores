@@ -402,6 +402,53 @@ def api_paginate(
     return session, all_items
 
 
+def get_stock_novedades(
+    session: ApiSession, dias: int = 7
+) -> tuple[ApiSession, pd.DataFrame]:
+    """SKUs cuyo stock se MODIFICÓ en los últimos `dias` días.
+
+    Endpoint: GET /api/stock/Novedades?skip=0&timestamp=YYYY-MM-DD. La API
+    rechaza timestamps de más de 7 días atrás ("La fecha desde no puede ser
+    menor a 7 días"), así que `dias` se clampa a 7. Con skip=0 devuelve
+    todos los ítems en una sola respuesta (len(Items) == TotalItems), no
+    hace falta paginar.
+
+    Cada ítem trae Codigo (SKU), Stock, Disponible y FechaModificacion.
+    Sirve para detectar, entre los candidatos a "stock muerto", los que
+    tuvieron un movimiento de stock reciente (típicamente una reposición):
+    explica por qué no vendieron en la ventana (recién volvieron a tener
+    stock), sin que la demanda esté muerta.
+
+    Devuelve (session, DataFrame[sku, stock, disponible, fecha_mod]) con
+    fecha_mod datetime naive. DataFrame vacío si no hay novedades.
+    """
+    dias = max(1, min(int(dias), 7))
+    ts = (pd.Timestamp.today() - pd.Timedelta(days=dias)).date().isoformat()
+    session, payload = api_get(
+        session, f"/api/stock/Novedades?skip=0&timestamp={ts}"
+    )
+    items = payload.get("Items", []) if isinstance(payload, dict) else []
+    cols = ["sku", "stock", "disponible", "fecha_mod"]
+    if not items:
+        return session, pd.DataFrame(columns=cols)
+    df = pd.DataFrame(
+        [
+            {
+                "sku": str(it.get("Codigo") or "").strip(),
+                "stock": it.get("Stock"),
+                "disponible": it.get("Disponible"),
+                "fecha_mod": it.get("FechaModificacion"),
+            }
+            for it in items
+        ],
+        columns=cols,
+    )
+    df["fecha_mod"] = pd.to_datetime(
+        df["fecha_mod"], errors="coerce", utc=True
+    ).dt.tz_localize(None)
+    return session, df[df["sku"] != ""].reset_index(drop=True)
+
+
 # =====================================================================
 # Loaders de maestros (Tanda B)
 # =====================================================================

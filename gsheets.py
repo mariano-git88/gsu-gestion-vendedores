@@ -63,6 +63,8 @@ TAB_COBRANZAS_PAGADAS = "cobranzas_pagadas"
 TAB_LOG_FACTURACION = "log_facturacion"
 TAB_LOG_CARGA_PEDIDOS = "log_carga_pedidos"
 TAB_EQUIVALENCIAS_LISTAS = "equivalencias_uy_ar"
+TAB_STOCK_SNAPSHOTS = "stock_snapshots"
+STOCK_SNAPSHOT_COLUMNS = ["fecha", "sku", "stock"]
 
 # Tabla de equivalencias entre SKUs UY (Contabilium) y SKUs AR
 # (export Lista_Marketing). Una fila por equivalencia confirmada
@@ -573,6 +575,82 @@ def append_log_carga_pedidos(
     ]
     ws.append_rows(rows_data, value_input_option="RAW")
     return len(rows_data)
+
+
+# =====================================================================
+# Log de stock (foto diaria) — para "stock muerto" consciente de quiebres
+# =====================================================================
+
+def append_stock_snapshot(
+    gsheets_section: dict,
+    fecha_iso: str,
+    df_stock: pd.DataFrame,
+) -> int:
+    """Apenda la foto de stock del día a la tab `stock_snapshots`.
+
+    Guarda una fila [fecha, sku, stock] por cada SKU **con stock > 0**
+    (la ausencia de un SKU en un día se interpreta como stock 0 ese día).
+    Append-only, best-effort desde el caller (un fallo no debe romper el
+    sync). El dedupe por día lo maneja el caller (marca en session_state);
+    la reconstrucción tolera duplicados contando fechas distintas.
+
+    `df_stock` debe tener columnas `sku` y `stock`. Devuelve nº de filas
+    escritas.
+    """
+    if df_stock is None or df_stock.empty:
+        return 0
+    if not {"sku", "stock"}.issubset(df_stock.columns):
+        return 0
+
+    d = df_stock[["sku", "stock"]].copy()
+    d["stock"] = pd.to_numeric(d["stock"], errors="coerce").fillna(0)
+    d = d[d["stock"] > 0]
+    d["sku"] = d["sku"].astype(str).str.strip()
+    d = d[d["sku"] != ""]
+    if d.empty:
+        return 0
+
+    sh = _open_sheet(gsheets_section)
+    ws = _ensure_worksheet(
+        sh, TAB_STOCK_SNAPSHOTS,
+        rows=20000, cols=len(STOCK_SNAPSHOT_COLUMNS),
+    )
+    header = ws.row_values(1)
+    if not header or len(header) < len(STOCK_SNAPSHOT_COLUMNS):
+        ws.update("A1", [STOCK_SNAPSHOT_COLUMNS], value_input_option="RAW")
+
+    rows_data = [
+        [fecha_iso, sku, f"{stock:g}"]
+        for sku, stock in zip(d["sku"], d["stock"])
+    ]
+    ws.append_rows(rows_data, value_input_option="RAW")
+    return len(rows_data)
+
+
+def read_stock_snapshots(gsheets_section: dict) -> pd.DataFrame:
+    """Lee la tab `stock_snapshots` (foto diaria de stock acumulada).
+
+    Devuelve DataFrame[fecha(datetime), sku(str), stock(float)]. Si la tab
+    no existe o está vacía, devuelve un DataFrame vacío con esas columnas.
+    """
+    cols = STOCK_SNAPSHOT_COLUMNS
+    sh = _open_sheet(gsheets_section)
+    ws = _ensure_worksheet(sh, TAB_STOCK_SNAPSHOTS, cols=len(cols))
+    rows = ws.get_all_values()
+    if not rows or len(rows) < 2:
+        return pd.DataFrame({"fecha": pd.Series(dtype="datetime64[ns]"),
+                             "sku": pd.Series(dtype="object"),
+                             "stock": pd.Series(dtype="float")})
+    df = pd.DataFrame(rows[1:], columns=rows[0])
+    # Tolerar columnas extra/orden: quedarnos con las esperadas.
+    for c in cols:
+        if c not in df.columns:
+            df[c] = None
+    df = df[cols]
+    df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce").dt.normalize()
+    df["sku"] = df["sku"].astype(str).str.strip()
+    df["stock"] = pd.to_numeric(df["stock"], errors="coerce").fillna(0.0)
+    return df.dropna(subset=["fecha"]).reset_index(drop=True)
 
 
 # =====================================================================

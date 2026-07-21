@@ -30,6 +30,7 @@ import api_loader
 import auth
 import data_loader
 import exports
+import gsheets
 import metrics
 import theme
 import transforms
@@ -756,6 +757,33 @@ df_combos = st.session_state.df_combos
 
 
 # =====================================================================
+# LOG DE STOCK DIARIO (best-effort) — para "stock muerto" consciente de
+# quiebres de stock (ver views/inventario.py). Solo modo API, una vez por
+# día por sesión, y NUNCA rompe el sync (todo dentro de try/except).
+# =====================================================================
+if (
+    st.session_state.get("fuente_activa") == "api"
+    and st.session_state.get("stock_snap_dia") != date.today().isoformat()
+):
+    # Marca "intentado hoy" ANTES de la escritura: si el Sheet no está
+    # configurado o falla, no reintenta en cada rerun (evita spam).
+    st.session_state.stock_snap_dia = date.today().isoformat()
+    try:
+        _partes_stock = [
+            d[["sku", "stock"]] for d in (df_productos, df_combos)
+            if d is not None and not d.empty and {"sku", "stock"}.issubset(d.columns)
+        ]
+        if _partes_stock:
+            gsheets.append_stock_snapshot(
+                dict(st.secrets.get("gsheets", {})),
+                date.today().isoformat(),
+                pd.concat(_partes_stock, ignore_index=True),
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# =====================================================================
 # PROCESAMIENTO (pipeline transforms.prepare_facturacion)
 # =====================================================================
 
@@ -1070,7 +1098,10 @@ if seccion == _SECCIONES[4]:
 if seccion == _SECCIONES[5]:
     cobranzas.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
 if seccion == _SECCIONES[6]:
-    inventario.render(df_sem, df_mes, df_clientes, health_sem, health_mes)
+    inventario.render(
+        df_sem, df_mes, df_clientes, health_sem, health_mes,
+        api_session=_api_session() if st.session_state.fuente_activa == "api" else None,
+    )
 if seccion == _SECCIONES[7]:
     st.subheader("Panel de salud de datos")
     # Encabezado con fuente activa + timestamp (para trazabilidad).

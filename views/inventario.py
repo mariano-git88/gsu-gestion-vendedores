@@ -28,7 +28,48 @@ from io import BytesIO
 import pandas as pd
 import streamlit as st
 
+import api_loader
+import gsheets
 import metrics
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _stock_snapshots(_dia: str) -> pd.DataFrame:
+    """Log de fotos diarias de stock (tab `stock_snapshots` del Sheet del
+    dashboard). Cacheado por día. Devuelve DataFrame vacío si no hay Sheet
+    configurado o la lectura falla — la vista nunca debe romper por esto."""
+    empty = pd.DataFrame({"fecha": pd.Series(dtype="datetime64[ns]"),
+                          "sku": pd.Series(dtype="object"),
+                          "stock": pd.Series(dtype="float")})
+    try:
+        sec = dict(st.secrets.get("gsheets", {}))
+    except Exception:  # noqa: BLE001
+        return empty
+    if not sec:
+        return empty
+    try:
+        return gsheets.read_stock_snapshots(sec)
+    except Exception:  # noqa: BLE001
+        return empty
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _novedades_stock(_api_session, _dia: str) -> pd.DataFrame:
+    """SKUs con movimiento de stock en los últimos 7 días (feed Novedades).
+
+    Cacheado por día (`_dia` fuerza refresco diario). `_api_session` lleva
+    guion bajo para que Streamlit no intente hashear el objeto de sesión.
+    Devuelve DataFrame vacío si no hay sesión o si la API falla — el flag
+    de "repuesto reciente" es informativo y nunca debe romper la vista.
+    """
+    cols = ["sku", "stock", "disponible", "fecha_mod"]
+    if _api_session is None:
+        return pd.DataFrame(columns=cols)
+    try:
+        _, df = api_loader.get_stock_novedades(_api_session, dias=7)
+        return df
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame(columns=cols)
 
 
 def render(
@@ -37,11 +78,13 @@ def render(
     df_clientes: pd.DataFrame,
     health_sem: dict | None = None,
     health_mes: dict | None = None,
+    api_session=None,
 ) -> None:
     """Firma uniforme con las otras vistas. df_sem/df_mes (facturación
     fresca de la semana y el mes en curso) se usan para suplementar el
-    histórico 12m en la detección de stock muerto; el resto va contra
-    session_state (df_productos, df_combos, df_hist12)."""
+    histórico 12m en la detección de stock muerto; `api_session` alimenta
+    el feed de novedades de stock (marca de repuestos recientes). El resto
+    va contra session_state (df_productos, df_combos, df_hist12)."""
     del df_clientes, health_sem, health_mes
 
     st.subheader("Inventario")
@@ -182,13 +225,31 @@ def render(
     ventanas = [30, 60, 120]
     tablas_muerto = {d: metrics.stock_muerto(inv, df_ventas, d) for d in ventanas}
 
-    km = st.columns(3)
-    for i, d in enumerate(ventanas):
-        km[i].metric(
-            f"Sin ventas {d} días",
-            f"{len(tablas_muerto[d]):,}",
-            help=f"SKUs con stock que no vendieron nada en los últimos {d} días.",
+    # Falsos positivos por DISPONIBILIDAD: un artículo puede no haber
+    # vendido en la ventana porque no tuvo stock para vender, no porque la
+    # demanda esté muerta. Dos señales:
+    #  1) repuesto_reciente — tuvo movimiento de stock en los últimos 7
+    #     días (feed Novedades). Cubre el pasado inmediato.
+    #  2) sin_stock_ventana — estuvo sin stock la mayor parte de la ventana
+    #     según el log de fotos diarias (`stock_snapshots`). Cubre el caso
+    #     general, y se vuelve preciso a medida que el log acumula historia.
+    _hoy = pd.Timestamp.today().normalize()
+    _nov = _novedades_stock(api_session, _hoy.strftime("%Y-%m-%d"))
+    _skus_repuestos = set(_nov["sku"].astype(str)) if not _nov.empty else set()
+    _snaps = _stock_snapshots(_hoy.strftime("%Y-%m-%d"))
+    for d in ventanas:
+        t = tablas_muerto[d]
+        if t.empty:
+            t["repuesto_reciente"] = pd.Series(dtype=bool)
+            t["sin_stock_ventana"] = pd.Series(dtype=bool)
+            t["no_disponible"] = pd.Series(dtype=bool)
+            continue
+        _skus_sin = metrics.skus_sin_stock_en_ventana(
+            _snaps, d, t["sku"].astype(str).tolist(), hoy=_hoy
         )
+        t["repuesto_reciente"] = t["sku"].astype(str).isin(_skus_repuestos)
+        t["sin_stock_ventana"] = t["sku"].astype(str).isin(_skus_sin)
+        t["no_disponible"] = t["repuesto_reciente"] | t["sin_stock_ventana"]
 
     col_m1, col_m2 = st.columns([1, 2])
     _ventana_sel = col_m1.radio(
@@ -199,6 +260,17 @@ def render(
         horizontal=True,
         key="inv_muerto_ventana",
     )
+    _ocultar_no_disp = col_m2.checkbox(
+        "Ocultar los que no estuvieron disponibles (repuestos recientes o "
+        "sin stock en la ventana)",
+        value=True,
+        key="inv_muerto_ocultar_nodisp",
+        help="Oculta artículos que no vendieron porque no tuvieron stock, no "
+             "porque la demanda esté muerta: repuestos con movimiento de "
+             "stock esta semana (feed de 7 días) o que estuvieron sin stock "
+             "la mayor parte de la ventana (log de stock diario, se vuelve "
+             "preciso con las semanas).",
+    )
     _excluir_sin_valor = col_m2.checkbox(
         "Excluir artículos sin valor de stock ($0, típicamente marketing/SC)",
         value=False,
@@ -208,9 +280,26 @@ def render(
     )
 
     def _filtrar_muerto(t: pd.DataFrame) -> pd.DataFrame:
+        if t.empty:
+            return t
+        if _ocultar_no_disp and "no_disponible" in t.columns:
+            t = t[~t["no_disponible"]]
         if _excluir_sin_valor and "valor_stock" in t.columns:
-            return t[t["valor_stock"] > 0]
+            t = t[t["valor_stock"] > 0]
         return t
+
+    km = st.columns(3)
+    for i, d in enumerate(ventanas):
+        _n = len(_filtrar_muerto(tablas_muerto[d]))
+        _n_nd = int(tablas_muerto[d]["no_disponible"].sum()) \
+            if not tablas_muerto[d].empty else 0
+        km[i].metric(
+            f"Sin ventas {d} días",
+            f"{_n:,}",
+            help=f"SKUs con stock que no vendieron nada en los últimos {d} "
+                 f"días (con los filtros activos). {_n_nd} se descartan por "
+                 f"disponibilidad (repuestos / sin stock en la ventana).",
+        )
 
     tabla_muerto = _filtrar_muerto(tablas_muerto[_ventana_sel])
 
@@ -232,6 +321,17 @@ def render(
             "Días sin venta", format="%.0f",
             help="Días desde la última venta. Vacío = nunca vendido.",
         ),
+        "repuesto_reciente": st.column_config.CheckboxColumn(
+            "Repuesto 7d", width="small",
+            help="Tuvo movimiento de stock en los últimos 7 días "
+                 "(posible reposición reciente).",
+        ),
+        "sin_stock_ventana": st.column_config.CheckboxColumn(
+            "Sin stock", width="small",
+            help="Estuvo sin stock la mayor parte de la ventana según el "
+                 "log de stock diario (no podía vender).",
+        ),
+        "no_disponible": None,  # flag interno combinado, no se muestra
     }
 
     if tabla_muerto.empty:
@@ -240,8 +340,19 @@ def render(
             f"{_ventana_sel} días con los filtros actuales."
         )
     else:
+        # Con el filtro de disponibilidad activo, las columnas-flag quedan
+        # todas en False → se sacan para no meter ruido. Si el usuario las
+        # muestra, se dejan visibles para distinguir por qué entran.
+        _mostrar = tabla_muerto
+        _flags = ["repuesto_reciente", "sin_stock_ventana", "no_disponible"]
+        if _ocultar_no_disp:
+            _mostrar = _mostrar.drop(
+                columns=[c for c in _flags if c in _mostrar.columns]
+            )
+        elif "no_disponible" in _mostrar.columns:
+            _mostrar = _mostrar.drop(columns=["no_disponible"])
         st.dataframe(
-            tabla_muerto, use_container_width=True, hide_index=True,
+            _mostrar, use_container_width=True, hide_index=True,
             column_config=_col_cfg_muerto,
         )
         valor_inmov = float(tabla_muerto["valor_stock"].sum()) \

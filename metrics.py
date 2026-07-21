@@ -780,6 +780,65 @@ def stock_muerto(
     return muerto[out_cols].reset_index(drop=True)
 
 
+def skus_sin_stock_en_ventana(
+    snapshots: pd.DataFrame,
+    dias: int,
+    skus_candidatos,
+    hoy: pd.Timestamp | None = None,
+    umbral: float = 0.5,
+) -> set:
+    """SKUs que estuvieron SIN stock la mayor parte de la ventana, según el
+    log de fotos diarias de stock (`stock_snapshots`).
+
+    El log guarda una fila por SKU-con-stock>0 por día; la AUSENCIA de un
+    SKU en un día = stock 0 ese día. Para cada SKU candidato se calcula la
+    fracción de días-con-snapshot de la ventana en que NO tuvo stock; si
+    supera `umbral`, se interpreta que "no vendió porque no tuvo stock", no
+    porque la demanda esté muerta.
+
+    Solo se juzga sobre los días efectivamente logueados dentro de la
+    ventana (robusto a huecos y a que el log recién arranca). `hoy` y
+    `dias` definen la ventana; `skus_candidatos` acota a los SKUs a evaluar
+    (típicamente los candidatos a muerto, que hoy tienen stock).
+
+    Devuelve set de skus. Vacío si no hay snapshots en la ventana (sin
+    evidencia → no se excluye a nadie).
+    """
+    cand = {str(s) for s in (skus_candidatos or [])}
+    if not cand:
+        return set()
+    if snapshots is None or snapshots.empty:
+        return set()
+    if not {"fecha", "sku", "stock"}.issubset(snapshots.columns):
+        return set()
+    if hoy is None:
+        hoy = pd.Timestamp.today().normalize()
+    desde = hoy - pd.Timedelta(days=dias)
+
+    snap = snapshots.copy()
+    snap["fecha"] = pd.to_datetime(snap["fecha"], errors="coerce").dt.normalize()
+    snap = snap[
+        (snap["fecha"] >= desde) & (snap["fecha"] <= hoy) & snap["fecha"].notna()
+    ]
+    if snap.empty:
+        return set()
+
+    dias_ventana = snap["fecha"].nunique()
+    if dias_ventana == 0:
+        return set()
+
+    snap["sku"] = snap["sku"].astype(str)
+    con_stock = snap[snap["stock"] > 0]
+    dias_con_stock = con_stock.groupby("sku")["fecha"].nunique()
+
+    out = set()
+    for sku in cand:
+        dc = int(dias_con_stock.get(sku, 0))
+        if (1.0 - dc / dias_ventana) >= umbral:
+            out.add(sku)
+    return out
+
+
 def inventario_semanas_stock(
     df_productos: pd.DataFrame,
     df_combos: pd.DataFrame,
