@@ -482,7 +482,22 @@ if seccion == _SECCIONES[0]:
 
         # ---------- Tabla de resumen ----------
         st.markdown("### Detalle por vendedor")
+        st.caption(
+            "Fórmula **v1.2** (vigente desde julio 2026): comisión por "
+            "**tramos** sobre el excedente del piso. El **sueldo fijo** es "
+            "informativo (se paga en la liquidación general). El **bono "
+            "trimestral** se calcula aparte al cierre del trimestre."
+        )
         df = pd.DataFrame(resumen_eff)
+        # Comisión efectiva del mes (con ajuste retro si aplica) y
+        # compensación total = sueldo fijo (informativo, se paga en la
+        # liquidación general) + esa comisión.
+        if ajuste is not None and "comision_neta_con_ajuste" in df.columns:
+            _com_efectiva = df["comision_neta_con_ajuste"].astype(float)
+        else:
+            _com_efectiva = df["comision_neta"].astype(float)
+        _fijo = df["sueldo_fijo"].astype(float) if "sueldo_fijo" in df.columns else 0.0
+        df["compensacion_total"] = _fijo + _com_efectiva
 
         if ajuste is not None:
             cols_display = [
@@ -500,6 +515,8 @@ if seccion == _SECCIONES[0]:
             ]
             sort_col = "comision_neta"
 
+        cols_display += ["sueldo_fijo", "compensacion_total"]
+
         df_display = df[cols_display].copy()
         df_display = df_display.sort_values(sort_col, ascending=False)
         fmt_dict = {
@@ -510,6 +527,8 @@ if seccion == _SECCIONES[0]:
             "comision_cobranza": "{:,.2f}",
             "comision_bruta": "{:,.2f}",
             "comision_neta": "{:,.0f}",
+            "sueldo_fijo": "{:,.0f}",
+            "compensacion_total": "{:,.0f}",
         }
         col_config = {
             "vendedor": st.column_config.TextColumn("Vendedor"),
@@ -517,17 +536,31 @@ if seccion == _SECCIONES[0]:
             "ventas_netas": st.column_config.NumberColumn("Ventas netas"),
             "cobranzas": st.column_config.NumberColumn("Cobranzas"),
             "comision_venta": st.column_config.NumberColumn(
-                "Com. venta (2,35%)",
-                help="Sobre ventas netas (sin IVA).",
+                "Com. venta",
+                help="Por tramos sobre la venta neta (sin IVA): 0% hasta "
+                     "$600.000, 2,35% de ahí a $1,5M, 5% sobre el excedente "
+                     "de $1,5M.",
             ),
             "comision_cobranza": st.column_config.NumberColumn(
-                "Com. cobranza (3%)",
-                help="Sobre cobranzas (importe directo de Contabilium).",
+                "Com. cobranza",
+                help="Por tramos sobre la cobranza: 0% hasta $700.000, 3% de "
+                     "ahí a $1,5M, 4% sobre el excedente de $1,5M.",
             ),
             "comision_bruta": st.column_config.NumberColumn("Bruta"),
             "comision_neta": st.column_config.NumberColumn(
-                "Neta del mes",
-                help="Comisión del período sin ajuste retroactivo.",
+                "Comisión del mes",
+                help="Comisión del período (venta + cobranza), sin ajuste "
+                     "retroactivo.",
+            ),
+            "sueldo_fijo": st.column_config.NumberColumn(
+                "Sueldo fijo",
+                help="Informativo: se paga en la liquidación general de RRHH, "
+                     "no en esta planilla. $49.855 (mínimo nacional).",
+            ),
+            "compensacion_total": st.column_config.NumberColumn(
+                "Compensación total",
+                help="Sueldo fijo + comisión del mes (con ajuste retro si "
+                     "aplica). Foto de lo que se lleva el vendedor.",
             ),
         }
         if ajuste is not None:

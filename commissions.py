@@ -5,9 +5,15 @@ No depende de Streamlit. Importable desde cualquier script o notebook.
 Las reglas implementadas acá replican exactamente las definidas en
 CLAUDE.md y en _learning/decisions.md (sesión 2026-04-09).
 
-Reglas:
-  - Comisión por venta = 2,35% × (Total ÷ 1,22)  [neto de IVA 22%]
-  - Comisión por cobranza = 3% × Importe Total Neto
+Reglas (esquema v1.2, vigente desde julio 2026 — ver
+_learning/formula_compensacion_v1.2.md):
+  - Comisión por venta = tramos sobre la venta neta (Total ÷ 1,22):
+      0% hasta $600.000 · 2,35% de $600k a $1,5M · 5% sobre el excedente de $1,5M
+  - Comisión por cobranza = tramos sobre el importe cobrado:
+      0% hasta $700.000 · 3% de $700k a $1,5M · 4% sobre el excedente de $1,5M
+  - Sueldo fijo $49.855 (informativo; se paga en la liquidación general)
+  - Bono trimestral por pilar (Cat A/B) — ver compute_bono_trimestral()
+  - El esquema "v1" (tasa plana vieja) se conserva para comparar (dual-run)
   - Redondeo: hacia arriba al peso (math.ceil), sin decimales
   - Vendedores excluidos siempre: OPJESICA, OPVALERIA
   - Estado excluido: Cancelada
@@ -30,9 +36,35 @@ from openpyxl.utils import get_column_letter
 
 # ----------------------------- CONSTANTES -----------------------------
 
+# --- Esquema v1 (legacy, tasa plana) — se conserva para comparación ---
 TASA_VENTA = 0.0235
 TASA_COBRANZA = 0.03
 DIVISOR_IVA = 1.22
+
+# --- Esquema v1.2 (vigente desde julio 2026) ---
+# Ver _learning/formula_compensacion_v1.2.md. Comisión por tramos sobre el
+# EXCEDENTE del umbral (0% hasta el umbral, tasa media hasta el tier alto,
+# tasa alta sobre el excedente del tier alto). Sueldo fijo se muestra pero
+# se paga en la liquidación general.
+SUELDO_FIJO_UYU = 49_855  # mínimo nacional; si sube, actualizar acá.
+
+UMBRAL_VENTA_PLENO = 600_000
+UMBRAL_VENTA_TIER_ALTO = 1_500_000
+TASA_VENTA_TRAMO_MEDIO = 0.0235
+TASA_VENTA_TRAMO_ALTO = 0.05
+
+UMBRAL_COBRANZA_PLENO = 700_000
+UMBRAL_COBRANZA_TIER_ALTO = 1_500_000
+TASA_COBRANZA_TRAMO_MEDIO = 0.03
+TASA_COBRANZA_TRAMO_ALTO = 0.04
+
+# Bono trimestral: % sobre la comisión del trimestre, por pilar y categoría.
+PCT_BONO = {
+    "venta": {"A": 0.10, "B": 0.05, "—": 0.0},
+    "cobranza": {"A": 0.15, "B": 0.08, "—": 0.0},
+}
+
+ESQUEMA_VIGENTE = "v1.2"
 
 VENDEDORES_EXCLUIDOS_OP = {
     "OPJESICA@SUPRABOND.COM.UY",
@@ -40,6 +72,45 @@ VENDEDORES_EXCLUIDOS_OP = {
 }
 ESTADOS_EXCLUIDOS = {"Cancelada"}
 VENDEDOR_HUERFANAS = "MARIO@SUPRABOND.COM.UY"
+
+
+# ------------------------- FÓRMULA DE COMISIÓN -------------------------
+
+def _comision_tramos(monto, umbral_pleno, umbral_alto, tasa_media, tasa_alta):
+    """Comisión por tramos sobre el excedente (esquema v1.2).
+
+    - 0 hasta `umbral_pleno`.
+    - `tasa_media` sobre el excedente entre `umbral_pleno` y `umbral_alto`.
+    - `tasa_alta` sobre el excedente por encima de `umbral_alto`.
+    """
+    if monto <= umbral_pleno:
+        return 0.0
+    if monto <= umbral_alto:
+        return (monto - umbral_pleno) * tasa_media
+    return (
+        (umbral_alto - umbral_pleno) * tasa_media
+        + (monto - umbral_alto) * tasa_alta
+    )
+
+
+def comision_venta(vn, esquema=ESQUEMA_VIGENTE):
+    """Comisión por venta neta. v1.2 = tramos; v1 = tasa plana (legacy)."""
+    if esquema == "v1":
+        return vn * TASA_VENTA
+    return _comision_tramos(
+        vn, UMBRAL_VENTA_PLENO, UMBRAL_VENTA_TIER_ALTO,
+        TASA_VENTA_TRAMO_MEDIO, TASA_VENTA_TRAMO_ALTO,
+    )
+
+
+def comision_cobranza(co, esquema=ESQUEMA_VIGENTE):
+    """Comisión por cobranza. v1.2 = tramos; v1 = tasa plana (legacy)."""
+    if esquema == "v1":
+        return co * TASA_COBRANZA
+    return _comision_tramos(
+        co, UMBRAL_COBRANZA_PLENO, UMBRAL_COBRANZA_TIER_ALTO,
+        TASA_COBRANZA_TRAMO_MEDIO, TASA_COBRANZA_TRAMO_ALTO,
+    )
 
 
 # ----------------------------- HELPERS -----------------------------
@@ -252,10 +323,34 @@ def _index_cobranzas_por_numero(ws):
     return idx, duplicados
 
 
-def compute_retroactive_adjustment(file_orig, file_updated, mapa_clientes):
+def _total_cobranza_por_vendedor(idx, mapa_clientes):
+    """Suma el importe de cobranza por vendedor sobre TODAS las filas de un
+    índice {numero: {...}}, con las mismas reglas de asignación del mes
+    corriente (código inexistente → MARIO; cliente sin vendedor → descarta)."""
+    tot = defaultdict(float)
+    for row in idx.values():
+        cod = row["codigo"]
+        if cod not in mapa_clientes:
+            tot[VENDEDOR_HUERFANAS] += row["importe"]
+        elif mapa_clientes[cod] is None:
+            continue  # descartada: cliente existente sin Vendedor Asignado
+        else:
+            tot[mapa_clientes[cod]] += row["importe"]
+    return tot
+
+
+def compute_retroactive_adjustment(
+    file_orig, file_updated, mapa_clientes, esquema=ESQUEMA_VIGENTE
+):
     """
     Compara dos versiones de la planilla cobranzas.xlsx del MES ANTERIOR y
     calcula el ajuste retroactivo de comisiones a aplicar este mes.
+
+    Bajo v1.2 la comisión de cobranza es por tramos, así que el ajuste NO es
+    `delta × 3%`: es `comision_cobranza(total_actualizado) −
+    comision_cobranza(total_original)` por vendedor, con la fórmula VIGENTE
+    al momento del cálculo (spec §4 "Retros"). Así el retro cae en el tramo
+    correcto según el nivel de cobranza del vendedor.
 
     Args:
         file_orig: planilla del mes anterior tal como se usó la corrida pasada
@@ -349,9 +444,18 @@ def compute_retroactive_adjustment(file_orig, file_updated, mapa_clientes):
             delta_importe_vend[v] += c["delta_importe"]
             c["asignacion"] = v
 
-    # Comisión = delta_importe × 3%
+    # Comisión del ajuste (v1.2, por tramos): diferencia de la comisión de
+    # cobranza del mes anterior entre el total actualizado y el original,
+    # por vendedor. Para esquema "v1" esto equivale a delta × 3% (lineal).
+    tot_orig = _total_cobranza_por_vendedor(orig_idx, mapa_clientes)
+    tot_upd = _total_cobranza_por_vendedor(updated_idx, mapa_clientes)
+    vendedores_afectados = set(delta_importe_vend)
     ajuste_comision_vend = {
-        v: importe * TASA_COBRANZA for v, importe in delta_importe_vend.items()
+        v: (
+            comision_cobranza(tot_upd.get(v, 0.0), esquema)
+            - comision_cobranza(tot_orig.get(v, 0.0), esquema)
+        )
+        for v in vendedores_afectados
     }
     vendedores_con_ajuste_negativo = {
         v: monto for v, monto in ajuste_comision_vend.items() if monto < 0
@@ -423,16 +527,26 @@ def merge_commissions_with_adjustment(resumen_normal, ajuste):
 
 # ----------------------------- CÁLCULO -----------------------------
 
-def compute_commissions(ventas, cobranzas):
-    """Combina ventas y cobranzas y devuelve la lista de filas de la liquidación."""
+def compute_commissions(
+    ventas, cobranzas, esquema=ESQUEMA_VIGENTE, sueldo_fijo=SUELDO_FIJO_UYU
+):
+    """Combina ventas y cobranzas y devuelve la lista de filas de la liquidación.
+
+    `esquema`: "v1.2" (vigente, tramos) o "v1" (legacy plano, para comparar).
+    `sueldo_fijo`: monto fijo mensual a mostrar (no se paga en esta app, va en
+        la liquidación general; se incluye para ver la compensación total).
+        En v1 el fijo histórico era 10_000; se respeta si se pasa explícito.
+    Cada fila trae, además de la comisión: `sueldo_fijo` y `compensacion_total`
+    (= sueldo_fijo + comision_neta).
+    """
     todos = sorted(set(ventas["netas"].keys()) | set(cobranzas["por_vend"].keys()))
     resumen = []
     for v in todos:
         vn = ventas["netas"].get(v, 0.0)
         vb = ventas["brutas"].get(v, 0.0)
         co = cobranzas["por_vend"].get(v, 0.0)
-        com_v = vn * TASA_VENTA
-        com_c = co * TASA_COBRANZA
+        com_v = comision_venta(vn, esquema)
+        com_c = comision_cobranza(co, esquema)
         com_bruta = com_v + com_c
         com_neta = math.ceil(com_bruta)  # redondeo hacia arriba al peso
         resumen.append({
@@ -444,8 +558,85 @@ def compute_commissions(ventas, cobranzas):
             "comision_cobranza": com_c,
             "comision_bruta": com_bruta,
             "comision_neta": com_neta,
+            "sueldo_fijo": sueldo_fijo,
+            "compensacion_total": sueldo_fijo + com_neta,
         })
     return resumen
+
+
+# ------------------------- BONO TRIMESTRAL (v1.2) -------------------------
+
+def clasificar_pilar(volumenes_3m, umbral_pleno):
+    """Categoría del pilar para el bono: 'A', 'B' o '—'.
+
+    - A: los 3 meses ≥ umbral pleno.
+    - B: promedio ≥ 50% del umbral Y al menos 1 mes pleno.
+    - —: no cumple.
+    `volumenes_3m` ya debe venir con la sustitución por licencia aplicada.
+    """
+    umbral_half = umbral_pleno * 0.5
+    meses_plenos = sum(1 for x in volumenes_3m if x >= umbral_pleno)
+    promedio = sum(volumenes_3m) / 3.0 if volumenes_3m else 0.0
+    if meses_plenos == 3:
+        return "A"
+    if promedio >= umbral_half and meses_plenos >= 1:
+        return "B"
+    return "—"
+
+
+def _sustituir_licencia(valores_3m, licencia_meses):
+    """Sustituye los meses con licencia por el promedio de los otros (Ley UY).
+    `licencia_meses`: set de índices {0,1,2}. Si los 3 tienen licencia, no
+    sustituye (devuelve igual)."""
+    lic = {i for i in licencia_meses if 0 <= i <= 2}
+    idx_ok = [i for i in range(3) if i not in lic]
+    if not lic or not idx_ok:
+        return list(valores_3m)
+    prom = sum(valores_3m[i] for i in idx_ok) / len(idx_ok)
+    return [prom if i in lic else valores_3m[i] for i in range(3)]
+
+
+def compute_bono_trimestral(datos_por_vendedor, esquema=ESQUEMA_VIGENTE):
+    """Bono trimestral por vendedor (ver formula_compensacion_v1.2.md §3).
+
+    `datos_por_vendedor`: dict vendedor -> {
+        'ventas_netas': [m1, m2, m3],   # venta neta mensual (sin IVA)
+        'cobranzas':    [m1, m2, m3],   # cobranza mensual
+        'licencia_meses': set(),        # índices {0,1,2} con licencia (opcional)
+    }
+    Cada pilar se evalúa por separado. Los meses con licencia se sustituyen
+    por el promedio de los otros dos ANTES de clasificar y de recomputar la
+    comisión (los tramos son no lineales, por eso se recomputa desde el
+    volumen y no se promedian comisiones).
+
+    Devuelve dict vendedor -> {cat_venta, cat_cobranza, com_venta_trim,
+    com_cobranza_trim, bono_venta, bono_cobranza, bono_total}.
+    """
+    out = {}
+    for v, d in datos_por_vendedor.items():
+        lic = set(d.get("licencia_meses") or set())
+        vn = _sustituir_licencia(
+            [float(x) for x in d.get("ventas_netas", [0, 0, 0])], lic
+        )
+        co = _sustituir_licencia(
+            [float(x) for x in d.get("cobranzas", [0, 0, 0])], lic
+        )
+        cat_v = clasificar_pilar(vn, UMBRAL_VENTA_PLENO)
+        cat_c = clasificar_pilar(co, UMBRAL_COBRANZA_PLENO)
+        com_v_trim = sum(comision_venta(x, esquema) for x in vn)
+        com_c_trim = sum(comision_cobranza(x, esquema) for x in co)
+        bono_v = com_v_trim * PCT_BONO["venta"][cat_v]
+        bono_c = com_c_trim * PCT_BONO["cobranza"][cat_c]
+        out[v] = {
+            "cat_venta": cat_v,
+            "cat_cobranza": cat_c,
+            "com_venta_trim": com_v_trim,
+            "com_cobranza_trim": com_c_trim,
+            "bono_venta": bono_v,
+            "bono_cobranza": bono_c,
+            "bono_total": math.ceil(bono_v) + math.ceil(bono_c),
+        }
+    return out
 
 
 # ----------------------------- BUILDERS DE OUTPUT -----------------------------
@@ -482,7 +673,14 @@ def build_xlsx_bytes(resumen, ventas, cobranzas, periodo_label, ajuste=None):
     ws = wb.active
     ws.title = "Resumen"
 
-    last_col_letter = "J" if has_ajuste else "H"
+    # Columnas de sueldo fijo (informativo) y compensación total van al
+    # final; su posición depende de si hay columnas de ajuste.
+    if has_ajuste:
+        fijo_col, comp_col = 11, 12
+    else:
+        fijo_col, comp_col = 9, 10
+    last_col_letter = get_column_letter(comp_col)
+
     ws["A1"] = "Liquidación de Comisiones — GSU"
     ws["A1"].font = Font(bold=True, size=14)
     ws.merge_cells(f"A1:{last_col_letter}1")
@@ -497,16 +695,20 @@ def build_xlsx_bytes(resumen, ventas, cobranzas, periodo_label, ajuste=None):
         "Ventas brutas (c/IVA)",
         "Ventas netas (s/IVA)",
         "Cobranzas",
-        "Comisión venta (2,35%)",
-        "Comisión cobranza (3%)",
+        "Comisión venta (tramos)",
+        "Comisión cobranza (tramos)",
         "Comisión bruta",
         "Comisión neta a pagar",
     ]
     if has_ajuste:
         headers += [
             "Ajuste mes anterior",
-            "TOTAL a pagar (con ajuste)",
+            "Comisión a pagar (con ajuste)",
         ]
+    headers += [
+        "Sueldo fijo (informativo)",
+        "Compensación total",
+    ]
     for j, h in enumerate(headers, 1):
         c = ws.cell(row=5, column=j, value=h)
         c.font = s["header_font"]
@@ -531,13 +733,25 @@ def build_xlsx_bytes(resumen, ventas, cobranzas, periodo_label, ajuste=None):
                 (9, r.get("ajuste_aplicado", 0.0), s["money_fmt"]),
                 (10, r.get("comision_neta_con_ajuste", r["comision_neta"]), s["money0"]),
             ]
+        # Compensación total = sueldo fijo + comisión efectiva (con ajuste
+        # si aplica).
+        _com_efectiva = (
+            r.get("comision_neta_con_ajuste", r["comision_neta"])
+            if has_ajuste else r["comision_neta"]
+        )
+        _fijo = r.get("sueldo_fijo", 0)
+        cells += [
+            (fijo_col, _fijo, s["money0"]),
+            (comp_col, _fijo + _com_efectiva, s["money0"]),
+        ]
         for col, val, fmt in cells:
             c = ws.cell(row=row, column=col, value=val)
             c.number_format = fmt
             c.border = s["border"]
-        # Resaltar la columna de pago final
+        # Resaltar la columna de pago de comisión y la compensación total.
         pago_col = 10 if has_ajuste else 8
         ws.cell(row=row, column=pago_col).font = s["bold"]
+        ws.cell(row=row, column=comp_col).font = s["bold"]
         row += 1
 
     total_row = row
@@ -565,10 +779,18 @@ def build_xlsx_bytes(resumen, ventas, cobranzas, periodo_label, ajuste=None):
         c.border = s["border"]
     else:
         ws.cell(row=total_row, column=8).font = Font(bold=True, size=12)
+    # Totales de sueldo fijo y compensación total.
+    for col in (fijo_col, comp_col):
+        letra = get_column_letter(col)
+        c = ws.cell(row=total_row, column=col, value=f"=SUM({letra}6:{letra}{row-1})")
+        c.number_format = s["money0"]
+        c.font = Font(bold=True, size=12) if col == comp_col else s["bold"]
+        c.border = s["border"]
 
     widths = [32, 22, 22, 18, 22, 24, 18, 22]
     if has_ajuste:
         widths += [22, 26]
+    widths += [24, 22]  # sueldo fijo, compensación total
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -583,9 +805,16 @@ def build_xlsx_bytes(resumen, ventas, cobranzas, periodo_label, ajuste=None):
 
     notas = [
         "",
-        "REGLAS DE CÁLCULO APLICADAS",
-        f"  · Comisión por venta = {TASA_VENTA*100:.2f}% × (Total ÷ {DIVISOR_IVA})  [neto de IVA]",
-        f"  · Comisión por cobranza = {TASA_COBRANZA*100:.2f}% × Importe Total Neto",
+        "REGLAS DE CÁLCULO APLICADAS (esquema v1.2)",
+        f"  · Comisión venta (sobre venta neta = Total ÷ {DIVISOR_IVA}): "
+        f"0% hasta ${UMBRAL_VENTA_PLENO:,.0f} · {TASA_VENTA_TRAMO_MEDIO*100:.2f}% "
+        f"hasta ${UMBRAL_VENTA_TIER_ALTO:,.0f} · {TASA_VENTA_TRAMO_ALTO*100:.0f}% "
+        f"sobre el excedente",
+        f"  · Comisión cobranza: 0% hasta ${UMBRAL_COBRANZA_PLENO:,.0f} · "
+        f"{TASA_COBRANZA_TRAMO_MEDIO*100:.2f}% hasta ${UMBRAL_COBRANZA_TIER_ALTO:,.0f} · "
+        f"{TASA_COBRANZA_TRAMO_ALTO*100:.0f}% sobre el excedente",
+        f"  · Sueldo fijo ${SUELDO_FIJO_UYU:,.0f} (informativo, se paga en la "
+        f"liquidación general)",
         "  · Comisión neta = REDONDEO HACIA ARRIBA al peso (sin decimales)",
         "",
         "FILTROS APLICADOS A VENTAS",
@@ -719,8 +948,8 @@ def build_xlsx_bytes(resumen, ventas, cobranzas, periodo_label, ajuste=None):
             ("Ventas brutas (c/IVA)", r["ventas_brutas"], s["money_fmt"]),
             ("Ventas netas (s/IVA)", r["ventas_netas"], s["money_fmt"]),
             ("Cobranzas", r["cobranzas"], s["money_fmt"]),
-            ("Comisión venta (2,35%)", r["comision_venta"], s["money_fmt"]),
-            ("Comisión cobranza (3%)", r["comision_cobranza"], s["money_fmt"]),
+            ("Comisión venta (tramos)", r["comision_venta"], s["money_fmt"]),
+            ("Comisión cobranza (tramos)", r["comision_cobranza"], s["money_fmt"]),
             ("Comisión bruta", r["comision_bruta"], s["money_fmt"]),
             ("Comisión neta a pagar", r["comision_neta"], s["money0"]),
         ]
@@ -835,7 +1064,7 @@ def build_md(resumen, ventas, cobranzas, periodo_label, ajuste=None):
         lines.append(f"| **TOTAL** | | | **${total:,}** |")
     else:
         lines += [
-            "| Vendedor | Ventas netas | Cobranzas | Com. Venta (2,35%) | Com. Cobranza (3%) | **Comisión neta** |",
+            "| Vendedor | Ventas netas | Cobranzas | Com. Venta (tramos) | Com. Cobranza (tramos) | **Comisión neta** |",
             "|---|---:|---:|---:|---:|---:|",
         ]
         for r in sorted_r:
