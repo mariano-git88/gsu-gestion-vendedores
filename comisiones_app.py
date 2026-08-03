@@ -747,7 +747,20 @@ if seccion == _SECCIONES[0]:
                 use_container_width=True,
             )
         if _do_guardar:
+            # El guardado tarda (2 escrituras al Sheet, y con ajuste además
+            # un pull a la API de M-1). Sin feedback visible parece que el
+            # botón no hizo nada: st.status muestra en qué paso va.
+            _pasos = 3 if ajuste is not None else 2
+            # (tipo, mensaje) — se renderiza fuera del status para que no
+            # quede escondido cuando el bloque se colapsa al terminar.
+            _resultado = None
+            with st.status(
+                "Guardando en histórico…", expanded=True
+            ) as _status:
                 try:
+                    st.write(
+                        f"Paso 1 de {_pasos} · Conectando a Google Sheets…"
+                    )
                     secrets_g = dict(st.secrets["gsheets"])
 
                     # 1. Guardar agregados en `historico` (con o sin ajuste).
@@ -767,6 +780,11 @@ if seccion == _SECCIONES[0]:
                     else:
                         resumen_para_guardar = resumen
 
+                    st.write(
+                        f"Paso 1 de {_pasos} · Escribiendo "
+                        f"{len(resumen_para_guardar)} fila(s) de comisiones "
+                        f"en el período {periodo_label}…"
+                    )
                     stats = gsheets.write_historico_periodo(
                         secrets_g, periodo_label, resumen_para_guardar,
                         sobreescribir=sobreescribir,
@@ -775,6 +793,10 @@ if seccion == _SECCIONES[0]:
                     # 2. Guardar cobranzas individuales del mes M.
                     cobranzas_filas = comisiones_ajuste.cobranzas_para_persistir(
                         cobranzas
+                    )
+                    st.write(
+                        f"Paso 2 de {_pasos} · Guardando "
+                        f"{len(cobranzas_filas)} cobranza(s) del período…"
                     )
                     stats_c = gsheets.write_cobranzas_periodo(
                         secrets_g, periodo_label, cobranzas_filas
@@ -791,6 +813,11 @@ if seccion == _SECCIONES[0]:
                         # asignar reglas (huerfana/descartada/normal),
                         # igual que el cálculo del mes corriente — para
                         # mantener consistencia del Sheet.
+                        st.write(
+                            f"Paso 3 de {_pasos} · Releyendo cobranzas de "
+                            f"{prev_label} desde Contabilium (esto es lo que "
+                            "más tarda)…"
+                        )
                         session_p = _api_session()
                         session_p, cobr_prev = comisiones_data.cargar_cobranzas_desde_api(
                             session_p, prev_desde_, prev_hasta_,
@@ -798,6 +825,11 @@ if seccion == _SECCIONES[0]:
                         )
                         cobranzas_prev_filas = comisiones_ajuste.cobranzas_para_persistir(
                             cobr_prev
+                        )
+                        st.write(
+                            f"Paso 3 de {_pasos} · Actualizando snapshot de "
+                            f"{prev_label} con {len(cobranzas_prev_filas)} "
+                            "cobranza(s)…"
                         )
                         gsheets.write_cobranzas_periodo(
                             secrets_g, prev_label, cobranzas_prev_filas
@@ -815,11 +847,31 @@ if seccion == _SECCIONES[0]:
                             f" Snapshot de {prev_label} actualizado con "
                             f"{len(cobranzas_prev_filas)} cobranzas."
                         )
-                    st.success(msg)
+                    _resultado = ("ok", msg)
+                    _status.update(
+                        label=f"Guardado en histórico · {periodo_label}",
+                        state="complete", expanded=False,
+                    )
                 except gsheets.PeriodoYaExisteError as e:
-                    st.warning(str(e))
+                    _resultado = ("warn", str(e))
+                    _status.update(
+                        label="No se guardó: el período ya existe",
+                        state="error", expanded=False,
+                    )
                 except gsheets.GsheetsError as e:
-                    st.error(f"Error con Google Sheets: {e}")
+                    _resultado = ("err", f"Error con Google Sheets: {e}")
+                    _status.update(
+                        label="Falló el guardado en histórico",
+                        state="error", expanded=False,
+                    )
+            if _resultado is not None:
+                _tipo, _texto = _resultado
+                if _tipo == "ok":
+                    st.success(_texto)
+                elif _tipo == "warn":
+                    st.warning(_texto)
+                else:
+                    st.error(_texto)
 
 
 # ---------------------------------------------------------------------
