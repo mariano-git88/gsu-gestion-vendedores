@@ -18,11 +18,24 @@ Se apoya en los helpers genéricos de credenciales/apertura de `gsheets`
 
 from __future__ import annotations
 
+import gspread
 import pandas as pd
 
 import gsheets  # reutiliza _open_sheet / _ensure_worksheet / errores
+import televentas_data  # clave_documento (cruce tolerante al cero inicial)
 
 GsheetsError = gsheets.GsheetsError
+
+# Todo lo que se escribe va con RAW, NO con USER_ENTERED.
+# USER_ENTERED le pide a Sheets que interprete el valor "como si lo tipeara
+# una persona", y eso rompía dos cosas en silencio:
+#   - los RUT todo-dígitos pasaban a NÚMERO y perdían el cero inicial
+#     ("012345680017" → "12345680017"), con lo cual el lead nunca volvía a
+#     cruzar y quedaba "Sin gestionar" para siempre (15,8% de la base);
+#   - las fechas pasaban a DATE y volvían con el formato regional de la
+#     Sheet, rompiendo la comparación contra "YYYY-MM-DD".
+# RAW guarda exactamente el string que mandamos.
+_ESCRITURA = "RAW"
 
 TAB_ACTIVIDAD = "actividad_televentas"
 TAB_IMPORTACIONES = "importaciones_televentas"
@@ -108,7 +121,7 @@ def registrar_actividad(gsheets_section: dict, fila: dict, timestamp: str) -> No
         float(fila_out.get("monto_pedido") or 0.0),
         str(fila_out.get("nro_orden") or ""),
     ]
-    ws.append_row(valores, value_input_option="USER_ENTERED")
+    ws.append_row(valores, value_input_option=_ESCRITURA)
 
 
 def leer_actividad(gsheets_section: dict) -> pd.DataFrame:
@@ -158,7 +171,7 @@ def guardar_importacion(
     rows = [[nombre, str(f.get("documento") or "").strip(),
              str(f.get("codigo") or ""), str(f.get("razon_social") or ""),
              timestamp, agente or ""] for f in filas_validas]
-    ws.append_rows(rows, value_input_option="USER_ENTERED")
+    ws.append_rows(rows, value_input_option=_ESCRITURA)
     return len(rows)
 
 
@@ -182,6 +195,67 @@ def leer_importaciones(gsheets_section: dict) -> pd.DataFrame:
     return df
 
 
+def reparar_documentos(
+    gsheets_section: dict, documentos_validos, *, dry_run: bool = False,
+) -> dict[str, dict[str, int]]:
+    """Reescribe los documentos que Sheets mutiló al guardarlos como número.
+
+    Las filas escritas con `USER_ENTERED` (antes del fix) perdieron el cero
+    inicial del RUT. Esta función recorre las dos tabs del CRM y, para cada
+    documento cuya CLAVE coincide con la de un cliente real, vuelve a
+    escribir el documento completo — con RAW, así queda como texto.
+
+    `documentos_validos`: los documentos reales, tal como vienen de
+    Contabilium (típicamente `leads["documento"]`).
+
+    Solo toca la columna `documento`: ninguna otra celda se reescribe. Es
+    idempotente (una segunda corrida repara 0) y conservadora: si un
+    documento del Sheet no matchea ningún cliente actual, se deja como está.
+
+    Devuelve {tab: {"filas": n, "reparadas": n}}. Con `dry_run=True`
+    cuenta lo que haría sin escribir nada.
+    """
+    por_clave: dict[str, str] = {}
+    for d in documentos_validos:
+        s = str(d or "").strip()
+        if s:
+            # setdefault: si dos clientes colapsaran en la misma clave, no
+            # inventamos un ganador nuevo en cada corrida.
+            por_clave.setdefault(televentas_data.clave_documento(s), s)
+
+    sh = gsheets._open_sheet(gsheets_section)
+    reporte: dict[str, dict[str, int]] = {}
+
+    for tab, columnas in ((TAB_IMPORTACIONES, IMPORTACIONES_COLS),
+                          (TAB_ACTIVIDAD, ACTIVIDAD_COLS)):
+        ws = gsheets._ensure_worksheet(sh, tab, cols=len(columnas))
+        filas = ws.get_all_values()
+        if len(filas) < 2:
+            reporte[tab] = {"filas": 0, "reparadas": 0}
+            continue
+
+        idx = columnas.index("documento")
+        actuales = [(f[idx] if len(f) > idx else "") for f in filas[1:]]
+        nuevos, reparadas = [], 0
+        for valor in actuales:
+            s = str(valor).strip()
+            real = por_clave.get(televentas_data.clave_documento(s), s)
+            if real != s:
+                reparadas += 1
+            nuevos.append(real)
+
+        if reparadas and not dry_run:
+            rango = "{}:{}".format(
+                gspread.utils.rowcol_to_a1(2, idx + 1),
+                gspread.utils.rowcol_to_a1(len(nuevos) + 1, idx + 1),
+            )
+            ws.update(rango, [[v] for v in nuevos], value_input_option=_ESCRITURA)
+
+        reporte[tab] = {"filas": len(actuales), "reparadas": reparadas}
+
+    return reporte
+
+
 def nombres_importaciones(df_imp: pd.DataFrame) -> list[str]:
     """Nombres de listas importadas, más recientes primero."""
     if df_imp is None or df_imp.empty:
@@ -191,19 +265,33 @@ def nombres_importaciones(df_imp: pd.DataFrame) -> list[str]:
 
 
 def documentos_de_importacion(df_imp: pd.DataFrame, nombre: str) -> set[str]:
-    """Set de documentos que pertenecen a la lista `nombre`."""
+    """Set de CLAVES de documento que pertenecen a la lista `nombre`.
+
+    Devuelve claves normalizadas y no los strings crudos por dos razones:
+    así el set cruza contra los leads aunque la fila vieja haya perdido el
+    cero inicial, y así un mismo cliente que quedó escrito de las dos
+    formas (mutilado y entero) cuenta una sola vez — si no, el total de la
+    lista aparecería inflado.
+    """
     if df_imp is None or df_imp.empty:
         return set()
-    return set(df_imp.loc[df_imp["nombre"] == nombre, "documento"].astype(str))
+    docs = df_imp.loc[df_imp["nombre"] == nombre, "documento"].astype(str)
+    return {televentas_data.clave_documento(d) for d in docs if str(d).strip()}
 
 
 def estado_actual_por_lead(df_actividad: pd.DataFrame) -> pd.DataFrame:
     """Deriva el estado actual de cada lead desde su ÚLTIMA gestión.
 
-    Pura: recibe el DataFrame de actividad y devuelve uno indexado por
-    `documento` con columnas:
+    Pura: recibe el DataFrame de actividad y devuelve uno indexado por la
+    CLAVE del documento (`televentas_data.clave_documento`, no el documento
+    crudo) con columnas:
       estado, ultima_gestion, ultimo_resultado, proximo_seguimiento,
       num_contactos, ultima_nota, pedidos_generados, monto_generado.
+
+    El índice es la clave y no el documento porque las filas viejas de la
+    Sheet perdieron el cero inicial: si se cruzara por el string crudo, las
+    gestiones de esos clientes no volverían nunca. Quien mergee contra los
+    leads tiene que mapear su columna `documento` con la misma función.
     """
     cols = [
         "estado", "ultima_gestion", "ultimo_resultado", "proximo_seguimiento",
@@ -215,15 +303,16 @@ def estado_actual_por_lead(df_actividad: pd.DataFrame) -> pd.DataFrame:
     df = df_actividad.copy()
     df["_ts"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df = df.sort_values("_ts")
+    df["_clave"] = df["documento"].map(televentas_data.clave_documento)
 
     filas = []
-    for doc, g in df.groupby("documento"):
+    for clave, g in df.groupby("_clave"):
         ult = g.iloc[-1]
         resultado = str(ult.get("resultado") or "")
         pedidos = int((g["resultado"] == "Pedido cargado").sum())
         monto = float(pd.to_numeric(g["monto_pedido"], errors="coerce").fillna(0).sum())
         filas.append({
-            "documento": doc,
+            "clave_documento": clave,
             "estado": _ESTADO_POR_RESULTADO.get(resultado, "En seguimiento"),
             "ultima_gestion": ult.get("_ts"),
             "ultimo_resultado": resultado,
@@ -233,4 +322,4 @@ def estado_actual_por_lead(df_actividad: pd.DataFrame) -> pd.DataFrame:
             "pedidos_generados": pedidos,
             "monto_generado": round(monto, 2),
         })
-    return pd.DataFrame(filas).set_index("documento")
+    return pd.DataFrame(filas).set_index("clave_documento")

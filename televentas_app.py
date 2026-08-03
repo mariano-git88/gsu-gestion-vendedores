@@ -254,7 +254,13 @@ if _gs:
 
 estado_crm = televentas_crm.estado_actual_por_lead(df_act)
 if not estado_crm.empty:
-    leads = leads.merge(estado_crm, how="left", left_on="documento", right_index=True)
+    # Se cruza por clave normalizada (no por el documento crudo): las filas
+    # que el CRM escribió antes del fix de RAW perdieron el cero inicial del
+    # RUT, y si no, la gestión de esos clientes no volvería nunca.
+    leads["_clave_doc"] = leads["documento"].map(televentas_data.clave_documento)
+    leads = (leads.merge(estado_crm, how="left",
+                         left_on="_clave_doc", right_index=True)
+             .drop(columns=["_clave_doc"]))
 for c in ("estado", "ultimo_resultado", "proximo_seguimiento"):
     if c not in leads.columns:
         leads[c] = ""
@@ -581,6 +587,28 @@ if seccion == _SECCIONES[0]:
         ocultar_atendido_reciente=f_guard, solo_con_deuda=f_deuda)
     st.caption(f"**{len(filt)}** leads. Hacé click en una fila para abrir la ficha 👇")
 
+    # Cuando se trabaja sobre una lista importada, el número de arriba casi
+    # nunca coincide con el de la lista, y los filtros que lo explican están
+    # escondidos en el expander colapsado ("Solo con teléfono" viene
+    # prendido). Sin este desglose parece que la app perdió clientes.
+    if docs_imp:
+        _en_base = televentas_data.filtrar_leads(leads, documentos=docs_imp)
+        _sin_cruce = len(docs_imp) - len(_en_base)
+        _sin_tel = int((_en_base["telefono"].str.len() == 0).sum()) if f_tel else 0
+        _otros = len(_en_base) - _sin_tel - len(filt)
+        _motivos = []
+        if _sin_cruce > 0:
+            _motivos.append(f"{_sin_cruce} sin cruce con la base")
+        if _sin_tel > 0:
+            _motivos.append(f"{_sin_tel} sin teléfono")
+        if _otros > 0:
+            _motivos.append(f"{_otros} por campaña/filtros")
+        if _motivos:
+            st.caption(
+                f"↳ De los **{len(docs_imp)}** de «{lista_sel}» quedan "
+                f"{len(filt)}: " + ", ".join(_motivos) + "."
+            )
+
     cols_show = [c for c in ["codigo", "nombre_fantasia", "razon_social", "ciudad",
                              "departamento", "telefono", "segmento", "dias_sin_compra",
                              "ticket_prom", "deuda_total", "estado", "proximo_seguimiento"]
@@ -660,6 +688,56 @@ if seccion == _SECCIONES[1]:
                             fecha=("fecha_carga", "max"))
                        .reset_index().sort_values("fecha", ascending=False))
         st.dataframe(resumen_imp, use_container_width=True, hide_index=True)
+
+    if _gs:
+        st.divider()
+        with st.expander("🛠 Mantenimiento — reparar RUT en la Sheet"):
+            st.caption(
+                "Las filas guardadas antes del arreglo perdieron el **cero "
+                "inicial** del RUT (Google Sheets las tomó como número), así "
+                "que esos clientes no cruzaban contra la base: no aparecían "
+                "en las listas y quedaban «Sin gestionar» aunque se los "
+                "hubiera llamado. Esto reescribe el RUT completo. Solo toca "
+                "la columna del documento y se puede correr las veces que "
+                "quieras (la segunda vez repara 0).")
+            if st.button("🔍 Revisar (no escribe nada)"):
+                with st.spinner("Leyendo la Sheet…"):
+                    try:
+                        st.session_state.tv_reparacion = televentas_crm.reparar_documentos(
+                            dict(_gs), leads["documento"], dry_run=True)
+                    except Exception as e:  # noqa: BLE001
+                        st.session_state.tv_reparacion = None
+                        st.error(f"No se pudo revisar: {e}")
+
+            rep = st.session_state.get("tv_reparacion")
+            if rep:
+                total = sum(v["reparadas"] for v in rep.values())
+                for tab, v in rep.items():
+                    st.write(f"· `{tab}`: {v['reparadas']} de {v['filas']} filas a reparar.")
+                if total == 0:
+                    st.success("No hay nada que reparar. 👌")
+                elif st.button(f"🛠 Reparar {total} fila(s)", type="primary"):
+                    with st.status("Reparando la Sheet…", expanded=True) as _st_rep:
+                        try:
+                            st.write("Reescribiendo la columna documento…")
+                            hecho = televentas_crm.reparar_documentos(
+                                dict(_gs), leads["documento"])
+                            _cargar_importaciones.clear()
+                            _cargar_actividad.clear()
+                            st.session_state.tv_reparacion = None
+                            _st_rep.update(label="Sheet reparada", state="complete",
+                                           expanded=False)
+                            _res_rep = ("ok", "Reparadas " + ", ".join(
+                                f"{v['reparadas']} en `{t}`" for t, v in hecho.items())
+                                + ". Volvé a la pestaña Leads para ver los números.")
+                        except Exception as e:  # noqa: BLE001
+                            _st_rep.update(label="Falló la reparación", state="error",
+                                           expanded=False)
+                            _res_rep = ("err", f"No se pudo reparar: {e}")
+                    if _res_rep[0] == "ok":
+                        st.success(_res_rep[1])
+                    else:
+                        st.error(_res_rep[1])
 
 
 # =====================================================================

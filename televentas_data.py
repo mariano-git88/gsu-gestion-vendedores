@@ -35,6 +35,27 @@ DIAS_DORMIDO = 180      # 90–180 → dormido reciente; > 180 → dormido profu
 DIAS_ATENDIDO_RECIENTE = 15
 
 
+def clave_documento(valor) -> str:
+    """Clave de cruce de un documento (RUT/CI), tolerante al cero inicial.
+
+    Por qué existe: el CRM (Sheet) escribía los documentos con
+    `USER_ENTERED`, que le hace a Sheets interpretar un RUT todo-dígitos
+    como NÚMERO y comerse el cero de la izquierda — "012345680017" volvía
+    "12345680017" y no cruzaba contra ningún lead. En la base de UY eso
+    afecta al 15,8% de los clientes (177 de 1.117), que quedaban invisibles
+    en las listas importadas y "Sin gestionar" para siempre.
+
+    La escritura ya se corrigió a RAW, pero las filas viejas siguen
+    mutiladas, así que TODO cruce por documento pasa por esta clave.
+    Medido sobre la base: normalizar no produce NINGUNA colisión (no hay
+    dos documentos distintos que colapsen en la misma clave).
+    """
+    s = str(valor or "").strip()
+    # `or s`: un documento de puros ceros no debe colapsar a cadena vacía,
+    # que es justo el valor que marca "cliente sin documento".
+    return s.lstrip("0") or s
+
+
 # =====================================================================
 # 1. Maestro de clientes enriquecido (red)
 # =====================================================================
@@ -400,8 +421,12 @@ def matchear_seleccion(
     if col_id is None:
         col_id = df_subido.columns[0]  # fallback: primera columna
 
-    # Índices de match sobre los leads.
-    by_doc = {str(d).strip(): str(d).strip() for d in leads["documento"]}
+    # Índices de match sobre los leads. El de documento va por clave
+    # normalizada: Excel también convierte los RUT a número y les come el
+    # cero inicial, así que la planilla de Ernesto llega con "12345680017"
+    # donde Contabilium tiene "012345680017".
+    by_doc = {clave_documento(d): str(d).strip()
+              for d in leads["documento"] if str(d).strip()}
     by_cod = {str(c).strip().upper(): str(d).strip()
               for c, d in zip(leads["codigo"], leads["documento"]) if str(c).strip()}
     by_num = {}
@@ -417,7 +442,7 @@ def matchear_seleccion(
             continue
         vu = v.upper()
         vnum = _re.sub(r"\D", "", v).lstrip("0") or "0"
-        doc = by_doc.get(v) or by_cod.get(vu) or by_num.get(vnum)
+        doc = by_doc.get(clave_documento(v)) or by_cod.get(vu) or by_num.get(vnum)
         if doc:
             docs.append(doc)
         else:
@@ -455,7 +480,11 @@ def filtrar_leads(
     `solo_con_deuda`: deja solo los que tienen deuda pendiente."""
     df = leads
     if documentos is not None:
-        df = df[df["documento"].astype(str).isin(documentos)]
+        # Se cruza por clave normalizada, no por el string crudo: los
+        # documentos que vienen del Sheet pueden haber perdido el cero
+        # inicial (ver `clave_documento`).
+        claves = {clave_documento(d) for d in documentos}
+        df = df[df["documento"].map(clave_documento).isin(claves)]
     if ocultar_atendido_reciente and "atendido_reciente" in df.columns:
         df = df[~df["atendido_reciente"].fillna(False)]
     if solo_con_deuda and "deuda_total" in df.columns:
