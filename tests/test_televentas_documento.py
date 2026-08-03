@@ -102,6 +102,129 @@ def test_un_error_que_no_es_cuota_no_se_reintenta():
 
 
 # =====================================================================
+# Parseo de lo que devuelve Sheets
+# =====================================================================
+
+def test_filas_cortas_se_rellenan():
+    """`values_batch_get` omite las celdas vacías del final, así que las
+    filas llegan de largos distintos. Con `get_all_values` venían
+    rectangulares — si no se rellenan, pandas revienta."""
+    filas = [
+        televentas_crm.IMPORTACIONES_COLS,
+        ["Lista A", "012345680017", "04054-C", "F. AGUIRRE", "2026-08-03 10:00",
+         "Vale", "paga tarde", "1"],
+        ["Lista A", "218514740014"],                       # fila corta
+    ]
+    df = televentas_crm._tabla_desde_valores(
+        filas, televentas_crm.IMPORTACIONES_COLS, "importaciones_televentas")
+
+    assert len(df) == 2
+    assert list(df.columns) == televentas_crm.IMPORTACIONES_COLS
+    assert df.iloc[1]["comentario"] == ""
+    assert df.iloc[1]["problema_pago"] == ""
+
+
+def test_schema_viejo_de_6_columnas_se_sigue_leyendo():
+    """Las listas subidas antes de agosto 2026 no tienen comentario ni
+    problema_pago: tienen que leerse igual, con esas dos vacías."""
+    filas = [
+        televentas_crm.IMPORTACIONES_COLS[:6],
+        ["Lista vieja", "012345680017", "04054-C", "F. AGUIRRE",
+         "2026-07-01 10:00", "Vale"],
+    ]
+    df = televentas_crm._tabla_desde_valores(
+        filas, televentas_crm.IMPORTACIONES_COLS, "importaciones_televentas",
+        televentas_crm.IMPORTACIONES_COLS[:6])
+
+    assert df.iloc[0]["documento"] == "012345680017"
+    assert df.iloc[0]["comentario"] == ""
+
+
+def test_encabezado_desconocido_levanta():
+    """Si alguien renombró columnas a mano, hay que fallar fuerte y no
+    seguir leyendo datos corridos de lugar."""
+    filas = [["cualquier", "cosa"], ["a", "b"]]
+    with pytest.raises(televentas_crm.GsheetsError):
+        televentas_crm._tabla_desde_valores(
+            filas, televentas_crm.IMPORTACIONES_COLS, "importaciones_televentas")
+
+
+def test_tab_vacia_devuelve_none_para_que_la_inicialicen():
+    assert televentas_crm._tabla_desde_valores(
+        [], televentas_crm.ACTIVIDAD_COLS, "actividad_televentas") is None
+    assert televentas_crm._tabla_desde_valores(
+        [["", "", ""]], televentas_crm.ACTIVIDAD_COLS, "actividad_televentas") is None
+
+
+# =====================================================================
+# leer_crm — las dos tabs en una sola llamada
+# =====================================================================
+
+class _SheetFalso:
+    """Mínimo indispensable para probar el cableado del batch."""
+
+    def __init__(self, por_tab):
+        self.por_tab = por_tab
+        self.llamadas_batch = 0
+        self.rangos_pedidos = None
+
+    def values_batch_get(self, ranges):
+        self.llamadas_batch += 1
+        self.rangos_pedidos = list(ranges)
+        return {"valueRanges": [{"range": r, "values": self.por_tab.get(r)}
+                                for r in ranges]}
+
+
+def test_leer_crm_trae_las_dos_tabs_en_una_sola_llamada(monkeypatch):
+    falso = _SheetFalso({
+        televentas_crm.TAB_ACTIVIDAD: [
+            televentas_crm.ACTIVIDAD_COLS,
+            ["2026-08-01 10:00", "012345680017", "AGUIRRE", "Vale", "Llamada",
+             "Volver a llamar", "", "2026-08-05", "0", ""],
+        ],
+        televentas_crm.TAB_IMPORTACIONES: [
+            televentas_crm.IMPORTACIONES_COLS,
+            ["Lista A", "012345680017", "04054-C", "AGUIRRE",
+             "2026-08-03 10:00", "Vale", "paga tarde", "1"],
+        ],
+    })
+    monkeypatch.setattr(televentas_crm.gsheets, "_open_sheet",
+                        lambda *_a, **_k: falso)
+
+    df_act, df_imp = televentas_crm.leer_crm({"spreadsheet_id": "x"})
+
+    assert falso.llamadas_batch == 1, "tiene que ser UNA sola llamada"
+    # El orden importa: el primer rango es actividad, el segundo importaciones.
+    assert falso.rangos_pedidos == [televentas_crm.TAB_ACTIVIDAD,
+                                    televentas_crm.TAB_IMPORTACIONES]
+    assert len(df_act) == 1 and df_act.iloc[0]["resultado"] == "Volver a llamar"
+    assert len(df_imp) == 1 and df_imp.iloc[0]["comentario"] == "paga tarde"
+    # monto_pedido tiene que llegar numérico, no como texto.
+    assert df_act.iloc[0]["monto_pedido"] == 0.0
+
+
+def test_leer_crm_no_confunde_las_tabs_si_una_esta_vacia(monkeypatch):
+    """Con una tab vacía cae al camino lento SOLO para esa, sin mezclar
+    los datos de la otra."""
+    falso = _SheetFalso({
+        televentas_crm.TAB_ACTIVIDAD: None,          # vacía
+        televentas_crm.TAB_IMPORTACIONES: [
+            televentas_crm.IMPORTACIONES_COLS,
+            ["Lista A", "012345680017", "", "", "2026-08-03 10:00", "V", "ojo", "1"],
+        ],
+    })
+    monkeypatch.setattr(televentas_crm.gsheets, "_open_sheet",
+                        lambda *_a, **_k: falso)
+    monkeypatch.setattr(televentas_crm, "_leer_actividad",
+                        lambda _sh: pd.DataFrame(columns=televentas_crm.ACTIVIDAD_COLS))
+
+    df_act, df_imp = televentas_crm.leer_crm({"spreadsheet_id": "x"})
+
+    assert df_act.empty
+    assert len(df_imp) == 1 and df_imp.iloc[0]["comentario"] == "ojo"
+
+
+# =====================================================================
 # clave_documento
 # =====================================================================
 

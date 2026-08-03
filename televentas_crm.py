@@ -108,12 +108,7 @@ def registrar_actividad(gsheets_section: dict, fila: dict, timestamp: str) -> No
     if not doc:
         raise ValueError("registrar_actividad: falta `documento`.")
 
-    sh = gsheets._open_sheet(gsheets_section)
-    ws = gsheets._ensure_worksheet(sh, TAB_ACTIVIDAD, cols=len(ACTIVIDAD_COLS))
-
-    header = ws.row_values(1)
-    if not header or header[: len(ACTIVIDAD_COLS)] != ACTIVIDAD_COLS:
-        ws.update("A1", [ACTIVIDAD_COLS], value_input_option="RAW")
+    ws = _preparar_tab(gsheets_section, TAB_ACTIVIDAD, ACTIVIDAD_COLS)
 
     fila_out = {**fila, "timestamp": timestamp}
     valores = [
@@ -131,6 +126,67 @@ def registrar_actividad(gsheets_section: dict, fila: dict, timestamp: str) -> No
     ws.append_row(valores, value_input_option=_ESCRITURA)
 
 
+def _preparar_tab(gsheets_section: dict, tab: str, columnas: list[str]):
+    """Abre el Sheet y devuelve la worksheet lista para escribirle.
+
+    Todo lo que hace es LEER (abrir + buscar la tab + mirar el encabezado)
+    más, si hace falta, escribir el encabezado —que es idempotente porque
+    siempre son los mismos valores en el mismo rango—. Por eso se puede
+    reintentar entero ante un 429.
+
+    El append que viene DESPUÉS queda afuera del reintento a propósito: un
+    append repetido duplica filas. Separarlos es lo que permite absorber el
+    429 de cuota de lectura, que es donde fallaban los guardados.
+    """
+    def _prep():
+        sh = gsheets._open_sheet(gsheets_section)
+        ws = gsheets._ensure_worksheet(sh, tab, cols=len(columnas))
+        header = ws.row_values(1)
+        if not header or header[: len(columnas)] != columnas:
+            ws.update("A1", [columnas], value_input_option=_ESCRITURA)
+        return ws
+    return gsheets.reintentar_lectura(_prep)
+
+
+def _tabla_desde_valores(filas, columnas, tab, columnas_previas=None):
+    """Arma el DataFrame del schema `columnas` desde lo que devolvió Sheets.
+
+    Las filas pueden venir cortas: `values_batch_get` omite las celdas
+    vacías del final, así que cada una se rellena hasta el ancho del schema.
+
+    Devuelve None si la tab está vacía o sin encabezado — el caller decide
+    si la inicializa. Levanta si el encabezado es otro (schema desconocido),
+    salvo que coincida con `columnas_previas` (schema viejo tolerado).
+    """
+    if not filas:
+        return None
+    header = filas[0]
+    if header[: len(columnas)] != columnas:
+        if all(not c for c in header):
+            return None
+        if not (columnas_previas
+                and header[: len(columnas_previas)] == columnas_previas):
+            raise GsheetsError(f"Encabezados inesperados en '{tab}': {header}")
+    if len(filas) < 2:
+        return pd.DataFrame(columns=columnas)
+    ancho = len(columnas)
+    datos = [(list(f) + [""] * ancho)[:ancho] for f in filas[1:]]
+    return pd.DataFrame(datos, columns=columnas)
+
+
+def _normalizar_actividad(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["documento"] = df["documento"].astype(str).str.strip()
+    df["monto_pedido"] = pd.to_numeric(df["monto_pedido"], errors="coerce").fillna(0.0)
+    return df
+
+
+def _normalizar_importaciones(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["documento"] = df["documento"].astype(str).str.strip()
+    return df
+
+
 def leer_actividad(gsheets_section: dict) -> pd.DataFrame:
     """Lee todo el historial de actividad. DataFrame vacío con el schema
     correcto si la tab no existe o está vacía. Reintenta ante 429."""
@@ -139,25 +195,14 @@ def leer_actividad(gsheets_section: dict) -> pd.DataFrame:
 
 
 def _leer_actividad(sh) -> pd.DataFrame:
+    """Camino lento: una lectura de metadata + una de valores. Crea la tab
+    y le pone el encabezado si hace falta."""
     ws = gsheets._ensure_worksheet(sh, TAB_ACTIVIDAD, cols=len(ACTIVIDAD_COLS))
-    filas = ws.get_all_values()
-    if not filas:
-        ws.update("A1", [ACTIVIDAD_COLS], value_input_option="RAW")
-        return pd.DataFrame(columns=ACTIVIDAD_COLS)
-    header = filas[0]
-    if header[: len(ACTIVIDAD_COLS)] != ACTIVIDAD_COLS:
-        if all(not c for c in header):
-            ws.update("A1", [ACTIVIDAD_COLS], value_input_option="RAW")
-            return pd.DataFrame(columns=ACTIVIDAD_COLS)
-        raise GsheetsError(
-            f"Encabezados inesperados en '{TAB_ACTIVIDAD}': {header}"
-        )
-    if len(filas) < 2:
-        return pd.DataFrame(columns=ACTIVIDAD_COLS)
-    df = pd.DataFrame(filas[1:], columns=ACTIVIDAD_COLS[: len(filas[0])])
-    df["documento"] = df["documento"].astype(str).str.strip()
-    df["monto_pedido"] = pd.to_numeric(df["monto_pedido"], errors="coerce").fillna(0.0)
-    return df
+    df = _tabla_desde_valores(ws.get_all_values(), ACTIVIDAD_COLS, TAB_ACTIVIDAD)
+    if df is None:
+        ws.update("A1", [ACTIVIDAD_COLS], value_input_option=_ESCRITURA)
+        df = pd.DataFrame(columns=ACTIVIDAD_COLS)
+    return _normalizar_actividad(df)
 
 
 def guardar_importacion(
@@ -180,12 +225,9 @@ def guardar_importacion(
     if not filas_validas:
         return 0
 
-    sh = gsheets._open_sheet(gsheets_section)
-    ws = gsheets._ensure_worksheet(sh, TAB_IMPORTACIONES, cols=len(IMPORTACIONES_COLS))
-    header = ws.row_values(1)
-    # Migra solo el encabezado viejo de 6 columnas al de 8.
-    if not header or header[: len(IMPORTACIONES_COLS)] != IMPORTACIONES_COLS:
-        ws.update("A1", [IMPORTACIONES_COLS], value_input_option="RAW")
+    # Migra solo el encabezado viejo de 6 columnas al de 8. Reintenta ante
+    # 429; el append de abajo NO (duplicaría filas).
+    ws = _preparar_tab(gsheets_section, TAB_IMPORTACIONES, IMPORTACIONES_COLS)
 
     rows = [[nombre, str(f.get("documento") or "").strip(),
              str(f.get("codigo") or ""), str(f.get("razon_social") or ""),
@@ -204,44 +246,59 @@ def leer_importaciones(gsheets_section: dict) -> pd.DataFrame:
 
 
 def leer_crm(gsheets_section: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Lee actividad + importaciones abriendo el Sheet UNA sola vez.
+    """Lee actividad + importaciones en DOS llamadas a la API en total.
 
-    Existe por cuota: cada apertura del spreadsheet gasta una lectura, y
-    Sheets permite 60 por minuto para el Service Account que comparten
-    todas las apps GSU. Leer las dos tabs juntas baja de ~6 lecturas por
-    corrida a ~4, y hace que el reintento cubra a las dos de una.
+    Existe por cuota: Sheets da 60 lecturas por minuto al Service Account
+    que comparten TODAS las apps GSU. El camino obvio gastaba 5 lecturas
+    por corrida (abrir + metadata de cada tab + valores de cada tab),
+    porque `sh.worksheet()` de gspread se trae la metadata entera cada vez
+    que se lo llama. Con `values_batch_get` las dos tabs vienen en una sola
+    llamada: abrir (1) + valores (1) = 2.
+
+    Si alguna tab todavía no existe o está sin encabezado, cae al camino
+    lento —que las crea— y ahí sí gasta más. Pasa una sola vez.
 
     Devuelve (df_actividad, df_importaciones).
     """
     def _leer():
         sh = gsheets._open_sheet(gsheets_section)
-        return _leer_actividad(sh), _leer_importaciones(sh)
+        try:
+            resp = sh.values_batch_get([TAB_ACTIVIDAD, TAB_IMPORTACIONES])
+        except gspread.exceptions.APIError as e:
+            if gsheets.es_rate_limit(e):
+                raise            # que lo reintente el wrapper
+            return _leer_actividad(sh), _leer_importaciones(sh)
+        rangos = resp.get("valueRanges") or []
+        crudo_act = (rangos[0].get("values") if len(rangos) > 0 else None) or []
+        crudo_imp = (rangos[1].get("values") if len(rangos) > 1 else None) or []
+
+        df_act = _tabla_desde_valores(crudo_act, ACTIVIDAD_COLS, TAB_ACTIVIDAD)
+        df_imp = _tabla_desde_valores(crudo_imp, IMPORTACIONES_COLS,
+                                      TAB_IMPORTACIONES, _IMPORTACIONES_COLS_V1)
+        # None = tab vacía o sin encabezado → hay que inicializarla, y eso
+        # necesita la worksheet.
+        if df_act is None:
+            df_act = _leer_actividad(sh)
+        else:
+            df_act = _normalizar_actividad(df_act)
+        if df_imp is None:
+            df_imp = _leer_importaciones(sh)
+        else:
+            df_imp = _normalizar_importaciones(df_imp)
+        return df_act, df_imp
+
     return gsheets.reintentar_lectura(_leer)
 
 
 def _leer_importaciones(sh) -> pd.DataFrame:
+    """Camino lento: metadata + valores. Crea la tab si no existe."""
     ws = gsheets._ensure_worksheet(sh, TAB_IMPORTACIONES, cols=len(IMPORTACIONES_COLS))
-    filas = ws.get_all_values()
-    if not filas:
-        ws.update("A1", [IMPORTACIONES_COLS], value_input_option="RAW")
-        return pd.DataFrame(columns=IMPORTACIONES_COLS)
-    header = filas[0]
-    if header[: len(IMPORTACIONES_COLS)] != IMPORTACIONES_COLS:
-        if all(not c for c in header):
-            ws.update("A1", [IMPORTACIONES_COLS], value_input_option="RAW")
-            return pd.DataFrame(columns=IMPORTACIONES_COLS)
-        # Las listas subidas antes de agosto 2026 tienen el schema de 6
-        # columnas: se leen igual y las dos nuevas quedan vacías.
-        if header[: len(_IMPORTACIONES_COLS_V1)] != _IMPORTACIONES_COLS_V1:
-            raise GsheetsError(f"Encabezados inesperados en '{TAB_IMPORTACIONES}'.")
-    if len(filas) < 2:
-        return pd.DataFrame(columns=IMPORTACIONES_COLS)
-    # Normalizar el ancho: las filas viejas traen 6 valores y las nuevas 8.
-    ancho = len(IMPORTACIONES_COLS)
-    datos = [(f + [""] * ancho)[:ancho] for f in filas[1:]]
-    df = pd.DataFrame(datos, columns=IMPORTACIONES_COLS)
-    df["documento"] = df["documento"].astype(str).str.strip()
-    return df
+    df = _tabla_desde_valores(ws.get_all_values(), IMPORTACIONES_COLS,
+                              TAB_IMPORTACIONES, _IMPORTACIONES_COLS_V1)
+    if df is None:
+        ws.update("A1", [IMPORTACIONES_COLS], value_input_option=_ESCRITURA)
+        df = pd.DataFrame(columns=IMPORTACIONES_COLS)
+    return _normalizar_importaciones(df)
 
 
 def reparar_documentos(

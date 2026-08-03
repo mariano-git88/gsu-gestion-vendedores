@@ -125,10 +125,10 @@ def _ventas_deposito_id(_s) -> int | None:
 
 @st.cache_data(ttl=300, show_spinner="Cargando CRM…")
 def _cargar_crm(_gs) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Actividad + listas importadas en una sola apertura del Sheet.
+    """Actividad + listas importadas en 2 llamadas a la API (antes 5).
 
     Van juntas por cuota: Sheets da 60 lecturas por minuto al Service
-    Account que comparten TODAS las apps GSU, y cada apertura gasta una.
+    Account que comparten TODAS las apps GSU. Ver `televentas_crm.leer_crm`.
     """
     return televentas_crm.leer_crm(dict(_gs))
 
@@ -166,6 +166,22 @@ def _normalizar_celular_uy(telefono: str) -> str | None:
 def _link_whatsapp(telefono: str, mensaje: str) -> str | None:
     cel = _normalizar_celular_uy(telefono)
     return f"https://wa.me/{cel}?text={urllib.parse.quote(mensaje)}" if cel else None
+
+
+def _error_sheets(e: Exception, accion: str) -> str:
+    """Texto para un fallo escribiendo al Sheet.
+
+    El 429 de cuota merece mensaje propio: Google rechaza el pedido ANTES
+    de procesarlo, así que no quedó nada a medias y volver a apretar el
+    botón no duplica. Dejarlo caer en el mensaje genérico manda a revisar
+    credenciales por algo que se cura solo en un minuto.
+    """
+    if isinstance(e, gsheets.RateLimitError) or gsheets.es_rate_limit(e):
+        return (f"⏳ **No se {accion}: Google Sheets frenó por cuota.** El "
+                "cupo (60 lecturas por minuto) lo comparten todas las apps "
+                "GSU. **No se guardó nada a medias.** Esperá un minuto y "
+                "volvé a darle al botón: no va a duplicar.")
+    return f"No se {accion}: {e}"
 
 
 def _fmt_money(v) -> str:
@@ -449,7 +465,7 @@ def _registrar_gestion(lead):
             st.success("Gestión registrada ✓")
             st.rerun()
         except Exception as e:  # noqa: BLE001
-            st.error(f"No se pudo registrar: {e}")
+            st.error(_error_sheets(e, "pudo registrar la gestión"))
 
 
 def _cargar_pedido(lead):
@@ -554,7 +570,7 @@ def _cargar_pedido(lead):
                         _cargar_crm.clear()
                     st.session_state[key] = []
             except Exception as e:  # noqa: BLE001
-                st.error(f"No se pudo cargar el pedido: {e}")
+                st.error(_error_sheets(e, "pudo cargar el pedido"))
 
 
 # Navegación por secciones. Se usa `st.segmented_control` (no `st.tabs`) a
@@ -751,7 +767,7 @@ if seccion == _SECCIONES[1]:
                             st.success(f"Lista «{nombre_imp}» guardada con {n} clientes. "
                                        "Ya podés elegirla en la pestaña Leads.")
                         except Exception as e:  # noqa: BLE001
-                            st.error(f"No se pudo guardar: {e}")
+                            st.error(_error_sheets(e, "pudo guardar la lista"))
             except Exception as e:  # noqa: BLE001
                 st.error(f"No se pudo leer el archivo: {e}")
 
@@ -825,7 +841,7 @@ if seccion == _SECCIONES[1]:
                         except Exception as e:  # noqa: BLE001
                             _st_rep.update(label="Falló la reparación", state="error",
                                            expanded=False)
-                            _res_rep = ("err", f"No se pudo reparar: {e}")
+                            _res_rep = ("err", _error_sheets(e, "pudo reparar"))
                     if _res_rep[0] == "ok":
                         st.success(_res_rep[1])
                     else:
