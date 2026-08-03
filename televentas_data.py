@@ -56,6 +56,27 @@ def clave_documento(valor) -> str:
     return s.lstrip("0") or s
 
 
+# Valores que, en una columna de marca de una planilla, significan "NO".
+# Todo lo demás que tenga texto cuenta como marcado: los vendedores tildan
+# con lo que se les ocurre ("x", "1", "SI", o el propio nombre de la
+# columna, como en «Base para llamados Montevideo.xlsx» donde la celda dice
+# literalmente "Problema de pago").
+_MARCAS_NEGATIVAS = {"", "0", "no", "n", "false", "nan", "none", "-", "--"}
+
+
+def es_marca_positiva(valor) -> bool:
+    """True si una celda de marca (tipo «Problema de pago») está tildada."""
+    return str(valor or "").strip().lower() not in _MARCAS_NEGATIVAS
+
+
+def _texto_celda(valor) -> str:
+    """Texto limpio de una celda: '' para vacío, NaN o el string 'nan'."""
+    if valor is None:
+        return ""
+    s = str(valor).strip()
+    return "" if s.lower() == "nan" else s
+
+
 # =====================================================================
 # 1. Maestro de clientes enriquecido (red)
 # =====================================================================
@@ -397,10 +418,16 @@ def matchear_seleccion(
     código/nro cliente) y matchea contra los leads por documento, por
     código exacto, o por el número del código (ej "4001" ↔ "04001-C").
 
+    Si la planilla trae columnas de comentario y/o de marca de problema de
+    pago (como «Base para llamados Montevideo.xlsx», que las tiene al
+    final), se arrastran al resultado en `comentario` y `problema_pago`
+    para que la operadora las vea en el lead y queden guardadas con la
+    lista.
+
     Devuelve (df_matched, no_encontrados):
       - df_matched: subset de `leads` (con las columnas del lead) para los
         clientes hallados, con columnas extra codigo/razon_social listas
-        para persistir la importación.
+        para persistir la importación, más comentario/problema_pago.
       - no_encontrados: lista de identificadores del archivo sin match.
     """
     import re as _re
@@ -420,6 +447,10 @@ def matchear_seleccion(
     col_id = col_doc or col_cod
     if col_id is None:
         col_id = df_subido.columns[0]  # fallback: primera columna
+    # Columnas opcionales del vendedor de calle. "problema" va antes que
+    # "pago" para no engancharse con una columna de forma de pago.
+    col_com = _pick("comentario", "observacion", "observación", "nota")
+    col_pago = _pick("problema de pago", "problema", "moroso", "deudor")
 
     # Índices de match sobre los leads. El de documento va por clave
     # normalizada: Excel también convierte los RUT a número y les come el
@@ -436,20 +467,34 @@ def matchear_seleccion(
             by_num[digs.lstrip("0") or "0"] = str(d).strip()
 
     docs, faltan = [], []
-    for val in df_subido[col_id].astype(str):
+    # documento → lo que la planilla dice de ese cliente. Si el mismo
+    # cliente aparece en varias filas, se queda el primer comentario con
+    # texto y alcanza UNA marca para considerarlo problema de pago.
+    extra: dict[str, dict] = {}
+    for pos, val in enumerate(df_subido[col_id].astype(str)):
         v = val.strip()
         if not v or v.lower() == "nan":
             continue
         vu = v.upper()
         vnum = _re.sub(r"\D", "", v).lstrip("0") or "0"
         doc = by_doc.get(clave_documento(v)) or by_cod.get(vu) or by_num.get(vnum)
-        if doc:
-            docs.append(doc)
-        else:
+        if not doc:
             faltan.append(v)
+            continue
+        docs.append(doc)
+        info = extra.setdefault(doc, {"comentario": "", "problema_pago": False})
+        fila = df_subido.iloc[pos]
+        if col_com is not None and not info["comentario"]:
+            info["comentario"] = _texto_celda(fila.get(col_com))
+        if col_pago is not None and es_marca_positiva(_texto_celda(fila.get(col_pago))):
+            info["problema_pago"] = True
 
     docs_set = set(docs)
     matched = leads[leads["documento"].astype(str).isin(docs_set)].copy()
+    matched["comentario"] = [
+        extra.get(str(d), {}).get("comentario", "") for d in matched["documento"]]
+    matched["problema_pago"] = [
+        extra.get(str(d), {}).get("problema_pago", False) for d in matched["documento"]]
     return matched, faltan
 
 

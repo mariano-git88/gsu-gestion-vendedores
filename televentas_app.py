@@ -266,6 +266,22 @@ for c in ("estado", "ultimo_resultado", "proximo_seguimiento"):
         leads[c] = ""
 leads["estado"] = leads["estado"].fillna("Sin gestionar")
 
+# Lo que anotó el vendedor de calle en las listas importadas (comentario y
+# marca de problema de pago). Se cruza contra TODAS las listas, no solo la
+# que se está trabajando: es info del cliente, no de la lista.
+notas_crm = televentas_crm.notas_por_lead(df_imp)
+if not notas_crm.empty:
+    leads["_clave_doc"] = leads["documento"].map(televentas_data.clave_documento)
+    leads = (leads.merge(notas_crm, how="left",
+                         left_on="_clave_doc", right_index=True)
+             .drop(columns=["_clave_doc"]))
+for c in televentas_crm.NOTAS_COLS:
+    if c not in leads.columns:
+        leads[c] = "" if c != "problema_pago" else False
+leads["problema_pago"] = leads["problema_pago"].fillna(False).astype(bool)
+for c in ("comentario", "nota_lista", "nota_fecha"):
+    leads[c] = leads[c].fillna("").astype(str)
+
 
 st.title("📞 Televentas GSU")
 k = st.columns(5)
@@ -293,6 +309,20 @@ def _ficha_360(lead):
     dias = lead.get("dias_sin_compra")
     c.metric("Días sin comprar", f"{int(dias)}" if pd.notna(dias) else "—")
     c.metric("Ticket promedio", _fmt_money(lead.get("ticket_prom")))
+
+    # Lo que anotó el vendedor de calle. Va PRIMERO, antes que cualquier
+    # otra alerta: es lo que puede hacer que no convenga tomarle el pedido.
+    if lead.get("problema_pago"):
+        origen = str(lead.get("nota_lista") or "").strip()
+        detalle = f" (marcado en «{origen}»)" if origen else ""
+        st.error(
+            f"⚠️ **PROBLEMA DE PAGO**{detalle} — el vendedor de calle lo marcó "
+            "como cliente con problemas para pagar. Consultá antes de cerrar "
+            "una venta a crédito.")
+    if str(lead.get("comentario") or "").strip():
+        fecha_nota = str(lead.get("nota_fecha") or "").strip()
+        pie = f"  \n_Anotado el {fecha_nota}._" if fecha_nota else ""
+        st.info(f"🗒️ **Comentario del vendedor:** {lead['comentario']}{pie}")
 
     # Guardrail: no pisar al vendedor de calle si compró hace muy poco.
     if lead.get("atendido_reciente"):
@@ -609,20 +639,35 @@ if seccion == _SECCIONES[0]:
                 f"{len(filt)}: " + ", ".join(_motivos) + "."
             )
 
-    cols_show = [c for c in ["codigo", "nombre_fantasia", "razon_social", "ciudad",
-                             "departamento", "telefono", "segmento", "dias_sin_compra",
-                             "ticket_prom", "deuda_total", "estado", "proximo_seguimiento"]
-                 if c in filt.columns]
+    # Tabla de display: la marca de problema de pago va PRIMERA para que se
+    # vea antes de llamar, y el comentario del vendedor al final.
+    tabla = filt.copy()
+    tabla["alerta"] = tabla["problema_pago"].map(lambda x: "⚠️ PAGO" if x else "")
+    n_problema = int(tabla["problema_pago"].sum())
+    if n_problema:
+        st.caption(
+            f"⚠️ **{n_problema}** de estos {len(tabla)} tienen **problema de "
+            "pago** marcado por el vendedor de calle — mirá la ficha antes de "
+            "tomarle el pedido.")
+
+    cols_show = [c for c in ["alerta", "codigo", "nombre_fantasia", "razon_social",
+                             "ciudad", "departamento", "telefono", "segmento",
+                             "dias_sin_compra", "ticket_prom", "deuda_total",
+                             "estado", "proximo_seguimiento", "comentario"]
+                 if c in tabla.columns]
     if filt.empty:
         st.info("No hay leads con estos filtros.")
     else:
         ev = st.dataframe(
-            filt[cols_show], use_container_width=True, hide_index=True,
+            tabla[cols_show], use_container_width=True, hide_index=True,
             on_select="rerun", selection_mode="single-row", key="tabla_leads",
             column_config={
+                "alerta": st.column_config.TextColumn("⚠️", width="small"),
                 "ticket_prom": st.column_config.NumberColumn("Ticket prom", format="%.2f UYU"),
                 "deuda_total": st.column_config.NumberColumn("Deuda", format="%.2f UYU"),
                 "dias_sin_compra": st.column_config.NumberColumn("Días s/compra", format="%.0f"),
+                "comentario": st.column_config.TextColumn(
+                    "Comentario del vendedor", width="medium"),
             })
         sel = ev.selection.rows if ev and ev.selection else []
         if sel:
@@ -640,7 +685,11 @@ if seccion == _SECCIONES[1]:
     st.caption(
         "Subí un Excel/CSV con los clientes seleccionados (ej. por Ernesto). "
         "La app los cruza con la base por **código** o **documento/RUT**. "
-        "Después podés trabajar solo sobre esa lista desde la pestaña Leads.")
+        "Después podés trabajar solo sobre esa lista desde la pestaña Leads.  \n"
+        "Si la planilla trae una columna de **Comentario** y otra de "
+        "**Problema de pago**, se guardan con la lista y aparecen en la ficha "
+        "del cliente. Volver a subir una lista con el mismo nombre es seguro: "
+        "no duplica clientes, actualiza lo que sabemos de cada uno.")
     if not _gs:
         st.info("Configurá `[gsheets_televentas]` para guardar listas.")
     else:
@@ -654,16 +703,39 @@ if seccion == _SECCIONES[1]:
                     st.warning(f"{len(faltan)} sin match (revisá código/RUT): {faltan[:15]}"
                                + (" …" if len(faltan) > 15 else ""))
                 if not matched.empty:
-                    st.dataframe(matched[["codigo", "nombre_fantasia", "razon_social",
-                                          "ciudad", "telefono"]],
-                                 use_container_width=True, hide_index=True)
+                    _n_pago = int(matched["problema_pago"].sum())
+                    _n_com = int((matched["comentario"].str.len() > 0).sum())
+                    if _n_pago or _n_com:
+                        st.info(
+                            f"La planilla trae **{_n_com}** comentario(s) y "
+                            f"**{_n_pago}** cliente(s) marcados con problema "
+                            "de pago. Se guardan con la lista.")
+                    else:
+                        st.caption(
+                            "No se detectaron columnas de comentario ni de "
+                            "problema de pago en esta planilla.")
+                    _prev = matched.copy()
+                    _prev["problema_pago"] = _prev["problema_pago"].map(
+                        lambda x: "⚠️ PAGO" if x else "")
+                    st.dataframe(_prev[["codigo", "nombre_fantasia", "razon_social",
+                                        "ciudad", "telefono", "problema_pago",
+                                        "comentario"]],
+                                 use_container_width=True, hide_index=True,
+                                 column_config={
+                                     "problema_pago": st.column_config.TextColumn(
+                                         "⚠️", width="small"),
+                                     "comentario": st.column_config.TextColumn(
+                                         "Comentario del vendedor", width="medium"),
+                                 })
                     nombre_imp = st.text_input(
                         "Nombre de la lista",
                         placeholder="SELECCIONADOS POR ERNESTO 04 07 26")
                     if st.button("💾 Guardar lista", type="primary",
                                  disabled=not nombre_imp.strip()):
                         filas = [{"documento": r["documento"], "codigo": r["codigo"],
-                                  "razon_social": r["razon_social"]}
+                                  "razon_social": r["razon_social"],
+                                  "comentario": r["comentario"],
+                                  "problema_pago": r["problema_pago"]}
                                  for _, r in matched.iterrows()]
                         try:
                             n = televentas_crm.guardar_importacion(
@@ -683,11 +755,27 @@ if seccion == _SECCIONES[1]:
     if df_imp.empty:
         st.caption("Todavía no hay listas importadas.")
     else:
-        resumen_imp = (df_imp.groupby("nombre")
-                       .agg(clientes=("documento", "nunique"),
-                            fecha=("fecha_carga", "max"))
+        _imp = df_imp.copy()
+        _imp["_clave"] = _imp["documento"].map(televentas_data.clave_documento)
+        _imp["_pago"] = _imp["problema_pago"].map(televentas_data.es_marca_positiva)
+        _imp["_com"] = _imp["comentario"].astype(str).str.strip().str.len() > 0
+        # Primero una fila por (lista, cliente): la tab es append-only, así
+        # que re-importar duplica filas y contarlas duplicaría los totales.
+        _por_cli = (_imp.groupby(["nombre", "_clave"])
+                    .agg(_pago=("_pago", "max"), _com=("_com", "max"),
+                         fecha=("fecha_carga", "max"))
+                    .reset_index())
+        resumen_imp = (_por_cli.groupby("nombre")
+                       .agg(clientes=("_clave", "nunique"),
+                            problema_pago=("_pago", "sum"),
+                            comentarios=("_com", "sum"),
+                            fecha=("fecha", "max"))
                        .reset_index().sort_values("fecha", ascending=False))
-        st.dataframe(resumen_imp, use_container_width=True, hide_index=True)
+        st.dataframe(resumen_imp, use_container_width=True, hide_index=True,
+                     column_config={
+                         "problema_pago": st.column_config.NumberColumn("⚠️ Pago"),
+                         "comentarios": st.column_config.NumberColumn("🗒️ Coment."),
+                     })
 
     if _gs:
         st.divider()

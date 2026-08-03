@@ -49,7 +49,14 @@ IMPORTACIONES_COLS = [
     "razon_social",   # informativo
     "fecha_carga",    # "YYYY-MM-DD HH:MM"
     "agente",         # quién la subió
+    "comentario",     # lo que anotó el vendedor de calle sobre ese cliente
+    "problema_pago",  # "1" si la planilla lo marcó como problema de pago
 ]
+
+# Schema original (sin `comentario` / `problema_pago`). Las listas subidas
+# antes de agosto 2026 están escritas con estas 6 columnas; se leen igual y
+# el encabezado se migra solo en la próxima escritura.
+_IMPORTACIONES_COLS_V1 = IMPORTACIONES_COLS[:6]
 
 ACTIVIDAD_COLS = [
     "timestamp",            # "YYYY-MM-DD HH:MM" — cuándo se registró
@@ -154,7 +161,14 @@ def guardar_importacion(
     agente: str, timestamp: str,
 ) -> int:
     """Guarda una lista importada (append). `filas` = list de
-    {documento, codigo, razon_social}. Devuelve cuántas filas escribió."""
+    {documento, codigo, razon_social, comentario, problema_pago}.
+    Devuelve cuántas filas escribió.
+
+    Append-only a propósito: volver a subir una lista con el mismo nombre no
+    pisa nada, y los lectores se quedan con el dato más reciente de cada
+    cliente. Así re-importar la planilla (por ejemplo para sumarle los
+    comentarios) es seguro y queda el rastro de qué se subió cuándo.
+    """
     nombre = (nombre or "").strip()
     if not nombre:
         raise ValueError("La importación necesita un nombre.")
@@ -165,12 +179,15 @@ def guardar_importacion(
     sh = gsheets._open_sheet(gsheets_section)
     ws = gsheets._ensure_worksheet(sh, TAB_IMPORTACIONES, cols=len(IMPORTACIONES_COLS))
     header = ws.row_values(1)
+    # Migra solo el encabezado viejo de 6 columnas al de 8.
     if not header or header[: len(IMPORTACIONES_COLS)] != IMPORTACIONES_COLS:
         ws.update("A1", [IMPORTACIONES_COLS], value_input_option="RAW")
 
     rows = [[nombre, str(f.get("documento") or "").strip(),
              str(f.get("codigo") or ""), str(f.get("razon_social") or ""),
-             timestamp, agente or ""] for f in filas_validas]
+             timestamp, agente or "",
+             str(f.get("comentario") or "").strip(),
+             "1" if f.get("problema_pago") else ""] for f in filas_validas]
     ws.append_rows(rows, value_input_option=_ESCRITURA)
     return len(rows)
 
@@ -183,14 +200,21 @@ def leer_importaciones(gsheets_section: dict) -> pd.DataFrame:
     if not filas:
         ws.update("A1", [IMPORTACIONES_COLS], value_input_option="RAW")
         return pd.DataFrame(columns=IMPORTACIONES_COLS)
-    if filas[0][: len(IMPORTACIONES_COLS)] != IMPORTACIONES_COLS:
-        if all(not c for c in filas[0]):
+    header = filas[0]
+    if header[: len(IMPORTACIONES_COLS)] != IMPORTACIONES_COLS:
+        if all(not c for c in header):
             ws.update("A1", [IMPORTACIONES_COLS], value_input_option="RAW")
             return pd.DataFrame(columns=IMPORTACIONES_COLS)
-        raise GsheetsError(f"Encabezados inesperados en '{TAB_IMPORTACIONES}'.")
+        # Las listas subidas antes de agosto 2026 tienen el schema de 6
+        # columnas: se leen igual y las dos nuevas quedan vacías.
+        if header[: len(_IMPORTACIONES_COLS_V1)] != _IMPORTACIONES_COLS_V1:
+            raise GsheetsError(f"Encabezados inesperados en '{TAB_IMPORTACIONES}'.")
     if len(filas) < 2:
         return pd.DataFrame(columns=IMPORTACIONES_COLS)
-    df = pd.DataFrame(filas[1:], columns=IMPORTACIONES_COLS[: len(filas[0])])
+    # Normalizar el ancho: las filas viejas traen 6 valores y las nuevas 8.
+    ancho = len(IMPORTACIONES_COLS)
+    datos = [(f + [""] * ancho)[:ancho] for f in filas[1:]]
+    df = pd.DataFrame(datos, columns=IMPORTACIONES_COLS)
     df["documento"] = df["documento"].astype(str).str.strip()
     return df
 
@@ -277,6 +301,63 @@ def documentos_de_importacion(df_imp: pd.DataFrame, nombre: str) -> set[str]:
         return set()
     docs = df_imp.loc[df_imp["nombre"] == nombre, "documento"].astype(str)
     return {televentas_data.clave_documento(d) for d in docs if str(d).strip()}
+
+
+NOTAS_COLS = ["comentario", "problema_pago", "nota_lista", "nota_fecha"]
+
+
+def notas_por_lead(df_imp: pd.DataFrame) -> pd.DataFrame:
+    """Consolida, por cliente, lo que anotó el vendedor de calle.
+
+    Junta el `comentario` y el flag `problema_pago` de TODAS las listas
+    importadas —no solo la que se está trabajando—, porque son propiedades
+    del cliente, no de la lista: si Ernesto marcó a alguien como problema de
+    pago, la operadora tiene que verlo aunque esté llamando desde otra lista.
+
+    Pura. Devuelve un DataFrame indexado por `clave_documento` con columnas
+    NOTAS_COLS. `nota_lista`/`nota_fecha` dicen de dónde salió el dato, para
+    que se pueda juzgar si está viejo.
+
+    Criterio: gana el último valor NO VACÍO de cada campo. Es decir, una
+    lista posterior que no traiga la columna no borra lo que ya se sabía —
+    para una alerta, quedarse con un aviso viejo es más barato que perderlo.
+    La contra: no se puede des-marcar a alguien re-importándolo sin la marca;
+    hay que editar la Sheet.
+    """
+    if df_imp is None or df_imp.empty:
+        return pd.DataFrame(columns=NOTAS_COLS)
+
+    df = df_imp.copy()
+    for c in ("comentario", "problema_pago", "nombre", "fecha_carga"):
+        if c not in df.columns:
+            df[c] = ""
+    df["_clave"] = df["documento"].map(televentas_data.clave_documento)
+    # Orden cronológico: "YYYY-MM-DD HH:MM" ordena bien como texto.
+    df = df.sort_values("fecha_carga", kind="stable")
+
+    acum: dict[str, dict] = {}
+    for _, r in df.iterrows():
+        clave = r["_clave"]
+        if not clave:
+            continue
+        info = acum.setdefault(
+            clave, {"comentario": "", "problema_pago": False,
+                    "nota_lista": "", "nota_fecha": ""})
+        comentario = str(r.get("comentario") or "").strip()
+        problema = televentas_data.es_marca_positiva(r.get("problema_pago"))
+        if comentario:
+            info["comentario"] = comentario
+        if problema:
+            info["problema_pago"] = True
+        if comentario or problema:
+            info["nota_lista"] = str(r.get("nombre") or "")
+            info["nota_fecha"] = str(r.get("fecha_carga") or "")
+
+    filas = [{"clave_documento": k, **v} for k, v in acum.items()
+             if v["comentario"] or v["problema_pago"]]
+    if not filas:
+        return pd.DataFrame(columns=NOTAS_COLS)
+    return pd.DataFrame(filas).set_index("clave_documento")[NOTAS_COLS]
 
 
 def estado_actual_por_lead(df_actividad: pd.DataFrame) -> pd.DataFrame:

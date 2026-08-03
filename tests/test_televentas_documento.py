@@ -142,6 +142,110 @@ def test_lista_inexistente_devuelve_vacio():
 
 
 # =====================================================================
+# Comentario y problema de pago del vendedor de calle
+# =====================================================================
+
+def test_marca_positiva_acepta_lo_que_tipea_el_vendedor():
+    # La planilla real trae el propio nombre de la columna como valor.
+    for v in ("Problema de pago", "x", "X", "1", "SI", "sí", "true"):
+        assert televentas_data.es_marca_positiva(v), v
+
+
+def test_marca_vacia_no_es_problema_de_pago():
+    for v in ("", "   ", None, "0", "no", "NO", "nan", "-"):
+        assert not televentas_data.es_marca_positiva(v), repr(v)
+
+
+def test_planilla_arrastra_comentario_y_marca_de_pago():
+    leads = _leads(["012345680017", "218514740014", "090137500012"])
+    subido = pd.DataFrame({
+        "RUT": ["012345680017", "218514740014", "090137500012"],
+        "Comentario": ["1 año para pagar boleta", None, "cerro"],
+        "Problema de pago": ["Problema de pago", None, None],
+    })
+
+    matched, faltan = televentas_data.matchear_seleccion(subido, leads)
+
+    assert faltan == []
+    por_doc = matched.set_index("documento")
+    assert por_doc.loc["012345680017", "comentario"] == "1 año para pagar boleta"
+    assert bool(por_doc.loc["012345680017", "problema_pago"]) is True
+    # Sin comentario ni marca: vacío y False, no NaN.
+    assert por_doc.loc["218514740014", "comentario"] == ""
+    assert bool(por_doc.loc["218514740014", "problema_pago"]) is False
+    # Comentario sin marca de pago: se guarda el comentario nomás.
+    assert por_doc.loc["090137500012", "comentario"] == "cerro"
+    assert bool(por_doc.loc["090137500012", "problema_pago"]) is False
+
+
+def test_planilla_sin_esas_columnas_no_rompe():
+    leads = _leads(["012345680017"])
+    subido = pd.DataFrame({"RUT": ["012345680017"]})
+
+    matched, _ = televentas_data.matchear_seleccion(subido, leads)
+
+    assert matched.iloc[0]["comentario"] == ""
+    assert bool(matched.iloc[0]["problema_pago"]) is False
+
+
+def test_notas_por_lead_consolida_todas_las_listas():
+    """El comentario y la marca son del CLIENTE, no de la lista: tienen que
+    verse aunque la operadora esté trabajando otra lista."""
+    df_imp = pd.DataFrame([
+        {"nombre": "Lista A", "documento": "012345680017", "codigo": "", "razon_social": "",
+         "fecha_carga": "2026-07-01 10:00", "agente": "", "comentario": "paga a 90 dias",
+         "problema_pago": "1"},
+        {"nombre": "Lista B", "documento": "218514740014", "codigo": "", "razon_social": "",
+         "fecha_carga": "2026-08-01 10:00", "agente": "", "comentario": "", "problema_pago": ""},
+    ])
+    notas = televentas_crm.notas_por_lead(df_imp)
+
+    # Solo entra quien tiene algo que decir.
+    assert list(notas.index) == ["12345680017"]
+    assert bool(notas.loc["12345680017", "problema_pago"]) is True
+    assert notas.loc["12345680017", "nota_lista"] == "Lista A"
+
+
+def test_notas_cruzan_aunque_el_rut_este_mutilado():
+    df_imp = pd.DataFrame([
+        {"nombre": "L", "documento": "12345680017", "codigo": "", "razon_social": "",
+         "fecha_carga": "2026-07-01 10:00", "agente": "", "comentario": "ojo",
+         "problema_pago": "1"},
+    ])
+    notas = televentas_crm.notas_por_lead(df_imp)
+
+    leads = _leads(["012345680017"])
+    leads["_clave"] = leads["documento"].map(televentas_data.clave_documento)
+    out = leads.merge(notas, how="left", left_on="_clave", right_index=True)
+
+    assert out.iloc[0]["comentario"] == "ojo"
+    assert bool(out.iloc[0]["problema_pago"]) is True
+
+
+def test_reimportar_actualiza_el_comentario_y_no_borra_la_marca():
+    """Append-only: la re-importación no pisa filas. Gana el último valor
+    NO vacío de cada campo, así una lista sin la columna no borra la alerta."""
+    df_imp = pd.DataFrame([
+        {"nombre": "L", "documento": "012345680017", "codigo": "", "razon_social": "",
+         "fecha_carga": "2026-07-01 10:00", "agente": "", "comentario": "viejo",
+         "problema_pago": "1"},
+        {"nombre": "L", "documento": "012345680017", "codigo": "", "razon_social": "",
+         "fecha_carga": "2026-08-03 09:00", "agente": "", "comentario": "nuevo",
+         "problema_pago": ""},
+    ])
+    notas = televentas_crm.notas_por_lead(df_imp)
+
+    assert notas.loc["12345680017", "comentario"] == "nuevo"
+    assert bool(notas.loc["12345680017", "problema_pago"]) is True
+
+
+def test_notas_vacias_devuelven_schema_correcto():
+    vacio = televentas_crm.notas_por_lead(pd.DataFrame())
+    assert list(vacio.columns) == televentas_crm.NOTAS_COLS
+    assert vacio.empty
+
+
+# =====================================================================
 # estado_actual_por_lead — que la gestión vuelva al lead correcto
 # =====================================================================
 
