@@ -14,16 +14,91 @@ con 0 quedaba "Sin gestionar" para siempre aunque se lo hubiera llamado.
 Estos tests son puros (no tocan red ni Sheets).
 """
 
+import json
 import sys
 from pathlib import Path
 
 import pandas as pd
 import pytest
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import gsheets  # noqa: E402
+import gspread  # noqa: E402
 import televentas_crm  # noqa: E402
 import televentas_data  # noqa: E402
+
+
+# =====================================================================
+# Rate limit de Google Sheets (429)
+# =====================================================================
+
+def _api_error(status_code, texto="Quota exceeded for quota metric 'Read requests'"):
+    """APIError real de gspread, armado con la respuesta que manda Google.
+
+    Se construye con un Response de verdad y no con un mock: la forma de
+    esta excepción cambió entre versiones de gspread, y un fixture inventado
+    haría pasar el test sin probar lo que pasa en producción.
+    """
+    resp = requests.Response()
+    resp.status_code = status_code
+    resp._content = json.dumps({
+        "error": {"code": status_code, "message": texto, "status": "RESOURCE_EXHAUSTED"}
+    }).encode()
+    resp.headers["Content-Type"] = "application/json"
+    return gspread.exceptions.APIError(resp)
+
+
+def test_reconoce_el_429_de_cuota():
+    assert gsheets.es_rate_limit(_api_error(429))
+    assert not gsheets.es_rate_limit(_api_error(403, "The caller does not have permission"))
+    assert not gsheets.es_rate_limit(ValueError("cualquier cosa"))
+
+
+def test_lectura_reintenta_y_termina_saliendo_bien():
+    intentos = []
+    dormidas = []
+
+    def lectura():
+        intentos.append(1)
+        if len(intentos) < 3:
+            raise _api_error(429)
+        return "datos"
+
+    out = gsheets.reintentar_lectura(
+        lectura, esperas=(1, 2, 3), dormir=dormidas.append)
+
+    assert out == "datos"
+    assert len(intentos) == 3
+    assert dormidas == [1, 2]      # esperó entre intentos, no después del ok
+
+
+def test_agotados_los_reintentos_avisa_que_es_transitorio():
+    dormidas = []
+
+    def lectura():
+        raise _api_error(429)
+
+    with pytest.raises(gsheets.RateLimitError) as exc:
+        gsheets.reintentar_lectura(lectura, esperas=(1, 2), dormir=dormidas.append)
+
+    assert "transitorio" in str(exc.value).lower()
+    assert dormidas == [1, 2]
+
+
+def test_un_error_que_no_es_cuota_no_se_reintenta():
+    """Un 403 de permisos no mejora esperando: tiene que fallar al toque."""
+    intentos = []
+
+    def lectura():
+        intentos.append(1)
+        raise _api_error(403, "The caller does not have permission")
+
+    with pytest.raises(gspread.exceptions.APIError):
+        gsheets.reintentar_lectura(lectura, dormir=lambda _s: None)
+
+    assert len(intentos) == 1
 
 
 # =====================================================================

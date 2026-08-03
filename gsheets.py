@@ -29,6 +29,7 @@ Si ambas están, gana B (la del dict).
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -46,6 +47,13 @@ class GsheetsError(Exception):
 
 class CredencialesError(GsheetsError):
     """Faltan credenciales o están mal configuradas."""
+
+
+class RateLimitError(GsheetsError):
+    """Google Sheets frenó por cuota (429). Es transitorio: se resuelve
+    solo en menos de un minuto. Existe como clase aparte para que las apps
+    puedan decir «esperá y reintentá» en vez de «error de configuración»,
+    que es lo que parece cuando cae en el except genérico."""
 
 
 class PeriodoYaExisteError(GsheetsError):
@@ -215,6 +223,61 @@ def _ensure_worksheet(sh, title: str, rows: int = 1000, cols: int = 10):
         return sh.worksheet(title)
     except gspread.WorksheetNotFound:
         return sh.add_worksheet(title=title, rows=rows, cols=cols)
+
+
+# =====================================================================
+# Rate limit (429)
+# =====================================================================
+
+# Google Sheets permite 60 lecturas por minuto y por usuario, y el usuario
+# es el Service Account: TODAS las apps GSU comparten el mismo cupo. Basta
+# con tener dos abiertas, o rebotar una un par de veces, para agotarlo.
+_ESPERAS_429 = (4, 12, 25)   # segundos entre reintentos (≈41s en total)
+
+
+def es_rate_limit(exc: Exception) -> bool:
+    """True si la excepción es un 429 de la API de Sheets.
+
+    Mira los dos lugares donde gspread deja el código (`APIError.code`, del
+    cuerpo del error, y `response.status_code`) antes de caer al texto: la
+    forma de la excepción cambió entre versiones de gspread.
+    """
+    if getattr(exc, "code", None) == 429:
+        return True
+    if getattr(getattr(exc, "response", None), "status_code", None) == 429:
+        return True
+    try:
+        texto = str(exc)
+    except Exception:  # noqa: BLE001 — un __str__ roto no puede tumbar esto
+        return False
+    return "429" in texto and "quota" in texto.lower()
+
+
+def reintentar_lectura(fn, *, esperas=_ESPERAS_429, dormir=time.sleep):
+    """Corre `fn` reintentando con backoff si Sheets devuelve 429.
+
+    SOLO para LECTURAS. Un append no se puede reintentar a ciegas: el error
+    no dice si la escritura llegó, así que reintentar duplica filas. Las
+    lecturas son idempotentes y el 429 se cura solo en menos de un minuto.
+
+    `dormir` es inyectable para poder testear sin esperar de verdad.
+    """
+    ultimo: Exception | None = None
+    intentos = len(esperas) + 1
+    for i in range(intentos):
+        try:
+            return fn()
+        except gspread.exceptions.APIError as e:
+            if not es_rate_limit(e):
+                raise
+            ultimo = e
+            if i < len(esperas):
+                dormir(esperas[i])
+    raise RateLimitError(
+        "Google Sheets frenó por exceso de lecturas por minuto (429). Es "
+        "transitorio y lo comparten todas las apps GSU (mismo Service "
+        "Account). Esperá un minuto y volvé a intentar."
+    ) from ultimo
 
 
 # =====================================================================

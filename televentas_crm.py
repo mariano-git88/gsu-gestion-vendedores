@@ -133,8 +133,12 @@ def registrar_actividad(gsheets_section: dict, fila: dict, timestamp: str) -> No
 
 def leer_actividad(gsheets_section: dict) -> pd.DataFrame:
     """Lee todo el historial de actividad. DataFrame vacío con el schema
-    correcto si la tab no existe o está vacía."""
-    sh = gsheets._open_sheet(gsheets_section)
+    correcto si la tab no existe o está vacía. Reintenta ante 429."""
+    return gsheets.reintentar_lectura(
+        lambda: _leer_actividad(gsheets._open_sheet(gsheets_section)))
+
+
+def _leer_actividad(sh) -> pd.DataFrame:
     ws = gsheets._ensure_worksheet(sh, TAB_ACTIVIDAD, cols=len(ACTIVIDAD_COLS))
     filas = ws.get_all_values()
     if not filas:
@@ -193,8 +197,29 @@ def guardar_importacion(
 
 
 def leer_importaciones(gsheets_section: dict) -> pd.DataFrame:
-    """Lee todas las listas importadas. DataFrame vacío con schema si no hay."""
-    sh = gsheets._open_sheet(gsheets_section)
+    """Lee todas las listas importadas. DataFrame vacío con schema si no
+    hay. Reintenta ante 429."""
+    return gsheets.reintentar_lectura(
+        lambda: _leer_importaciones(gsheets._open_sheet(gsheets_section)))
+
+
+def leer_crm(gsheets_section: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Lee actividad + importaciones abriendo el Sheet UNA sola vez.
+
+    Existe por cuota: cada apertura del spreadsheet gasta una lectura, y
+    Sheets permite 60 por minuto para el Service Account que comparten
+    todas las apps GSU. Leer las dos tabs juntas baja de ~6 lecturas por
+    corrida a ~4, y hace que el reintento cubra a las dos de una.
+
+    Devuelve (df_actividad, df_importaciones).
+    """
+    def _leer():
+        sh = gsheets._open_sheet(gsheets_section)
+        return _leer_actividad(sh), _leer_importaciones(sh)
+    return gsheets.reintentar_lectura(_leer)
+
+
+def _leer_importaciones(sh) -> pd.DataFrame:
     ws = gsheets._ensure_worksheet(sh, TAB_IMPORTACIONES, cols=len(IMPORTACIONES_COLS))
     filas = ws.get_all_values()
     if not filas:

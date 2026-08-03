@@ -23,6 +23,7 @@ import streamlit as st
 
 import api_loader
 import facturador
+import gsheets
 import pedidos_orden
 import televentas_cliente
 import televentas_crm
@@ -123,13 +124,13 @@ def _ventas_deposito_id(_s) -> int | None:
 
 
 @st.cache_data(ttl=300, show_spinner="Cargando CRM…")
-def _cargar_actividad(_gs) -> pd.DataFrame:
-    return televentas_crm.leer_actividad(dict(_gs))
+def _cargar_crm(_gs) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Actividad + listas importadas en una sola apertura del Sheet.
 
-
-@st.cache_data(ttl=300, show_spinner="Cargando listas importadas…")
-def _cargar_importaciones(_gs) -> pd.DataFrame:
-    return televentas_crm.leer_importaciones(dict(_gs))
+    Van juntas por cuota: Sheets da 60 lecturas por minuto al Service
+    Account que comparten TODAS las apps GSU, y cada apertura gasta una.
+    """
+    return televentas_crm.leer_crm(dict(_gs))
 
 
 def _leer_archivo_subido(uploaded) -> pd.DataFrame:
@@ -190,7 +191,7 @@ with st.sidebar:
                                 "carga inicial más lenta.")
     if st.button("🔄 Resincronizar", use_container_width=True):
         _cargar_clientes.clear(); _cargar_headers.clear()
-        _cargar_productos.clear(); _cargar_actividad.clear(); _enriquecer_skus.clear()
+        _cargar_productos.clear(); _cargar_crm.clear(); _enriquecer_skus.clear()
         st.rerun()
 
 
@@ -237,20 +238,24 @@ if st.session_state.get("tv_enriquecido"):
     except Exception as e:  # noqa: BLE001
         st.warning(f"No se pudo enriquecer con productos: {e}")
 
-# Estado CRM
+# Estado CRM + listas importadas (una sola apertura del Sheet).
 df_act = pd.DataFrame(columns=televentas_crm.ACTIVIDAD_COLS)
-if _gs:
-    try:
-        df_act = _cargar_actividad(_gs)
-    except Exception as e:  # noqa: BLE001
-        st.warning(f"No se pudo leer el CRM: {e}")
-# Listas importadas (para trabajar sobre una selección puntual)
 df_imp = pd.DataFrame(columns=televentas_crm.IMPORTACIONES_COLS)
 if _gs:
     try:
-        df_imp = _cargar_importaciones(_gs)
+        df_act, df_imp = _cargar_crm(_gs)
     except Exception as e:  # noqa: BLE001
-        st.warning(f"No se pudieron leer las listas importadas: {e}")
+        # El 429 de cuota no es un error de configuración y se cura solo:
+        # decirlo así evita mandar a nadie a revisar credenciales al pedo.
+        if gsheets.es_rate_limit(e) or isinstance(e, gsheets.RateLimitError):
+            st.warning(
+                "⏳ **Google Sheets nos frenó por exceso de lecturas por "
+                "minuto.** Es transitorio (el cupo lo comparten todas las "
+                "apps GSU) y se libera en menos de un minuto. Las gestiones "
+                "y las listas no se perdieron: esperá un momento y tocá "
+                "«Resincronizar».")
+        else:
+            st.warning(f"No se pudo leer el CRM: {e}")
 
 estado_crm = televentas_crm.estado_actual_por_lead(df_act)
 if not estado_crm.empty:
@@ -440,7 +445,7 @@ def _registrar_gestion(lead):
                  "proximo_seguimiento": seg.isoformat() if seg else ""},
                 timestamp=datetime.now().strftime("%Y-%m-%d %H:%M"),
             )
-            _cargar_actividad.clear()
+            _cargar_crm.clear()
             st.success("Gestión registrada ✓")
             st.rerun()
         except Exception as e:  # noqa: BLE001
@@ -546,7 +551,7 @@ def _cargar_pedido(lead):
                              "resultado": "Pedido cargado", "nota": f"Pedido por {total:,.2f} UYU",
                              "monto_pedido": total, "nro_orden": nro or ""},
                             timestamp=datetime.now().strftime("%Y-%m-%d %H:%M"))
-                        _cargar_actividad.clear()
+                        _cargar_crm.clear()
                     st.session_state[key] = []
             except Exception as e:  # noqa: BLE001
                 st.error(f"No se pudo cargar el pedido: {e}")
@@ -742,7 +747,7 @@ if seccion == _SECCIONES[1]:
                                 dict(_gs), nombre_imp, filas,
                                 st.session_state.get("tv_agente", ""),
                                 datetime.now().strftime("%Y-%m-%d %H:%M"))
-                            _cargar_importaciones.clear()
+                            _cargar_crm.clear()
                             st.success(f"Lista «{nombre_imp}» guardada con {n} clientes. "
                                        "Ya podés elegirla en la pestaña Leads.")
                         except Exception as e:  # noqa: BLE001
@@ -810,8 +815,7 @@ if seccion == _SECCIONES[1]:
                             st.write("Reescribiendo la columna documento…")
                             hecho = televentas_crm.reparar_documentos(
                                 dict(_gs), leads["documento"])
-                            _cargar_importaciones.clear()
-                            _cargar_actividad.clear()
+                            _cargar_crm.clear()
                             st.session_state.tv_reparacion = None
                             _st_rep.update(label="Sheet reparada", state="complete",
                                            expanded=False)
