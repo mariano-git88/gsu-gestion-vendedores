@@ -1,4 +1,8 @@
 streamlit>=1.40
+# starlette 1.4.0 agregó el argumento obligatorio thread_minimum_size a
+# GZipResponder y streamlit 1.61.0 (la última) todavía no se lo pasa: el server
+# devuelve 500 en todas las requests. Cuando streamlit lo soporte, sacar el tope.
+starlette<1.4
 pandas>=2.0
 openpyxl>=3.1
 xlrd>=2.0
