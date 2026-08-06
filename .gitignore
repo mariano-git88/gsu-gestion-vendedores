@@ -38,6 +38,7 @@ desktop.ini
 # circunstancia (regla "Qué NO hacer" del CLAUDE.md).
 *.xlsx
 *.xls
+*.xlsm
 *.csv
 *.tsv
 *.parquet
