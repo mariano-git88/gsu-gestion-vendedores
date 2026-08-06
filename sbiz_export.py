@@ -36,19 +36,20 @@ sys.path.insert(0, str(REPO))
 
 
 # =====================================================================
-# PENDIENTES — datos que no existen en Contabilium
+# Datos que no existen en Contabilium — los pasó Mariano (06-ago-2026)
 # =====================================================================
-# Cuando Mariano los pase, se cambian acá y se vuelve a correr el script.
+# Celulares sin espacios ni guiones ni código de país, como pide el
+# comentario de la columna en la plantilla.
 TELEFONO_VENDEDOR: dict[int, str] = {
-    237: "",   # Mario
-    346: "",   # Arturo
-    366: "",   # Marcelo
-    666: "",   # Néstor
+    237: "095210365",   # Mario Fleitas
+    346: "095970830",   # Arturo Trias
+    366: "098514310",   # Marcelo Riso
+    666: "095067705",   # Néstor de los Santos
 }
-JEFE: str = ""                    # nombre del Jefe de Ventas
-PEDIDO_MINIMO: float | str = ""   # monto único para todos los clientes
+JEFE: str = "Ernesto Abreu"       # el mismo para los cuatro vendedores
+PEDIDO_MINIMO: float | str = ""   # en Uruguay no hay pedido mínimo
 SUCURSAL: int = 1                 # una sola sucursal en Uruguay
-NOMBRE_DUENIO: str = ""           # no existe en Contabilium
+NOMBRE_DUENIO: str = ""           # no se releva en ningún sistema
 
 # Poner en True para usar la zona Z-xx de Contabilium como Ruta en lugar
 # del IdUsuarioAdicional.
@@ -65,7 +66,10 @@ RUBROS = {
 }
 MARCAS_PROPIAS = {"SUPRABOND", "BULIT", "SOMERSET"}
 
-NOMBRE_VENDEDOR = {237: "Mario", 346: "Arturo", 366: "Marcelo", 666: "Néstor"}
+NOMBRE_VENDEDOR = {
+    237: "Mario Fleitas", 346: "Arturo Trias",
+    366: "Marcelo Riso", 666: "Néstor de los Santos",
+}
 
 # Numeración de listas para SBIZ. TIENE QUE COINCIDIR con la que SBIZ
 # configure del otro lado; hoy es una convención nuestra.
@@ -355,10 +359,10 @@ def escribir_clientes(filas):
     limpiar(ws, 2)
     for f in filas:
         ws.append(f)
-    # El código de cliente y el CP llevan ceros a la izquierda: si Excel
-    # los toma como número, se los come.
+    # El código de cliente, el CP y los dos teléfonos llevan ceros a la
+    # izquierda: si Excel los toma como número, se los come.
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-        for idx in (1, 12, 13):        # Código, CP, Teléfono
+        for idx in (1, 4, 12, 13):     # Código, tel vendedor, CP, tel cliente
             row[idx].number_format = "@"
             if row[idx].value is not None:
                 row[idx].value = str(row[idx].value)
