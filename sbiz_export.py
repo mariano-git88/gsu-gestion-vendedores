@@ -1,26 +1,31 @@
 """
-generar_sbiz.py — Completa las 3 plantillas de SBIZ con datos reales de
+sbiz_export.py — Completa las 3 plantillas de SBIZ con datos reales de
 Contabilium Uruguay.
 
-Decisiones tomadas con Mariano (05-ago-2026):
+Baja todo de la API en cada corrida, así que la salida es una foto del
+momento: conviene correrlo el mismo día que se sube a SBIZ, porque el
+padrón de clientes se mueve solo (Televentas carga en vivo).
+
+Decisiones tomadas con Mariano (05 y 06-ago-2026):
   * Catálogo: solo marcas propias (SUPRABOND + BULIT + SOMERSET).
   * Categoría / Sub-categoría: se heredan del catálogo argentino que trae
     la plantilla, cruzando por código normalizado. Los que no matchean
-    llevan una propuesta manual, marcada para revisión.
+    llevan una propuesta manual, aprobada por Mariano el 06-ago.
   * Listas de precios: base + INTERIOR 2024 (+5%) + GRANDES SUPERFICIES,
     precios SIN IVA.
-  * Clientes: los 1.123. Los que no tienen lista en Contabilium van a la
-    lista base.
+  * Clientes: todos. Los que no tienen lista en Contabilium van a la
+    lista base; los que no tienen vendedor quedan a cargo del jefe.
   * Ruta: el IdUsuarioAdicional de Contabilium.
 
-Lo que Contabilium NO tiene y queda pendiente de que lo complete Mariano
-está agrupado en el bloque PENDIENTES de abajo.
+Lo que Contabilium NO tiene se completa a mano en el bloque de arriba.
+El archivo `_REVISAR` que sale al lado de las 3 planillas lista lo que
+conviene mirar antes de subir: precios en cero, productos sin imagen y
+clientes que quedaron a cargo del jefe.
 """
 
 from __future__ import annotations
 
 import re
-import shutil
 import sys
 import tomllib
 from pathlib import Path
@@ -47,6 +52,13 @@ TELEFONO_VENDEDOR: dict[int, str] = {
     666: "095067705",   # Néstor de los Santos
 }
 JEFE: str = "Ernesto Abreu"       # el mismo para los cuatro vendedores
+
+# Los clientes sin vendedor en Contabilium quedan a cargo del jefe
+# (decisión de Mariano, 06-ago-2026). Ernesto no es usuario adicional de
+# Contabilium, así que no tiene IdUsuarioAdicional para la columna Ruta.
+TELEFONO_JEFE: str = ""           # PENDIENTE: celular de Ernesto
+RUTA_JEFE: str = ""               # PENDIENTE: qué ruta le corresponde
+
 PEDIDO_MINIMO: float | str = ""   # en Uruguay no hay pedido mínimo
 SUCURSAL: int = 1                 # una sola sucursal en Uruguay
 NOMBRE_DUENIO: str = ""           # no se releva en ningún sistema
@@ -233,7 +245,7 @@ def construir_catalogo(conceptos, ar, fam):
             prop = categoria_propuesta(sku)
             cat, subcat = prop if prop else ("", "")
             agrup = fam.get(k, "")
-            origen = "propuesta (revisar)" if prop else "SIN CATEGORÍA"
+            origen = "propuesta (aprobada 06-ago)" if prop else "SIN CATEGORÍA"
             revision.append((sku, nombre, marca, cat, subcat, origen))
 
         # Una fila por imagen heredada; si no hay match, una sola fila.
@@ -256,7 +268,7 @@ def construir_catalogo(conceptos, ar, fam):
 
 
 def construir_clientes(clientes):
-    filas, sin_vendedor = [], []
+    filas, del_jefe = [], []
     for c in clientes:
         vid = c.get("IdUsuarioAdicional")
         vendedor = NOMBRE_VENDEDOR.get(vid, "")
@@ -265,8 +277,12 @@ def construir_clientes(clientes):
             ruta = zona if re.fullmatch(r"Z-\d+", zona) else ""
         else:
             ruta = str(vid) if vid else ""
+        telefono_vend = TELEFONO_VENDEDOR.get(vid, "")
+
+        # Sin vendedor en Contabilium: queda a cargo del jefe.
         if not vendedor:
-            sin_vendedor.append((c.get("Codigo"), c.get("RazonSocial"), c.get("Ciudad"), vid))
+            vendedor, ruta, telefono_vend = JEFE, RUTA_JEFE, TELEFONO_JEFE
+            del_jefe.append((c.get("Codigo"), c.get("RazonSocial"), c.get("Ciudad"), vid))
 
         lista = ID_LISTA_CONTABILIUM.get(c.get("IdListaPrecio"), LISTA_BASE)
         negocio = (c.get("NombreFantasia") or "").strip() or (c.get("RazonSocial") or "").strip()
@@ -278,7 +294,7 @@ def construir_clientes(clientes):
             str(c.get("Codigo") or "").strip(),
             vendedor,
             ruta,
-            TELEFONO_VENDEDOR.get(vid, ""),
+            telefono_vend,
             JEFE,
             negocio,
             NOMBRE_DUENIO,
@@ -291,7 +307,7 @@ def construir_clientes(clientes):
             PEDIDO_MINIMO,
             (c.get("Email") or "").strip(),
         ])
-    return filas, sin_vendedor
+    return filas, del_jefe
 
 
 def construir_listas(conceptos, listas, skus_catalogo):
@@ -321,6 +337,22 @@ def construir_listas(conceptos, listas, skus_catalogo):
 # =====================================================================
 # Escritura de los archivos
 # =====================================================================
+def guardar(wb, dst: Path) -> Path:
+    """Guarda, y si el archivo está abierto en Excel usa un nombre al lado.
+
+    Una corrida son ~30 llamadas a la API; perderla porque quedó una
+    planilla abierta es caro y pasa seguido.
+    """
+    try:
+        wb.save(dst)
+        return dst
+    except PermissionError:
+        alt = dst.with_name(f"{dst.stem} (nuevo){dst.suffix}")
+        wb.save(alt)
+        print(f"  OJO: '{dst.name}' está abierto en Excel. Se guardó como '{alt.name}'.")
+        return alt
+
+
 def limpiar(ws, primera_fila: int):
     if ws.max_row >= primera_fila:
         ws.delete_rows(primera_fila, ws.max_row - primera_fila + 1)
@@ -328,8 +360,7 @@ def limpiar(ws, primera_fila: int):
 
 def escribir_catalogo(filas):
     dst = SALIDA / "Catálogo - SBIZ - GSU.xlsx"
-    shutil.copy(ASSETS / "Plantilla Catálogo - SBIZ.xlsx", dst)
-    wb = openpyxl.load_workbook(dst)
+    wb = openpyxl.load_workbook(ASSETS / "Plantilla Catálogo - SBIZ.xlsx")
     ws = wb["Catálogo 22.06"]
     limpiar(ws, 2)
     for f in filas:
@@ -347,14 +378,12 @@ def escribir_catalogo(filas):
 
     # La hoja Granularidad es de atributos que Contabilium no tiene.
     limpiar(wb["Granularidad"], 2)
-    wb.save(dst)
-    return dst, len(vistos)
+    return guardar(wb, dst), len(vistos)
 
 
 def escribir_clientes(filas):
     dst = SALIDA / "Clientes - SBIZ - GSU.xlsx"
-    shutil.copy(ASSETS / "Plantilla Clientes - SBIZ.xlsx", dst)
-    wb = openpyxl.load_workbook(dst)
+    wb = openpyxl.load_workbook(ASSETS / "Plantilla Clientes - SBIZ.xlsx")
     ws = wb["Hoja1"]
     limpiar(ws, 2)
     for f in filas:
@@ -366,14 +395,12 @@ def escribir_clientes(filas):
             row[idx].number_format = "@"
             if row[idx].value is not None:
                 row[idx].value = str(row[idx].value)
-    wb.save(dst)
-    return dst
+    return guardar(wb, dst)
 
 
 def escribir_listas(listas_filas, skus_catalogo):
     dst = SALIDA / "Listas de Precios - SBIZ - GSU.xlsm"
-    shutil.copy(ASSETS / "Plantilla Listas de Precios - SBIZ.xlsm", dst)
-    wb = openpyxl.load_workbook(dst, keep_vba=True)
+    wb = openpyxl.load_workbook(ASSETS / "Plantilla Listas de Precios - SBIZ.xlsm", keep_vba=True)
 
     nombres = {
         "base": (f"Lista {LISTA_BASE}", "Lista 1"),
@@ -400,17 +427,16 @@ def escribir_listas(listas_filas, skus_catalogo):
 
     # Orden de hojas: las 3 listas y después el catálogo de control.
     wb._sheets = [wb[f"Lista {n}"] for n in (LISTA_BASE, LISTA_INTERIOR, LISTA_GRANDES)] + [wc]
-    wb.save(dst)
-    return dst
+    return guardar(wb, dst)
 
 
-def escribir_revision(revision, correcciones, sin_vendedor, sin_precio, filas_cat):
+def escribir_revision(revision, correcciones, del_jefe, sin_precio, filas_cat):
     dst = SALIDA / "_REVISAR - SBIZ - GSU.xlsx"
     wb = openpyxl.Workbook()
     neg = Font(bold=True)
 
     ws = wb.active
-    ws.title = "Categorías a revisar"
+    ws.title = "Categorías propuestas"
     ws.append(["SKU", "Nombre", "Marca", "Categoría propuesta", "Sub-categoría propuesta", "Origen"])
     for f in revision:
         ws.append(list(f))
@@ -420,9 +446,9 @@ def escribir_revision(revision, correcciones, sin_vendedor, sin_precio, filas_ca
     for f in correcciones:
         ws.append(list(f))
 
-    ws = wb.create_sheet("Clientes sin vendedor")
+    ws = wb.create_sheet("Clientes a cargo del jefe")
     ws.append(["Código", "Razón social", "Ciudad", "IdUsuarioAdicional"])
-    for f in sin_vendedor:
+    for f in del_jefe:
         ws.append(list(f))
 
     ws = wb.create_sheet("Productos sin precio")
@@ -442,8 +468,7 @@ def escribir_revision(revision, correcciones, sin_vendedor, sin_precio, filas_ca
         for c in hoja[1]:
             c.font = neg
         hoja.freeze_panes = "A2"
-    wb.save(dst)
-    return dst
+    return guardar(wb, dst)
 
 
 def main():
@@ -455,19 +480,19 @@ def main():
     ar, fam = cargar_catalogo_ar()
     filas_cat, revision, correcciones = construir_catalogo(conceptos, ar, fam)
     skus = list(dict.fromkeys(f[5] for f in filas_cat))
-    filas_cli, sin_vendedor = construir_clientes(clientes)
+    filas_cli, del_jefe = construir_clientes(clientes)
     listas_filas, sin_precio = construir_listas(conceptos, listas, skus)
 
     p1, n_prod = escribir_catalogo(filas_cat)
     p2 = escribir_clientes(filas_cli)
     p3 = escribir_listas(listas_filas, skus)
-    p4 = escribir_revision(revision, correcciones, sin_vendedor, sin_precio, filas_cat)
+    p4 = escribir_revision(revision, correcciones, del_jefe, sin_precio, filas_cat)
 
     print(f"\nCatálogo:  {n_prod} productos en {len(filas_cat)} filas → {p1.name}")
     print(f"Clientes:  {len(filas_cli)} → {p2.name}")
     print(f"Listas:    {len(skus)} productos × 3 listas → {p3.name}")
     print(f"Revisar:   {len(revision)} categorías, {len(correcciones)} nombres, "
-          f"{len(sin_vendedor)} clientes sin vendedor, {len(sin_precio)} sin precio → {p4.name}")
+          f"{len(del_jefe)} clientes al jefe, {len(sin_precio)} sin precio → {p4.name}")
 
 
 if __name__ == "__main__":
