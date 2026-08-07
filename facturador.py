@@ -304,6 +304,126 @@ def obtener_orden(
 
 
 # =====================================================================
+# Buzón de armados del depósito
+# =====================================================================
+
+def derivar_estado_armados(df_eventos):
+    """Del log de eventos del buzón, deriva una fila por orden con su
+    estado actual.
+
+    El buzón es append-only: la app de Picking apenda un evento `armado`
+    (y lo puede reintentar, así que puede haber duplicados), y el
+    facturador apenda `facturado` cuando emite. **El estado de una orden
+    es su último evento**, ordenando por timestamp.
+
+    Devuelve un DataFrame con las columnas del evento representativo de cada
+    orden más `estado` ("armado" | "facturado"), `items` ya deserializado
+    (lista de dicts; lista vacía si el JSON viene roto o ausente) y
+    `rearmado_post_factura`.
+
+    **`facturado` pisa a `armado`, aunque el `armado` sea posterior.** No
+    alcanza con "gana el último evento": la PC del depósito reintenta los
+    envíos que le fallaron, así que un armado viejo puede aterrizar en el
+    buzón después de que la orden ya se facturó. Con la regla del último
+    evento, esa orden volvía a la cola de Valeria y quedaba expuesta a que
+    se facturara dos veces. Una factura emitida es un documento fiscal: ante
+    la duda, la orden se queda afuera de la cola.
+
+    Cuando eso pasa se marca `rearmado_post_factura` para que la pantalla lo
+    pueda avisar, porque también puede ser un armado nuevo de verdad.
+
+    Función pura: no toca red ni Sheets, para poder testearla.
+    """
+    import json as _json
+
+    import pandas as pd
+
+    cols_salida = ["estado", "items"]
+    if df_eventos is None or df_eventos.empty:
+        vacio = pd.DataFrame(
+            {c: pd.Series(dtype="object") for c in
+             list(getattr(df_eventos, "columns", [])) + cols_salida}
+        )
+        return vacio
+
+    df = df_eventos.copy()
+    df["id_orden"] = df["id_orden"].astype(str).str.strip()
+    df = df[df["id_orden"] != ""]
+    if df.empty:
+        df["estado"] = pd.Series(dtype="object")
+        df["items"] = pd.Series(dtype="object")
+        return df
+
+    # Orden estable: por timestamp, y ante empate por el orden de aparición
+    # en la planilla (que es el orden en que se apendaron las filas).
+    df["_orden_original"] = range(len(df))
+    df["_ts"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+    df["_evento"] = df["evento"].astype(str).str.strip().str.lower()
+    df["_es_factura"] = df["_evento"] == "facturado"
+
+    # Ordenamos con los `facturado` al final de cada grupo: así el `.last()`
+    # se queda con la factura si existe, y con el armado más nuevo si no.
+    df = df.sort_values(
+        ["_es_factura", "_ts", "_orden_original"], na_position="first"
+    )
+
+    ultimo = df.groupby("id_orden", as_index=False).last()
+    ultimo["estado"] = ultimo["_evento"]
+
+    # ¿Llegó algún `armado` después de la factura? Puede ser un reintento
+    # tardío (inofensivo) o un rearmado real (hay que mirarlo).
+    ts_factura = (
+        df[df["_es_factura"]].groupby("id_orden")["_ts"].max().rename("_ts_fact")
+    )
+    ts_armado = (
+        df[~df["_es_factura"]].groupby("id_orden")["_ts"].max().rename("_ts_arm")
+    )
+    marcas = pd.concat([ts_factura, ts_armado], axis=1)
+    marcas["rearmado_post_factura"] = (
+        marcas["_ts_fact"].notna()
+        & marcas["_ts_arm"].notna()
+        & (marcas["_ts_arm"] > marcas["_ts_fact"])
+    )
+    ultimo = ultimo.merge(
+        marcas[["rearmado_post_factura"]], left_on="id_orden",
+        right_index=True, how="left",
+    )
+    ultimo["rearmado_post_factura"] = ultimo["rearmado_post_factura"].fillna(False)
+
+    def _parsear_items(raw):
+        if not raw:
+            return []
+        try:
+            datos = _json.loads(raw)
+            return datos if isinstance(datos, list) else []
+        except (ValueError, TypeError):
+            # Un JSON cortado (celda truncada) no puede tumbar la pantalla:
+            # la orden se muestra igual, sin detalle.
+            return []
+
+    ultimo["items"] = ultimo["items_json"].apply(_parsear_items)
+
+    internas = ["_ts", "_orden_original", "_evento", "_es_factura"]
+    return ultimo.drop(columns=internas).reset_index(drop=True)
+
+
+def armados_pendientes_de_facturar(df_eventos):
+    """Órdenes que el depósito armó y todavía nadie facturó.
+
+    Es `derivar_estado_armados` filtrado por estado == "armado", ordenado
+    por fecha de armado (las más viejas primero, que son las que más
+    apuran).
+    """
+    estado = derivar_estado_armados(df_eventos)
+    if estado.empty:
+        return estado
+    pendientes = estado[estado["estado"] == "armado"]
+    if pendientes.empty:
+        return pendientes
+    return pendientes.sort_values("timestamp").reset_index(drop=True)
+
+
+# =====================================================================
 # Mapeo de orden a body de POST /api/comprobantes/crear
 # =====================================================================
 

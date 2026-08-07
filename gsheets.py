@@ -104,6 +104,45 @@ LOG_FACTURACION_COLUMNS = [
 
 # Schema del audit log de Carga de Pedidos (Fase 2). Una fila por
 # pedido procesado. Append-only. Registra quién aprobó qué.
+# Buzón entre la app de Picking (que corre local en la PC del depósito) y el
+# facturador (que corre en Streamlit Cloud). Las dos no se ven entre sí, así
+# que se comunican por esta tab.
+#
+# Es un LOG DE EVENTOS append-only: una fila por cosa que pasó, nunca se
+# actualiza una fila existente. El estado de una orden es su último evento.
+# Se hace así a propósito: reintentar una escritura en Sheets duplica filas, y
+# actualizar una fila con reintentos es justo donde eso se rompe. Con eventos,
+# un duplicado es inofensivo — se descarta al derivar el estado.
+#
+# El anti-duplicado REAL de la facturación sigue siendo `RefExterna` en
+# Contabilium. Esta tab es comodidad operativa, no la verdad fiscal.
+TAB_ARMADOS = "armados"
+
+ARMADOS_COLUMNS = [
+    "timestamp",          # ISO UTC del evento
+    "fecha_local",        # YYYY-MM-DD en hora del depósito (para filtrar)
+    "evento",             # "armado" | "facturado"
+    "id_orden",           # str, ID interno de Contabilium
+    "numero_orden",       # str con ceros, ej "00012036" — OJO: escribir RAW
+    "fecha_orden",        # str dd/mm/aaaa como lo devuelve Contabilium
+    "id_cliente",         # str
+    "bultos",             # int
+    "lineas",             # int
+    "unidades",           # int
+    "usuario",            # quién armó (evento armado) o quién facturó
+    "completo",           # "SI" | "NO" — si se preparó exactamente lo pedido
+    "verificado",         # "SI" | "NO" — si se pudo chequear contra Contabilium
+    "items_json",         # JSON: [{codigo, concepto, pedido, escaneado, combo}]
+    "id_comprobante",     # solo en evento "facturado"
+    "numero_factura",     # solo en evento "facturado"
+    "cae",                # solo en evento "facturado"
+    "observacion",        # adenda de la factura, o motivo
+]
+
+# Una celda de Sheets aguanta 50.000 caracteres. El detalle de items va
+# serializado en una sola celda, así que lo cortamos bastante antes.
+ITEMS_JSON_MAX = 45000
+
 LOG_CARGA_PEDIDOS_COLUMNS = [
     "timestamp",          # ISO YYYY-MM-DD HH:MM:SS
     "usuario",            # str — quien operó (libre, lo setea la app)
@@ -638,6 +677,83 @@ def append_log_carga_pedidos(
     ]
     ws.append_rows(rows_data, value_input_option="RAW")
     return len(rows_data)
+
+
+# =====================================================================
+# Buzón de armados (Picking del depósito ↔ facturador)
+# =====================================================================
+
+def append_armados(
+    gsheets_section: dict,
+    filas: list[dict],
+) -> int:
+    """Apenda eventos al buzón de armados. Append-only, igual que los logs.
+
+    Schema esperado en cada fila: ver `ARMADOS_COLUMNS`.
+
+    Normalmente el evento "armado" lo escribe la app de Picking a través del
+    Apps Script (no pasa por acá). Esta función la usa el facturador para
+    dejar asentado el evento "facturado".
+
+    Todo se escribe con `value_input_option="RAW"`: `numero_orden` viene con
+    ceros a la izquierda ("00012036") y con USER_ENTERED Sheets lo
+    convertiría a 12036, rompiendo el cruce.
+    """
+    if not filas:
+        return 0
+
+    sh = _open_sheet(gsheets_section)
+    ws = _ensure_worksheet(
+        sh, TAB_ARMADOS,
+        rows=10000, cols=len(ARMADOS_COLUMNS),
+    )
+
+    existing_header = ws.row_values(1)
+    if not existing_header or len(existing_header) < len(ARMADOS_COLUMNS):
+        # Argumentos con nombre a propósito: gspread 6 deprecó el orden
+        # posicional `update(rango, valores)` y en la 7 se invierte. El resto
+        # del módulo todavía usa la forma vieja (ver nota en el README).
+        ws.update(range_name="A1", values=[ARMADOS_COLUMNS], value_input_option="RAW")
+
+    rows_data = [
+        [str(f.get(c, "") or "") for c in ARMADOS_COLUMNS]
+        for f in filas
+    ]
+    ws.append_rows(rows_data, value_input_option="RAW")
+    return len(rows_data)
+
+
+def read_armados(gsheets_section: dict) -> pd.DataFrame:
+    """Lee el buzón de armados completo (todos los eventos, sin derivar).
+
+    Devuelve DataFrame con `ARMADOS_COLUMNS`, todo como texto salvo los
+    numéricos. Si la tab no existe o está vacía, devuelve un DataFrame vacío
+    con esas columnas.
+
+    `id_orden` y `numero_orden` se fuerzan a str: gspread devuelve los
+    valores numéricos como enteros y el cruce contra Contabilium se hace por
+    string. Si esto se relaja, el cruce empieza a fallar en silencio.
+    """
+    cols = ARMADOS_COLUMNS
+    sh = _open_sheet(gsheets_section)
+    ws = _ensure_worksheet(sh, TAB_ARMADOS, rows=10000, cols=len(cols))
+    rows = ws.get_all_values()
+
+    if not rows or len(rows) < 2:
+        return pd.DataFrame({c: pd.Series(dtype="object") for c in cols})
+
+    df = pd.DataFrame(rows[1:], columns=rows[0])
+    for c in cols:
+        if c not in df.columns:
+            df[c] = ""
+    df = df[cols]
+
+    for c in ("id_orden", "numero_orden", "id_cliente", "id_comprobante"):
+        df[c] = df[c].astype(str).str.strip()
+    for c in ("bultos", "lineas", "unidades"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
+
+    return df.reset_index(drop=True)
 
 
 # =====================================================================
