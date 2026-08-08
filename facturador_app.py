@@ -407,6 +407,327 @@ with st.sidebar:
 
 
 # =====================================================================
+# Listos para facturar — la cola que manda el depósito
+# =====================================================================
+#
+# La app de Picking corre local en la PC del depósito y escribe cada pedido
+# que termina de armar en el buzón (`[gsheets_buzon]`, tab `armados`). Acá se
+# lee esa cola: reemplaza el papel que hoy los chicos le llevan a Valeria.
+#
+# El buzón es un log de eventos append-only; el estado de cada orden se deriva
+# con `facturador.derivar_estado_armados`.
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _leer_buzon() -> pd.DataFrame:
+    """Eventos del buzón de armados. TTL corto: es una cola de trabajo, y el
+    depósito va agregando pedidos durante el día.
+
+    Envuelto en `reintentar_lectura` porque las 60 lecturas por minuto de
+    Sheets son por Service Account y las comparten TODAS las apps de GSU.
+    """
+    return gsheets.reintentar_lectura(
+        lambda: gsheets.read_armados(dict(st.secrets["gsheets_buzon"]))
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _datos_orden(id_orden: str) -> dict:
+    """Cliente y total de la orden, que el buzón no trae (el depósito no los
+    necesita para armar). Se piden a Contabilium al mostrar la cola."""
+    session = _api_session()
+    session, orden = facturador.obtener_orden(session, int(id_orden))
+    return {
+        "comprador": orden.get("Comprador") or "",
+        "total": api_loader.parse_monto_uy(orden.get("Total")),
+        "estado": (orden.get("Estado") or "").strip(),
+        "id_comprobante": orden.get("IDComprobante") or 0,
+        "observaciones": orden.get("Observaciones") or "",
+    }
+
+
+def _registrar_facturado_en_buzon(fila_armado, emision: dict, adenda: str) -> None:
+    """Apenda el evento `facturado` al buzón para que la orden salga de la
+    cola. Best effort: si falla, la factura ya está emitida y es válida — el
+    anti-duplicado de verdad es el `RefExterna` en Contabilium, no esto."""
+    try:
+        gsheets.append_armados(dict(st.secrets["gsheets_buzon"]), [{
+            "timestamp": datetime.now().astimezone().isoformat(),
+            "fecha_local": date.today().isoformat(),
+            "evento": "facturado",
+            "id_orden": str(fila_armado["id_orden"]),
+            "numero_orden": str(fila_armado["numero_orden"]),
+            "fecha_orden": str(fila_armado.get("fecha_orden") or ""),
+            "id_cliente": str(fila_armado.get("id_cliente") or ""),
+            "bultos": str(fila_armado.get("bultos") or ""),
+            "lineas": str(fila_armado.get("lineas") or ""),
+            "unidades": str(fila_armado.get("unidades") or ""),
+            "usuario": "facturador",
+            "completo": str(fila_armado.get("completo") or ""),
+            "verificado": str(fila_armado.get("verificado") or ""),
+            "items_json": "",
+            "id_comprobante": str(emision.get("id_comprobante") or ""),
+            "numero_factura": str(emision.get("numero") or ""),
+            "cae": str(emision.get("cae") or ""),
+            "observacion": adenda,
+        }])
+    except Exception as exc:
+        st.warning(
+            "La factura se emitió bien, pero no pude anotar en el buzón que "
+            f"esta orden ya está facturada ({exc}). Va a seguir apareciendo "
+            "en la cola: no la factures de nuevo, avisá.",
+            icon="⚠",
+        )
+
+
+def _tabla_pedido_vs_preparado(items: list[dict]) -> pd.DataFrame:
+    filas = []
+    for it in items:
+        pedido = it.get("pedido") or 0
+        preparado = it.get("escaneado") or 0
+        filas.append({
+            "Código": it.get("codigo") or "",
+            "Producto": it.get("concepto") or "",
+            "Pedido": pedido,
+            "Preparado": preparado,
+            "Diferencia": preparado - pedido,
+        })
+    return pd.DataFrame(filas)
+
+
+def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> None:
+    st.subheader("Listos para facturar")
+    st.caption(
+        "Pedidos que el depósito ya preparó y controló. Reemplazan la orden "
+        "en papel: cuando aparecen acá, la mercadería ya está armada."
+    )
+
+    if gsheets is None or "gsheets_buzon" not in st.secrets:
+        st.warning(
+            "El buzón del depósito no está configurado en esta instalación "
+            "(falta la sección `[gsheets_buzon]` en los Secrets).",
+            icon="⚙",
+        )
+        return
+
+    # Resultado de la última emisión, si venimos de facturar.
+    ultima = st.session_state.get("deposito_ultima_emision")
+    if ultima:
+        st.success(
+            f"Factura **{ultima['numero']}** emitida para la orden "
+            f"{ultima['numero_orden']} — {ultima['comprador']}. "
+            f"CAE {ultima['cae']}.",
+            icon="✅",
+        )
+        if not ultima["orden_cancelada"]:
+            st.warning(
+                "La factura salió bien, pero no se pudo cancelar la orden de "
+                "venta, así que la reserva de stock queda tomada. Detalle: "
+                f"{ultima['orden_cancel_error']}",
+                icon="⚠",
+            )
+        col_pdf, col_ok = st.columns([1, 4])
+        with col_pdf:
+            if ultima["pdf"]:
+                st.download_button(
+                    "Descargar PDF",
+                    data=ultima["pdf"],
+                    file_name=f"{ultima['numero']}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            else:
+                st.caption(f"PDF no disponible: {ultima['pdf_error']}")
+        with col_ok:
+            if st.button("Listo", key="cerrar_ultima_emision"):
+                st.session_state.pop("deposito_ultima_emision", None)
+                st.rerun()
+        st.markdown("---")
+
+    col_a, col_b = st.columns([1, 5], vertical_alignment="center")
+    with col_a:
+        if st.button("Actualizar", use_container_width=True, key="btn_refresh_buzon"):
+            _leer_buzon.clear()
+            st.rerun()
+
+    try:
+        df_eventos = _leer_buzon()
+    except Exception as exc:
+        st.error(f"No pude leer el buzón del depósito: {exc}")
+        return
+
+    pendientes = facturador.armados_pendientes_de_facturar(df_eventos)
+
+    if pendientes.empty:
+        st.info(
+            "No hay pedidos esperando. Cuando el depósito confirme un armado, "
+            "aparece acá solo.",
+            icon="📭",
+        )
+        return
+
+    with col_b:
+        st.markdown(f"**{len(pendientes)} pedido(s)** esperando factura.")
+
+    for _, fila in pendientes.iterrows():
+        id_orden = str(fila["id_orden"])
+        completo = str(fila.get("completo") or "").upper() == "SI"
+
+        try:
+            datos = _datos_orden(id_orden)
+        except Exception as exc:
+            st.error(
+                f"Orden {fila['numero_orden']}: no pude traerla de Contabilium "
+                f"({exc}). Probá de nuevo más tarde."
+            )
+            continue
+
+        etiqueta = (
+            f"Orden {fila['numero_orden']} — {datos['comprador']} — "
+            f"{_fmt_uyu(datos['total'])}"
+        )
+        if not completo:
+            etiqueta += "  ·  ⚠ preparado incompleto"
+
+        with st.expander(etiqueta, expanded=len(pendientes) == 1):
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Bultos", int(fila.get("bultos") or 0))
+            c2.metric("Líneas", int(fila.get("lineas") or 0))
+            c3.metric("Armado", str(fila.get("fecha_local") or "—"))
+            st.caption(
+                f"Armado por **{fila.get('usuario') or '—'}**. "
+                + (
+                    "Verificado contra Contabilium en el momento del armado."
+                    if str(fila.get("verificado") or "").upper() == "SI"
+                    else "⚠ No se pudo verificar contra Contabilium al armarlo."
+                )
+            )
+
+            if bool(fila.get("rearmado_post_factura")):
+                st.warning(
+                    "Esta orden ya se había facturado antes y el depósito "
+                    "volvió a armarla. Puede ser un reenvío repetido (normal) "
+                    "o un armado nuevo de verdad. Revisala antes de emitir.",
+                    icon="⚠",
+                )
+
+            items = fila.get("items") or []
+            if items:
+                st.dataframe(
+                    _tabla_pedido_vs_preparado(items),
+                    use_container_width=True, hide_index=True,
+                )
+            else:
+                st.caption("El depósito no mandó el detalle de este pedido.")
+
+            # --- Chequeos previos a emitir ---------------------------------
+            bloqueos = []
+            if not completo:
+                bloqueos.append(
+                    "El depósito preparó una cantidad distinta a la pedida. "
+                    "Todavía no está definido cómo se facturan los parciales, "
+                    "así que esta orden hay que resolverla a mano."
+                )
+            if datos["estado"] != "Pendiente":
+                bloqueos.append(
+                    f"En Contabilium la orden figura como **{datos['estado']}**, "
+                    "no como Pendiente."
+                )
+            if (datos["id_comprobante"] or 0) > 0:
+                bloqueos.append(
+                    "La orden ya tiene un comprobante asociado en Contabilium."
+                )
+
+            if bloqueos:
+                for b in bloqueos:
+                    st.error(b, icon="🚫")
+                continue
+
+            adenda = st.text_area(
+                "Adenda (opcional)",
+                key=f"adenda_{id_orden}",
+                placeholder="Sucursal, número de orden de compra del cliente…",
+                help=(
+                    "Se agrega al principio de las observaciones de la factura. "
+                    "Es lo que hoy se escribe a mano en la continuación de la "
+                    "adenda."
+                ),
+                height=70,
+            )
+
+            if st.button(
+                "Emitir factura",
+                key=f"facturar_{id_orden}",
+                type="primary",
+            ):
+                with st.spinner(f"Emitiendo la factura de la orden {fila['numero_orden']}..."):
+                    try:
+                        session = _api_session()
+                        session, emision = facturador.facturar_orden(
+                            session, int(id_orden),
+                            condicion_venta_nombre=condicion_venta_nombre,
+                            punto_venta_id=punto_venta_id,
+                            inventario_id=inventario_id,
+                            adenda=adenda,
+                        )
+                    except Exception as exc:
+                        st.error(f"No se pudo emitir: {exc}")
+                        st.stop()
+
+                _registrar_facturado_en_buzon(fila, emision, adenda)
+
+                # Log de auditoría, igual que el run masivo. Best effort.
+                try:
+                    if "gsheets_facturacion" in st.secrets:
+                        gsheets.append_log_facturacion(
+                            dict(st.secrets["gsheets_facturacion"]),
+                            [{
+                                "timestamp": datetime.now().astimezone().isoformat(),
+                                "id_orden": id_orden,
+                                "numero_orden": fila["numero_orden"],
+                                "comprador": datos["comprador"],
+                                "total_uyu": datos["total"],
+                                "status": "OK",
+                                "id_comprobante": emision["id_comprobante"],
+                                "numero_factura": emision["numero"],
+                                "cae": emision["cae"],
+                                "fiscal_url": emision["fiscal_url"],
+                                "orden_cancelada": emision.get("orden_cancelada"),
+                                "orden_cancel_error": emision.get("orden_cancel_error") or "",
+                                "error": "",
+                            }],
+                        )
+                except Exception:
+                    pass
+
+                # El PDF es best effort: la factura ya es legal sin él.
+                pdf_bytes = None
+                pdf_error = ""
+                try:
+                    session, pdf_bytes = facturador.obtener_pdf(
+                        session, int(emision["id_comprobante"])
+                    )
+                except Exception as exc:
+                    pdf_error = str(exc)
+
+                # El resultado se guarda y se pinta arriba de la cola en el
+                # rerun siguiente. Si se mostrara acá nomás, desaparecería
+                # apenas el usuario toque cualquier cosa — incluido el propio
+                # botón de descarga.
+                st.session_state["deposito_ultima_emision"] = {
+                    "numero_orden": fila["numero_orden"],
+                    "comprador": datos["comprador"],
+                    "numero": emision["numero"],
+                    "cae": emision["cae"],
+                    "orden_cancelada": bool(emision.get("orden_cancelada")),
+                    "orden_cancel_error": emision.get("orden_cancel_error") or "",
+                    "pdf": pdf_bytes,
+                    "pdf_error": pdf_error,
+                }
+                _leer_buzon.clear()
+                st.rerun()
+
+
+# =====================================================================
 # Main — pendientes + selección + emisión
 # =====================================================================
 
@@ -421,6 +742,27 @@ with _col_title:
 with _col_btn:
     if st.button("Tutorial", use_container_width=True, key="btn_tutorial"):
         _tutorial_dialog()
+
+# ---------------------------------------------------------------------
+# Selector de sección
+#
+# Con `st.tabs` el contenido de una tab se derrama a la otra al recargar,
+# así que se usa segmented_control + corte explícito del script.
+# ---------------------------------------------------------------------
+_SEC_MASIVA = "Facturación masiva"
+_SEC_DEPOSITO = "Listos para facturar (depósito)"
+
+_seccion = st.segmented_control(
+    "Sección",
+    options=[_SEC_MASIVA, _SEC_DEPOSITO],
+    default=_SEC_MASIVA,
+    label_visibility="collapsed",
+) or _SEC_MASIVA
+
+if _seccion == _SEC_DEPOSITO:
+    _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id)
+    st.stop()
+
 
 if "last_search" not in st.session_state:
     st.info(

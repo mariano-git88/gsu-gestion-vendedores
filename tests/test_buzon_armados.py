@@ -193,3 +193,67 @@ def test_el_numero_de_orden_conserva_los_ceros():
                      id_orden="2311651", numero_orden="00012036"))
     pend = facturador.armados_pendientes_de_facturar(df)
     assert pend.iloc[0]["numero_orden"].startswith("000")
+
+
+# ---------------------------------------------------------------------
+# La adenda en las observaciones de la factura
+# ---------------------------------------------------------------------
+
+# Las Observaciones de las órdenes de GSU arrancan siempre con este machete.
+_MACHETE = (
+    "Cuentas bancarias habilitadas para cobros: BROU 110954910-00001 || "
+    "ITAU 9818174 || BBVA 25540491 || SANTANDER Sucursal: 0073 Cuenta: "
+    "1391763. Consultas a pedidos@suprabond.com.uy o 093 900 536"
+)
+
+
+def test_sin_adenda_las_observaciones_quedan_igual():
+    assert facturador._observaciones_con_adenda(_MACHETE, None) == _MACHETE
+    assert facturador._observaciones_con_adenda(_MACHETE, "  ") == _MACHETE
+
+
+def test_la_adenda_va_primero():
+    """Va adelante para que sea lo primero que se lee en la factura, y para
+    que si hay que recortar se pierda el machete y no el dato."""
+    out = facturador._observaciones_con_adenda(_MACHETE, "SODIMAC Sucursal Carrasco")
+    assert out.startswith("SODIMAC Sucursal Carrasco")
+    assert "BROU" in out
+
+
+def test_una_adenda_larga_no_se_recorta():
+    """El caso que importa: si la suma pasa el tope, lo que se corta es el
+    machete de cuentas bancarias, nunca la sucursal ni la orden de compra."""
+    adenda = "OC 4500123456 - SODIMAC Sucursal Nuevocentro - " + ("detalle " * 40)
+    out = facturador._observaciones_con_adenda(_MACHETE, adenda)
+    assert len(out) <= facturador.OBSERVACIONES_MAX
+    assert out.startswith(adenda.strip()[:60])
+    assert adenda.strip() in out
+
+
+def test_orden_sin_observaciones():
+    assert facturador._observaciones_con_adenda("", "OC 12345") == "OC 12345"
+
+
+def test_adenda_mas_larga_que_el_tope_se_corta_al_tope():
+    out = facturador._observaciones_con_adenda(_MACHETE, "X" * 700)
+    assert len(out) == facturador.OBSERVACIONES_MAX
+
+
+def test_el_body_de_la_factura_lleva_la_adenda():
+    orden = {
+        "ID": 2311651,
+        "IDCliente": 415839,
+        "Observaciones": _MACHETE,
+        "Items": [{
+            "IdConcepto": 123, "Cantidad": 2, "Concepto": "ADHESIVO",
+            "PrecioUnitario": "1.234,56", "Iva": 22, "Bonificacion": 0,
+            "IDMoneda": 794,
+        }],
+    }
+    body = facturador.mapear_orden_a_body_crear(
+        orden, condicion_venta_nombre="30 Cuenta Corriente",
+        punto_venta_id=1, inventario_id=1,
+        adenda="OC 88-2026 SODIMAC Carrasco",
+    )
+    assert body["Observaciones"].startswith("OC 88-2026 SODIMAC Carrasco")
+    assert body["RefExterna"] == "2311651"

@@ -427,6 +427,38 @@ def armados_pendientes_de_facturar(df_eventos):
 # Mapeo de orden a body de POST /api/comprobantes/crear
 # =====================================================================
 
+OBSERVACIONES_MAX = 500
+
+
+def _observaciones_con_adenda(observaciones: str, adenda: str | None) -> str:
+    """Combina la adenda de administración con las Observaciones de la orden,
+    respetando el tope de caracteres.
+
+    **La adenda va primero y nunca se recorta.** Las Observaciones de las
+    órdenes de GSU arrancan con el machete de cuentas bancarias (~230
+    caracteres), así que si la adenda fuera al final y hubiera que cortar,
+    lo que se perdería sería justo el dato que hace falta: la sucursal de
+    Sodimac o el número de orden de compra del cliente. Prefiero perder el
+    machete, que se repite en todas las facturas.
+
+    OJO: el tope de 500 es una defensa nuestra, no un límite confirmado de
+    la API de Contabilium. Habría que medirlo con una factura real.
+    """
+    adenda = (adenda or "").strip()
+    observaciones = (observaciones or "").strip()
+
+    if not adenda:
+        return observaciones[:OBSERVACIONES_MAX]
+    if not observaciones:
+        return adenda[:OBSERVACIONES_MAX]
+
+    separador = " | "
+    espacio_restante = OBSERVACIONES_MAX - len(adenda) - len(separador)
+    if espacio_restante <= 0:
+        return adenda[:OBSERVACIONES_MAX]
+    return f"{adenda}{separador}{observaciones[:espacio_restante]}"
+
+
 def mapear_orden_a_body_crear(
     orden: dict,
     condicion_venta_nombre: str,
@@ -436,6 +468,7 @@ def mapear_orden_a_body_crear(
     tipo_fc: str = "FAC",
     fecha_emision: date | None = None,
     vendedor_email_override: str | None = None,
+    adenda: str | None = None,
 ) -> dict:
     """Construye el body validado para POST /api/comprobantes/crear.
 
@@ -450,6 +483,10 @@ def mapear_orden_a_body_crear(
       punto_venta_id, inventario_id: IDs de los combos.
       tipo_fc: "FAC" para UY (default). En AR sería "FCE"/"FCB".
       fecha_emision: default = hoy.
+      adenda: texto libre que administración agrega al facturar
+        (sucursal de Sodimac, número de orden de compra del cliente).
+        Se antepone a las Observaciones de la orden — ver
+        `_observaciones_con_adenda` para el porqué del orden.
 
     Levanta OrdenNoFacturableError si la orden tiene problemas estructurales
     (sin items, items con IdConcepto null, etc.).
@@ -510,7 +547,9 @@ def mapear_orden_a_body_crear(
         ).isoformat(),
         "Items": items_body,
         "Tributos": None,
-        "Observaciones": (orden.get("Observaciones") or "")[:500],
+        "Observaciones": _observaciones_con_adenda(
+            orden.get("Observaciones") or "", adenda
+        ),
         "fceMiPYME": False,
         "Canal": "",
         "Pagos": None,
@@ -668,6 +707,7 @@ def facturar_orden(
     tipo_fc: str = "FAC",
     fecha_emision: date | None = None,
     vendedor_email: str | None = None,
+    adenda: str | None = None,
 ) -> tuple[api_loader.ApiSession, dict]:
     """Pipeline completo: trae orden → mapea body → crea borrador →
     emite CAE. Devuelve dict con id_borrador + datos de emisión.
@@ -698,6 +738,7 @@ def facturar_orden(
         tipo_fc=tipo_fc,
         fecha_emision=fecha_emision,
         vendedor_email_override=vendedor_email,
+        adenda=adenda,
     )
 
     session, id_borrador = crear_borrador(session, body)
