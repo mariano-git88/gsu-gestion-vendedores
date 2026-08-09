@@ -417,6 +417,30 @@ with st.sidebar:
 # El buzón es un log de eventos append-only; el estado de cada orden se deriva
 # con `facturador.derivar_estado_armados`.
 
+def _seccion_buzon() -> dict:
+    """Config de acceso al buzón.
+
+    Si `[gsheets_buzon]` no trae credenciales propias, usa las de
+    `[gsheets_facturacion]`: es el MISMO Service Account, y hacer copiar la
+    clave privada de nuevo en los Secrets es pura oportunidad de error —
+    una línea cortada al pegar y no anda, sin decir por qué. Así, dar de
+    alta el buzón es agregar dos líneas con el `spreadsheet_id`.
+    """
+    sec = dict(st.secrets["gsheets_buzon"])
+    if not sec.get("service_account") and not sec.get("service_account_json_path"):
+        for nombre in ("gsheets_facturacion", "gsheets"):
+            if nombre not in st.secrets:
+                continue
+            fuente = dict(st.secrets[nombre])
+            if fuente.get("service_account"):
+                sec["service_account"] = fuente["service_account"]
+                break
+            if fuente.get("service_account_json_path"):
+                sec["service_account_json_path"] = fuente["service_account_json_path"]
+                break
+    return sec
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def _leer_buzon() -> pd.DataFrame:
     """Eventos del buzón de armados. TTL corto: es una cola de trabajo, y el
@@ -426,7 +450,7 @@ def _leer_buzon() -> pd.DataFrame:
     Sheets son por Service Account y las comparten TODAS las apps de GSU.
     """
     return gsheets.reintentar_lectura(
-        lambda: gsheets.read_armados(dict(st.secrets["gsheets_buzon"]))
+        lambda: gsheets.read_armados(_seccion_buzon())
     )
 
 
@@ -450,7 +474,7 @@ def _registrar_facturado_en_buzon(fila_armado, emision: dict, adenda: str) -> No
     cola. Best effort: si falla, la factura ya está emitida y es válida — el
     anti-duplicado de verdad es el `RefExterna` en Contabilium, no esto."""
     try:
-        gsheets.append_armados(dict(st.secrets["gsheets_buzon"]), [{
+        gsheets.append_armados(_seccion_buzon(), [{
             "timestamp": datetime.now().astimezone().isoformat(),
             "fecha_local": date.today().isoformat(),
             "evento": "facturado",
