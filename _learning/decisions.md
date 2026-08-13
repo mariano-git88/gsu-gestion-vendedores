@@ -1745,3 +1745,103 @@ que tocar "Resync forzado" + "Sincronizar" para que el maestro cacheado
 se regenere con el stock por depósito.
 
 **Confirmado por:** Mariano, sesión 2026-06-30.
+
+---
+
+## 2026-08-13 — Scoring crediticio de la cartera (`credito.py`)
+
+**Problema:** decidir a qué clientes ofrecerles más plazo de financiación,
+con cheque diferido y con interés, para traer más volumen sin que se vuelva
+incobrable.
+
+**Alcance elegido (Mariano, 2026-08-13):** fase 1 solo cartera existente con
+datos propios; clientes nuevos quedan para fase 2 cuando haya fuente externa.
+No hay acceso a Clearing de Informes ni a la Central de Riesgos del BCU. La
+salida es plazo + límite + tasa + semáforo. Vive en una app aparte
+(`credito_app.py`, password `credito_password`), no como tab del dashboard de
+vendedores: el público es finanzas, no la reunión comercial.
+
+**Qué mide y qué NO:** comportamiento de pago observado, no probabilidad de
+default. No hay serie de incobrables en la cartera, así que no hay nada contra
+qué calibrar una PD. El score ordena de mejor a peor pagador; no dice "este
+tiene 3% de chance de no pagar". Está escrito así en el módulo y en la tab
+"Cómo se calcula" de la app para que nadie lo lea de más.
+
+### Decisión 1 — El vencimiento se deriva de la condición de venta
+
+`FechaVencimiento` de Contabilium trae **siempre** emisión + 30 días, sin
+importar la condición. Medido sobre 10.882 facturas de ago-2024 a ago-2026:
+la mediana de (vencimiento − emisión) es 30 para "30 CC", para "60 CC" y para
+"90 CC" por igual. Una factura a 90 días figura venciendo a los 30.
+
+Usar el campo inflaba el atraso de los clientes con plazo largo en 60 días —
+justo los que interesan para esta herramienta. `PLAZO_POR_CONDICION` mapea cada
+condición a sus días. Las condiciones en cuotas ("30/60") se resumen en el
+vencimiento **promedio** de las cuotas, porque el ERP emite una sola factura
+con un solo saldo y no hay forma de saber qué parte era de cada cuota.
+
+*Alternativa descartada:* leer el campo y corregir solo los casos raros. Se
+descartó porque el error es sistemático, no una excepción.
+
+### Decisión 2 — El DSO pesa más que el atraso por factura
+
+El atraso por factura (DPD) depende de a qué factura se imputó cada recibo, y
+en Contabilium los recibos **no** se aplican a la más vieja: se cierran
+facturas nuevas y queda una cola de facturas viejas abiertas. Resultado: las
+facturas que se cierran parecen puntuales aunque la deuda real no baje.
+
+Caso testigo: SODIMAC, el cliente más grande de la cartera, tiene DPD
+ponderado de **−2,7 días** (o sea "paga antes del vencimiento") y a la vez un
+**DSO de 153 días con plazo pactado de 60**, con 27 facturas enteras sin pagar,
+la más vieja de enero de 2025.
+
+Por eso el score usa las dos: DSO 25 puntos (la verdad, insensible a la
+imputación) y DPD 20 puntos (el matiz: ¿es puntual cuando paga?). Los otros
+cinco pilares suman los 55 restantes.
+
+### Decisión 3 — Las colas de rendición no son deuda
+
+La NC del 10% de la rendición muchas veces no se imputa, y deja la factura con
+un resto de ~10% abierto para siempre. Medido sobre 704 facturas parciales
+vencidas hace más de 60 días: **125 tienen un resto de exactamente 10%** (pico
+inconfundible en el histograma) y 563 tienen un resto menor al 25%, por apenas
+$376k en total. Las 141 con resto mayor al 25% concentran $816k — esas sí son
+deuda.
+
+Regla: `parcial` + resto ≤ 25% + vencida hace más de 60 días → cola, no mora.
+Se marca aparte y se reporta en la tab "Calidad de datos"; **no se borra**, y
+se puede apagar desde la barra lateral. Sin esta regla el score mandaba a rojo
+a clientes que pagan 14 días **antes** del vencimiento por arrastrar $820 de
+una factura de 2025.
+
+### Decisión 4 — El veto tiene que ser por un monto material
+
+Primera versión: cualquier deuda vencida hace más de 60 días vetaba al
+cliente. Con el umbral en $1 quedaba vetado el **44% de la cartera**. El
+umbral ahora es el mayor entre un piso fijo ($20.000) y medio mes de compra del
+cliente: deber $20.000 no significa lo mismo para quien compra $30.000 al mes
+que para quien compra $400.000.
+
+### Decisión 5 — Sin historia no se opina
+
+Menos de 3 facturas cobradas en la ventana → banda **S/D**, no banda mala. Un
+cliente desconocido no es un cliente malo; va a decisión manual. Son 443 de
+1.019 clientes, pero solo el 7% de la facturación.
+
+### Cómo salen el límite y la tasa
+
+El **límite** es la exposición natural del plazo: a un cliente que compra $X
+por mes con 60 días de plazo, en régimen se le van a deber dos meses de compra.
+Eso se ajusta por un factor de banda y se recorta por un tope de meses de
+compra para no concentrar riesgo en un solo nombre.
+
+La **tasa** es costo de fondos + spread + prima de riesgo. El costo de fondos
+es un parámetro **sin confirmar** (default 14% anual en UYU, es un supuesto de
+Claude, no un dato de GSU). La prima por banda no se inventa: sale de la mora
+que cada banda efectivamente tiene (`prima_por_mora_observada`). Si la banda C
+se atrasa 18 días más que la A, financiar esos días cuesta plata y esa es la
+prima **piso**. No cubre el riesgo de no cobrar nunca, que con estos datos no
+se puede medir.
+
+**Confirmado por:** pendiente de revisión de Mariano (alcance sí, parámetros
+de política no).

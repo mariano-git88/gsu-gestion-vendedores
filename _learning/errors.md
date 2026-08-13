@@ -557,3 +557,65 @@ GET  /api/stock/Novedades?skip=&timestamp=
 **NO existen** (probadas en sesión inicial y daban 404): `/api/depositos`,
 `/api/stock` (a secas), `/api/inventario` (sin `s`). El prefix correcto
 es **`/api/inventarios/`** (con `s` final).
+
+---
+
+## 2026-08-13 — Tres trampas de la API de cobranzas y dos de pandas
+
+Encontradas armando el scoring crediticio (`credito_api.py` / `credito.py`).
+
+### `/api/cobranzas/search` ignora la paginación
+
+`page`, `pageSize` y `skip` devuelven **los mismos 50 primeros registros**
+(orden descendente por fecha). `page=1` en particular tira un 404 con un error
+interno de .NET ("Count must have a non-negative value"), mientras que `page=0`
+y `page=2` devuelven lo mismo que sin parámetro. Probadas 11 variantes.
+
+**Salida:** ventanear por **día**. Si un día tiene más de 50 recibos igual se
+trunca; se detecta comparando contra `TotalItems`, que sí viene bien. Medido:
+10 días truncados en 24 meses, ~99 recibos de 12.409 (0,8%). El reporte de
+carga lo muestra en la app — nunca se toma la página corta como el total.
+
+Sí funciona `filtro=<texto>` (matchea razón social), pero también topea en 50.
+
+### `Pagos[]` del comprobante viene siempre vacío
+
+La fecha de pago **no está** en la factura, ni en el header ni en el detalle.
+Se probaron 40 comprobantes de un mes cerrado: `Pagos` vacío en todos. La
+fecha de pago solo sale de `/api/cobranzas?id=`, que además trae contra qué
+factura se imputa (`Detalle[].IDComprobante`, con `0` = pago a cuenta) y con
+qué forma de pago se cobró.
+
+Si se confía en `Pagos[]`, el score sale sin la variable más importante.
+
+### `TotalPage` de `/api/comprobantes/search` no es la cantidad de páginas
+
+Es el **tamaño de página** (50). Con `TotalItems=1097` devuelve
+`TotalPage=50`. Paginar hasta `TotalPage` hace el doble de llamadas de las
+necesarias; usarlo como cantidad de items deja meses incompletos. Paginar
+hasta juntar `TotalItems` o hasta que una página no aporte nada nuevo.
+
+### pandas: ponderar fechas por el epoch en nanosegundos DESBORDA
+
+Calcular la fecha de pago ponderada por importe con
+`(fechas.astype("int64") * importes).sum() / importes.sum()` desborda int64:
+1,7e18 × 1e4 > 9,2e18. **No tira excepción** — devuelve fechas de 1965. El
+síntoma fue un atraso promedio de **−20.324 días**, que por suerte era
+absurdo a simple vista. Si el desborde hubiera sido chico, pasaba desapercibido.
+
+**Fix:** ponderar sobre días desde una fecha ancla
+(`(fecha - ANCLA).dt.total_seconds() / 86400`) y reconstruir el timestamp
+después. Hay un test que lo blinda (`tests/test_credito.py`, caso 2).
+
+### pandas: la columna toda vacía queda `object` y rompe la resta
+
+Misma familia que la trampa ya conocida de `.abs()`. Cuando **ninguna**
+factura tiene pago, la columna `fecha_pago_pond` queda toda NaN con dtype
+`object`, y restarle un datetime tira `cannot subtract DatetimeArray from
+ndarray[object]`. Lo mismo con las columnas de plata que quedan en NaN tras un
+join vacío: `.round()` tira `loop of ufunc does not support argument 0 of type
+float which has no callable rint method`.
+
+**Fix:** coerción explícita (`pd.to_datetime(..., errors="coerce")` /
+`pd.to_numeric(..., errors="coerce")`) después de todo join que pueda no
+matchear. No es cosmético: es la diferencia entre andar y explotar.
