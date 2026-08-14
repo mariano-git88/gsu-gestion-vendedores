@@ -1,0 +1,37 @@
+[
+  {
+    "fecha": "2026-08-14",
+    "hora": "11:40",
+    "titulo": "Arranca el Scoring Crediticio",
+    "tipo": "nuevo",
+    "puntos": [
+      "**La app puntúa a cada cliente de 0 a 100 según cómo paga**, lo ubica en una banda (A a E) y de ahí saca tres respuestas: cuánto plazo darle, hasta cuánta plata prestarle y cuánto cobrarle por ese plazo.",
+      "Seis secciones: **Resumen** (la foto de la cartera), **Clientes** (el buscador y la ficha de cada uno), **Oportunidad** (a quiénes ofrecerles más plazo), **Riesgo** (quiénes tienen más plazo del que justifican), **Calidad de datos** y **Cómo se calcula**.",
+      "Toda la política —los plazos por banda, el costo de fondos, el tope de crédito, los vetos— se cambia desde la barra lateral, sin tocar código.",
+      "**La app no escribe nada en Contabilium.** Solo lee: no se puede romper nada desde acá."
+    ]
+  },
+  {
+    "fecha": "2026-08-14",
+    "hora": "11:40",
+    "titulo": "Lo que apareció al construirla",
+    "tipo": "nuevo",
+    "puntos": [
+      "**La cartera tiene 86 días de DSO contra un plazo típico de 30.** De los \\$11,8 millones que nos deben, **\\$7,5 millones están por encima del plazo pactado**: financiación que ya estamos dando gratis, antes de ampliar nada.",
+      "**El campo de vencimiento de Contabilium no sirve**: trae siempre emisión + 30 días aunque la condición sea de 60 o 90. Una factura a 90 días figuraba venciendo a los 30. La app calcula el vencimiento a partir de la condición de venta.",
+      "**Los pagos no se imputan a la factura más vieja.** Se cierran las nuevas y quedan las viejas abiertas, así que las facturas que se cierran parecen puntuales aunque la deuda nunca baje. El cliente más grande figura pagando 2,7 días **antes** del vencimiento y a la vez tiene 153 días de deuda con plazo de 60. Por eso la app mira el DSO y no solo el atraso por factura.",
+      "**Los restos viejos del 10% no son deuda**: son la nota de crédito de la rendición que nunca se imputó. Hay 125 facturas así. Contarlas como mora mandaba a rojo a clientes que pagan antes del vencimiento, así que se descuentan (se puede apagar en la barra lateral).",
+      "**191 clientes ya pagan con cheque**, así que el cheque diferido no es territorio nuevo para ellos."
+    ]
+  },
+  {
+    "fecha": "2026-08-14",
+    "hora": "11:40",
+    "titulo": "Falta poner el costo de fondos real",
+    "tipo": "arreglo",
+    "puntos": [
+      "El **costo de fondos** viene cargado en **14% anual y es un supuesto**, no un dato de Suprabond. De ese número sale toda la tasa y todo el recargo que la app propone.",
+      "**Antes de usar estos números para cotizarle a un cliente, cambialo en la barra lateral por el número real.**"
+    ]
+  }
+]

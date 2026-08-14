@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import hmac
 from datetime import date, timedelta
+from pathlib import Path
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 
 import api_loader
+import cambios_credito
 import credito as cr
 import credito_api as ca
 import theme
@@ -45,10 +47,11 @@ theme.apply_theme()
 ACCENT = "#C8552F"
 INK = "#1A1A1A"
 SOFT = "#767676"
+LOGO = Path(__file__).parent / "assets" / "logo.png"
 
 
 # ---------------------------------------------------------------------
-# Tutorial y Novedades (modales abiertos desde la sidebar)
+# Tutorial y Novedades (modales abiertos desde el encabezado)
 # ---------------------------------------------------------------------
 
 @st.dialog("Tutorial — Scoring Crediticio", width="large")
@@ -56,9 +59,9 @@ def _tutorial_dialog():
     tutorial_credito.render()
 
 
-@st.dialog("Novedades — Scoring Crediticio", width="large")
-def _novedades_dialog():
-    tutorial_credito.render_novedades()
+@st.dialog("Novedades — qué cambió en la app", width="large")
+def _cambios_dialog():
+    cambios_credito.render()
 
 
 # =====================================================================
@@ -143,22 +146,11 @@ def cargar(meses: int, _hoy: date):
 # Sidebar — parámetros
 # =====================================================================
 
-_ayuda_1, _ayuda_2 = st.sidebar.columns(2)
-if _ayuda_1.button("📖 Tutorial", use_container_width=True, key="btn_tutorial"):
-    _tutorial_dialog()
-if _ayuda_2.button("🆕 Novedades", use_container_width=True, key="btn_novedades"):
-    _novedades_dialog()
-
-st.sidebar.markdown("---")
 st.sidebar.markdown("### Datos")
 meses = st.sidebar.select_slider(
     "Ventana de historia", options=[12, 18, 24], value=12,
     help="Cuánta historia se baja de Contabilium. Más meses = pull más lento.",
 )
-if st.sidebar.button("Recargar datos", use_container_width=True):
-    cargar.clear()
-    st.rerun()
-
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Política de crédito")
 cfg = cr.ConfigScore()
@@ -254,14 +246,32 @@ def tabla(df: pd.DataFrame, cols: list[str], **kw):
 
 
 # =====================================================================
-# Cabecera
+# Encabezado
 # =====================================================================
 
-st.markdown("## Scoring Crediticio")
-st.caption(
-    f"Cartera de Suprabond UY · {meses} meses de historia · "
-    f"corte {HOY:%d/%m/%Y}"
-)
+enc_logo, enc_info, enc_btn = st.columns([1.1, 2, 1.3])
+with enc_logo:
+    if LOGO.exists():
+        st.image(str(LOGO), width=190)
+    else:
+        st.markdown("### SUPRABOND")
+with enc_info:
+    st.markdown("##### Scoring Crediticio")
+    st.caption(
+        f"{len(pol):,} clientes · {int((pol['banda'] != 'S/D').sum()):,} "
+        f"con score".replace(",", ".")
+    )
+    st.caption(f"Datos al: **{HOY:%d/%m/%Y}** · {meses} meses de historia")
+    st.caption(f"Versión de la app: {cambios_credito.ultima_actualizacion()}")
+with enc_btn:
+    bt1, bt2 = st.columns(2)
+    if bt1.button("📖 Tutorial", use_container_width=True):
+        _tutorial_dialog()
+    if bt2.button("🆕 Novedades", use_container_width=True):
+        _cambios_dialog()
+    if st.button("↻ Recargar datos", use_container_width=True):
+        cargar.clear()
+        st.rerun()
 
 c1, c2, c3, c4 = st.columns(4)
 exp_total = pol["exposicion_neta"].sum()
@@ -277,14 +287,19 @@ c3.metric(
 )
 c4.metric("Clientes con score", f"{int((pol['banda'] != 'S/D').sum())}")
 
-t_res, t_cli, t_opo, t_rie, t_dat, t_doc = st.tabs(
-    ["Resumen", "Clientes", "Oportunidad", "Riesgo", "Calidad de datos",
-     "Cómo se calcula"]
+# Con `st.tabs` el contenido de una sección se derrama a la otra al recargar,
+# así que se usa segmented_control + corte explícito del script. La `key` la
+# necesitan las pruebas: sin ella el selector no se puede accionar desde
+# `streamlit.testing` y no hay forma de probar una sección.
+seccion = st.segmented_control(
+    "Sección",
+    ["Resumen", "Clientes", "Oportunidad", "Riesgo", "Calidad de datos"],
+    default="Resumen", label_visibility="collapsed", key="seccion_actual",
 )
 
 
 # ---------------------------------------------------------------- Resumen
-with t_res:
+if seccion == "Resumen":
     resumen = cr.resumen_cartera(pol)
     st.markdown("#### La cartera por banda")
     ca_, cb_ = st.columns([1, 1])
@@ -346,7 +361,7 @@ with t_res:
 
 
 # ---------------------------------------------------------------- Clientes
-with t_cli:
+elif seccion == "Clientes":
     f1, f2, f3 = st.columns([2, 1, 1])
     busca = f1.text_input("Buscar cliente", placeholder="Razón social o RUT")
     bandas = f2.multiselect(
@@ -429,7 +444,7 @@ with t_cli:
 
 
 # ---------------------------------------------------------------- Oportunidad
-with t_opo:
+elif seccion == "Oportunidad":
     sube = pol[
         (pol["plazo_sugerido"] > pol["plazo_actual"]) & (pol["banda"] != "S/D")
     ].copy()
@@ -491,7 +506,7 @@ with t_opo:
 
 
 # ---------------------------------------------------------------- Riesgo
-with t_rie:
+elif seccion == "Riesgo":
     st.markdown("#### Clientes con más plazo del que su score justifica")
     baja = pol[
         (pol["plazo_sugerido"] < pol["plazo_actual"]) & (pol["banda"] != "S/D")
@@ -519,7 +534,7 @@ with t_rie:
 
 
 # ---------------------------------------------------------------- Datos
-with t_dat:
+elif seccion == "Calidad de datos":
     st.markdown("#### Qué se pudo bajar")
     if rep.completo:
         st.success(rep.resumen())
@@ -566,72 +581,3 @@ with t_dat:
         )
     else:
         st.success("Todas las condiciones de venta tienen plazo definido.")
-
-
-# ---------------------------------------------------------------- Doc
-with t_doc:
-    st.markdown(
-        """
-#### Qué mide este score
-
-Ordena a los clientes por **comportamiento de pago observado**. No es una
-probabilidad de default: para eso haría falta una serie de incobrables y en la
-cartera de GSU prácticamente no hay. El score dice quién paga mejor y quién
-peor, con datos duros. No dice "este cliente tiene 3% de chance de no pagar".
-
-Tampoco ve nada de afuera. Sin Clearing de Informes ni Central de Riesgos del
-BCU, un cliente puede estar impecable con nosotros y en default con medio
-mercado.
-
-#### Los siete pilares
-
-| Pilar | Puntos | Qué mira |
-|---|---|---|
-| Exceso de DSO | 25 | Días de venta que tiene prestados por encima del plazo pactado |
-| Atraso promedio | 20 | Días entre el pago y el vencimiento, ponderado por monto |
-| Peor caso (p90) | 10 | El atraso del percentil 90: consistencia, no promedio |
-| Puntualidad | 10 | % de facturas pagadas dentro de los 5 días del vencimiento |
-| Antigüedad | 15 | Mitad por meses como cliente, mitad por continuidad de compra |
-| Volumen | 10 | Facturación 12m en escala log, más tendencia de los últimos 3 meses |
-| Situación hoy | 10 | Qué proporción de lo que debe está vencido |
-
-**Por qué el DSO pesa más que el atraso por factura.** El atraso por factura
-depende de a qué factura se imputó cada recibo, y en Contabilium los recibos no
-se aplican a la más vieja: se cierran facturas nuevas y queda una cola de
-facturas viejas abiertas. Eso hace que las facturas cerradas parezcan puntuales
-aunque la deuda real no baje. El caso testigo es el cliente más grande de la
-cartera: tiene un atraso promedio de −2,7 días —o sea, "paga antes"— y un DSO
-de 153 días con plazo pactado de 60. El DSO no se deja engañar por eso.
-
-#### Dos correcciones sobre los datos crudos
-
-1. **El vencimiento no se lee de Contabilium.** El campo `FechaVencimiento`
-   trae siempre emisión + 30 días, aunque la condición sea 60 o 90. Usarlo
-   inflaba en 60 días el atraso de los clientes con plazo largo, que son justo
-   los que interesan. Acá el vencimiento se deriva de la condición de venta.
-2. **La fecha de pago no está en la factura.** El campo `Pagos[]` viene siempre
-   vacío. Sale de cruzar contra los recibos.
-
-#### Cómo salen el límite y la tasa
-
-El **límite** es la exposición natural del plazo: a un cliente que compra $X
-por mes y tiene 60 días, en régimen se le van a deber dos meses de compra. Eso
-se ajusta por un factor de banda y se recorta por un tope de meses de compra,
-para no concentrar riesgo en un solo nombre.
-
-La **tasa** es costo de fondos + spread + prima de riesgo. El costo de fondos
-es un parámetro que hay que confirmar (el default de 14% es un supuesto). La
-prima por banda sale de la mora que cada banda efectivamente tiene: si la banda
-C se atrasa 18 días más que la A, esos días cuestan plata y esa es la prima
-piso. No cubre el riesgo de no cobrar nunca, que no se puede medir con estos
-datos.
-
-#### Qué haría falta para que esto sea un score de verdad
-
-- **Serie de incobrables**: marcar qué deuda se dio de baja y cuándo. Sin eso
-  no hay calibración posible.
-- **Clearing de Informes**: para clientes nuevos, y para ver los cheques
-  rechazados que con nosotros no pasaron.
-- **Registro de cheques rechazados propios**: hoy no está en Contabilium.
-        """
-    )
