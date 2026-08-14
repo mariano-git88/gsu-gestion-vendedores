@@ -32,6 +32,7 @@ import api_loader
 import credito as cr
 import credito_api as ca
 import theme
+import tutorial_credito
 
 st.set_page_config(
     page_title="Scoring Crediticio — GSU",
@@ -44,6 +45,20 @@ theme.apply_theme()
 ACCENT = "#C8552F"
 INK = "#1A1A1A"
 SOFT = "#767676"
+
+
+# ---------------------------------------------------------------------
+# Tutorial y Novedades (modales abiertos desde la sidebar)
+# ---------------------------------------------------------------------
+
+@st.dialog("Tutorial — Scoring Crediticio", width="large")
+def _tutorial_dialog():
+    tutorial_credito.render()
+
+
+@st.dialog("Novedades — Scoring Crediticio", width="large")
+def _novedades_dialog():
+    tutorial_credito.render_novedades()
 
 
 # =====================================================================
@@ -128,6 +143,13 @@ def cargar(meses: int, _hoy: date):
 # Sidebar — parámetros
 # =====================================================================
 
+_ayuda_1, _ayuda_2 = st.sidebar.columns(2)
+if _ayuda_1.button("📖 Tutorial", use_container_width=True, key="btn_tutorial"):
+    _tutorial_dialog()
+if _ayuda_2.button("🆕 Novedades", use_container_width=True, key="btn_novedades"):
+    _novedades_dialog()
+
+st.sidebar.markdown("---")
 st.sidebar.markdown("### Datos")
 meses = st.sidebar.select_slider(
     "Ventana de historia", options=[12, 18, 24], value=12,
