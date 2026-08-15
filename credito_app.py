@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import hmac
 from datetime import date, timedelta
-from pathlib import Path
 
 import altair as alt
 import pandas as pd
@@ -47,11 +46,10 @@ ACCENT = "#C8552F"
 ACCENT_DARK = "#A8451F"
 INK = "#1A1A1A"
 SOFT = "#767676"
-LOGO = Path(__file__).parent / "assets" / "logo.png"
 
-# El CSS del theme sí, el `st.logo()` NO: `theme.apply_theme()` mete el logo en
-# la sidebar y acá el logo va en el encabezado, así que se veía dos veces.
-st.markdown(theme.CUSTOM_CSS, unsafe_allow_html=True)
+# El logo va en el menú lateral fijo, que es donde lo pone `st.logo()`. En el
+# encabezado NO va: ahí quedan solo el título, los datos y los botones.
+theme.apply_theme()
 
 # Botones en naranja y métricas más chicas, como en el resto de las apps. Sin
 # achicar la métrica, un importe de 8 cifras se corta en la mitad de las
@@ -293,6 +291,9 @@ FMT = {
     "score": "{:.0f}", "dso": "{:.0f}", "exceso_dso": "{:.0f}",
     "dpd_pond": "{:.0f}", "dpd_p90": "{:.0f}", "recargo_pct": "{:.2f}%",
     "tasa_anual": "{:.1%}", "pct_cheque": "{:.0%}",
+    "dpd_vivo_max": "{:.0f}", "dias_sin_pago": "{:.0f}",
+    # Fecha: el Styler no tolera NaT con un formato de fecha, va callable.
+    "ultimo_pago": lambda d: "—" if pd.isna(d) else f"{d:%d/%m/%Y}",
 }
 
 
@@ -307,12 +308,7 @@ def tabla(df: pd.DataFrame, cols: list[str], **kw):
 # Encabezado
 # =====================================================================
 
-enc_logo, enc_info, enc_btn = st.columns([1.1, 2, 1.3])
-with enc_logo:
-    if LOGO.exists():
-        st.image(str(LOGO), width=190)
-    else:
-        st.markdown("### SUPRABOND")
+enc_info, enc_btn = st.columns([3, 1.3])
 with enc_info:
     st.markdown("##### Scoring Crediticio")
     st.caption(
@@ -580,6 +576,33 @@ elif seccion == "Riesgo":
          "dso", "exceso_dso", "plazo_actual", "plazo_sugerido",
          "exposicion_neta", "saldo_vencido", "motivo_veto"],
         height=320,
+    )
+
+    st.markdown("#### Quién debe plata vencida, y hace cuánto que no paga")
+    st.caption(
+        "Solo clientes con facturas ya vencidas. **Días de atraso** es la "
+        "factura vencida más vieja que sigue abierta. **Días sin pagar** son "
+        "los días desde el último recibo con plata de verdad: una nota de "
+        "crédito compensando una factura no cuenta como pago. Cuando los dos "
+        "números son altos a la vez, es la señal de que el cliente dejó de "
+        "pagar; si el atraso es alto pero sigue pagando, es una cola vieja "
+        "que quedó sin imputar."
+    )
+    deuda = pol[pol["saldo_vencido"] > 0].copy()
+    tabla(
+        deuda.sort_values("saldo_vencido", ascending=False),
+        ["semaforo", "banda", "razon_social", "saldo_vencido", "dpd_vivo_max",
+         "dias_sin_pago", "ultimo_pago", "exposicion_neta"],
+        height=420,
+    )
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Clientes con deuda vencida", num(len(deuda)))
+    d2.metric("Total vencido", uyu(deuda["saldo_vencido"].sum()))
+    d3.metric(
+        "Vencido de los que hace +90 días que no pagan",
+        uyu(deuda.loc[deuda["dias_sin_pago"] > 90, "saldo_vencido"].sum()),
+        help="Deben plata vencida y además hace más de 90 días que no entra "
+             "un peso de ellos. Es la plata que hay que ir a buscar primero.",
     )
 
     st.markdown("#### Los que concentran la mora")

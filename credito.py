@@ -277,16 +277,30 @@ def resumen_notas_credito(
       - Una NC con saldo propio distinto de cero es un crédito que el cliente
         todavía tiene a favor y que no se aplicó a ninguna factura (553 casos,
         $1,46M). Resta de la exposición real.
+
+    TRAMPA DE SIGNO: en las NC, `total` viene negativo pero `Saldo` viene
+    POSITIVO — es la magnitud del crédito sin aplicar, no un importe firmado.
+    Y no siempre: sobre las 17 NC de SODIMAC hay 16 positivas y una negativa,
+    así que tampoco se puede confiar en el signo para distinguir casos. Se
+    normaliza a `-abs()`, que es lo único correcto bajo las dos convenciones:
+    un crédito sin aplicar SIEMPRE resta exposición. Devolverlo firmado en
+    negativo mantiene la regla "se suma para netear" de `features_por_cliente`.
     """
     hoy = pd.Timestamp(hoy or pd.Timestamp.today().normalize())
     desde = hoy - pd.Timedelta(days=ventana_dias)
-    nc = df_comp[df_comp["tipo"].isin(TIPOS_NOTA_CREDITO)]
+    nc = df_comp[df_comp["tipo"].isin(TIPOS_NOTA_CREDITO)].copy()
     if nc.empty:
         return pd.DataFrame(columns=["nc_12m", "saldo_nc"]).rename_axis("id_cliente")
+    # El abs va FILA POR FILA, antes de agrupar: si se hiciera sobre la suma,
+    # la NC de signo invertido cancelaría a las otras en vez de sumarse.
+    nc["mag_total"] = nc["total"].abs()
+    nc["mag_saldo"] = nc["saldo"].abs()
     return pd.DataFrame(
         {
-            "nc_12m": nc[nc["emision"] >= desde].groupby("id_cliente")["total"].sum(),
-            "saldo_nc": nc.groupby("id_cliente")["saldo"].sum(),
+            "nc_12m": -nc[nc["emision"] >= desde]
+            .groupby("id_cliente")["mag_total"]
+            .sum(),
+            "saldo_nc": -nc.groupby("id_cliente")["mag_saldo"].sum(),
         }
     ).fillna(0.0)
 
@@ -332,10 +346,19 @@ def features_por_cliente(
             }
         )
 
+    # Con `pd.DataFrame()` a secas, cuando NINGÚN cliente tiene una factura
+    # cobrada estas columnas desaparecen del resultado y todo lo que las usa
+    # más abajo revienta con KeyError. Van declaradas siempre.
+    COLS_PAGO = [
+        "facturas_cobradas", "dpd_pond", "dpd_mediana", "dpd_p90", "dpd_max",
+        "pct_puntual", "plazo_pactado_max",
+    ]
     f_pago = (
         cob.groupby("id_cliente").apply(_pago, include_groups=False)
         if not cob.empty
-        else pd.DataFrame()
+        else pd.DataFrame(columns=COLS_PAGO, dtype="float64").rename_axis(
+            "id_cliente"
+        )
     )
 
     # --- volumen, antigüedad, continuidad (todo el historial) --------------
@@ -438,6 +461,20 @@ def features_por_cliente(
         feat["pct_cheque"] = feat["pct_cheque"].fillna(0.0)
         feat["usa_cheque"] = feat["pct_cheque"] > 0
 
+        # Último pago REAL. Una NC compensando una factura NO es plata que
+        # entró: si contara como pago, un cliente que hace 8 meses no paga
+        # pero al que se le emitió una NC figuraría al día.
+        real = fp[~fp["es_nota_credito"].fillna(False).astype(bool)]
+        ult = real.groupby("id_cliente")["fecha_pago"].max()
+        feat["ultimo_pago"] = pd.to_datetime(
+            pd.Series(feat.index.map(ult), index=feat.index), errors="coerce"
+        )
+        feat["dias_sin_pago"] = (hoy - feat["ultimo_pago"]).dt.days
+
+    for c in ("ultimo_pago", "dias_sin_pago"):
+        if c not in feat.columns:
+            feat[c] = pd.NaT if c == "ultimo_pago" else np.nan
+
     # --- notas de crédito: netear ventas y exposición -----------------------
     if resumen_nc is not None and not resumen_nc.empty:
         feat = feat.join(resumen_nc, how="left")
@@ -459,7 +496,8 @@ def features_por_cliente(
             feat[c] = 0.0
         feat[c] = pd.to_numeric(feat[c], errors="coerce").fillna(0.0)
 
-    # `nc_12m` y `saldo_nc` vienen negativos: se SUMAN para netear.
+    # `nc_12m` y `saldo_nc` llegan normalizados en negativo desde
+    # `resumen_notas_credito` (ver la trampa de signo ahí): se SUMAN para netear.
     feat["ventas_netas_12m"] = (feat["monto_12m"] + feat["nc_12m"]).clip(lower=0)
     feat["exposicion_neta"] = (feat["saldo_vivo"] + feat["saldo_nc"]).clip(lower=0)
     feat["compra_mensual"] = feat["ventas_netas_12m"] / 12.0
@@ -472,8 +510,8 @@ def features_por_cliente(
     # la deuda real no baje. El DSO no se deja engañar por eso: mira el saldo
     # total contra el ritmo de venta, sin importar cómo se imputó.
     #
-    # Caso testigo: SODIMAC tiene DPD ponderado de -2,7 días (pagaría "antes
-    # del vencimiento") y un DSO de 203 días con plazo pactado de 60.
+    # Caso testigo: SODIMAC tiene DPD ponderado de -1,1 días (pagaría "antes
+    # del vencimiento") y un DSO de 67 días con plazo pactado de 60.
     venta_diaria = feat["ventas_netas_12m"] / 365.0
     feat["dso"] = pd.Series(
         np.where(
@@ -482,12 +520,14 @@ def features_por_cliente(
         index=feat.index,
         dtype="float64",
     ).round(0)
-    feat["exceso_dso"] = (
-        feat["dso"]
-        - pd.to_numeric(feat.get("plazo_pactado_max"), errors="coerce").fillna(
-            PLAZO_DEFAULT
-        )
-    ).round(0)
+    # `plazo_pactado_max` sale del bloque de facturas cobradas: si NINGÚN
+    # cliente tiene una cobrada, la columna no existe y `feat.get()` devuelve
+    # None, que `to_numeric` convierte en un escalar NaN sin `.fillna`. Pasa
+    # solo con carteras muy chicas (o un test), pero revienta la app entera.
+    plazo_max = pd.to_numeric(feat.get("plazo_pactado_max"), errors="coerce")
+    if not isinstance(plazo_max, pd.Series):
+        plazo_max = pd.Series(np.nan, index=feat.index, dtype="float64")
+    feat["exceso_dso"] = (feat["dso"] - plazo_max.fillna(PLAZO_DEFAULT)).round(0)
     # Plata inmovilizada por encima de lo pactado: los días de exceso valuados
     # al ritmo de venta del cliente. Es el costo financiero que ya se está
     # pagando hoy, sin cobrar interés.

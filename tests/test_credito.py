@@ -329,6 +329,67 @@ _true("historial vacío no explota", len(vacio) == 0)
 
 
 # =====================================================================
+print("\n10. Una NC sin aplicar RESTA de la exposición (trampa de signo)")
+# En Contabilium la NC trae `total` negativo pero `Saldo` POSITIVO, y no
+# siempre: hay NC con el saldo en negativo. Sumar el campo crudo inflaba la
+# exposición en vez de netearla, y con eso el DSO, el exceso y el capital
+# excedido. Caso real: SODIMAC quedaba en 99 días de DSO en vez de 67.
+comp = _comp(
+    [
+        {"id": 1, "cli": 1, "emision": "2026-06-01", "cond": "60 Cuenta Corriente",
+         "total": 100_000.0, "saldo": 100_000.0},
+        # misma NC, las dos convenciones de signo que devuelve el ERP
+        {"id": 2, "cli": 1, "tipo": "NCF", "emision": "2026-06-02",
+         "total": -30_000.0, "saldo": 30_000.0},
+        {"id": 3, "cli": 1, "tipo": "NCF", "emision": "2026-06-03",
+         "total": -20_000.0, "saldo": -20_000.0},
+    ]
+)
+rnc = C.resumen_notas_credito(comp, hoy=HOY)
+_eq("el crédito sin aplicar se normaliza en negativo, sea cual sea el signo",
+    rnc.loc[1, "saldo_nc"], -50_000.0)
+_eq("las NC del período también se normalizan", rnc.loc[1, "nc_12m"], -50_000.0)
+
+h10 = C.armar_historial(comp, _pagos([]), hoy=HOY)
+f10 = C.features_por_cliente(h10, None, hoy=HOY, resumen_nc=rnc).set_index(
+    "id_cliente"
+)
+_eq("exposición = saldo de facturas MENOS el crédito sin aplicar",
+    f10.loc[1, "exposicion_neta"], 50_000.0)
+_true("la exposición nunca sale mayor que el saldo de las facturas",
+      bool((f10["exposicion_neta"] <= f10["saldo_vivo"] + 1e-6).all()))
+
+
+# =====================================================================
+print("\n11. Días sin pagar: una NC no es un pago")
+comp11 = _comp(
+    [{"id": 1, "cli": 1, "emision": "2026-01-05", "total": 50_000.0,
+      "saldo": 50_000.0}]
+)
+formas = pd.DataFrame(
+    [
+        {"id_recibo": 1, "id_cliente": 1, "fecha_pago": pd.Timestamp("2026-02-10"),
+         "forma": "Transferencia", "importe": 10_000.0, "es_nota_credito": False},
+        {"id_recibo": 2, "id_cliente": 1, "fecha_pago": pd.Timestamp("2026-08-01"),
+         "forma": "Nota de credito", "importe": 5_000.0, "es_nota_credito": True},
+    ]
+)
+f11 = C.features_por_cliente(
+    C.armar_historial(comp11, _pagos([]), hoy=HOY), formas, hoy=HOY
+).set_index("id_cliente")
+_is("el último pago es la transferencia, no la NC posterior",
+    f11.loc[1, "ultimo_pago"], pd.Timestamp("2026-02-10"))
+_eq("días sin pagar se cuentan desde ese pago real",
+    f11.loc[1, "dias_sin_pago"], (HOY - pd.Timestamp("2026-02-10")).days)
+
+f11b = C.features_por_cliente(
+    C.armar_historial(comp11, _pagos([]), hoy=HOY), None, hoy=HOY
+).set_index("id_cliente")
+_true("sin formas de pago, las columnas existen igual",
+      "dias_sin_pago" in f11b.columns and "ultimo_pago" in f11b.columns)
+
+
+# =====================================================================
 print("\n" + "=" * 60)
 if _fallos:
     print(f"FALLARON {len(_fallos)} casos:")

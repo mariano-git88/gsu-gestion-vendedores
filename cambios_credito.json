@@ -1,6 +1,30 @@
 [
   {
     "fecha": "2026-08-15",
+    "hora": "10:30",
+    "titulo": "Las notas de crédito estaban SUMANDO deuda en vez de restarla",
+    "tipo": "arreglo",
+    "puntos": [
+      "Cuando a un cliente se le emitió una nota de crédito y nadie la aplicó a una factura, esa plata es **un crédito a favor del cliente**: baja lo que nos debe. La app la estaba sumando a la deuda en vez de restarla, así que **toda la exposición, el DSO y el capital fuera de plazo venían inflados**.",
+      "El motivo: Contabilium devuelve el importe de la nota de crédito en negativo pero el saldo en positivo, y encima no siempre (de 17 notas de SODIMAC, 16 vienen positivas y una negativa). Ahora se toma el valor absoluto de cada una y siempre resta.",
+      "**Qué cambia en la práctica, con SODIMAC de ejemplo:** pasa de 99 a **67 días de DSO** contra un plazo de 60, y el capital que se le está financiando de más pasa de \\$466.437 a **\\$83.719**. Los números de la sección Resumen bajan por el mismo motivo.",
+      "Junto con esto se arregló una falla que tiraba la app entera si ningún cliente tenía facturas cobradas."
+    ]
+  },
+  {
+    "fecha": "2026-08-15",
+    "hora": "10:30",
+    "titulo": "Listado nuevo: quién debe plata vencida y hace cuánto que no paga",
+    "tipo": "nuevo",
+    "puntos": [
+      "En la sección **Riesgo** hay una tabla nueva con **cliente, monto vencido, días de atraso y días desde el último pago**, ordenada por lo que más pesa.",
+      "**Los dos números juntos dicen cosas distintas.** Atraso alto + hace mucho que no paga = el cliente dejó de pagar, hay que ir a buscarlo. Atraso alto pero pagó la semana pasada = es una cola vieja sin imputar, no es que no pague.",
+      "**Una nota de crédito no cuenta como pago.** Si contara, un cliente al que se le emitió una NC figuraría al día sin haber puesto un peso.",
+      "Arriba de la tabla, cuánto suma el vencido de los clientes que hace más de 90 días que no pagan: esa es la plata que hay que reclamar primero."
+    ]
+  },
+  {
+    "fecha": "2026-08-15",
     "hora": "08:51",
     "titulo": "El costo de fondos ya es el real: 20%",
     "tipo": "arreglo",
