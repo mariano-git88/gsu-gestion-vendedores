@@ -1,5 +1,17 @@
 [
   {
+    "fecha": "2026-08-15",
+    "hora": "08:51",
+    "titulo": "El costo de fondos ya es el real: 20%",
+    "tipo": "arreglo",
+    "puntos": [
+      "El **costo de fondos pasa de 14% a 20% anual**, que es la tasa real a la que se financia Suprabond. Ya no es un supuesto: las tasas y los recargos que muestra la app ahora se pueden usar para cotizar.",
+      "**La tasa sube 6 puntos para todas las bandas.** Un cliente banda A que antes salía a 21% anual ahora sale a 27%, y el recargo por pagar a 90 días en vez de 30 pasa de **3,45% a 4,44%** sobre el precio.",
+      "**Sube también el piso de la prima de riesgo**, que se calcula con el costo de fondos: los días de atraso de cada banda ahora cuestan más, así que la mora medida en la sección Resumen es más cara que la semana pasada.",
+      "Si algún día cambia la tasa a la que nos financiamos, se cambia en la barra lateral (**Tasa de interés → Costo de fondos anual**) y toda la app se recalcula sola."
+    ]
+  },
+  {
     "fecha": "2026-08-14",
     "hora": "11:40",
     "titulo": "Arranca el Scoring Crediticio",

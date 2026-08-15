@@ -171,15 +171,15 @@ pagar, que es lo que le estás prestando.
 
     tasa = costo de fondos + spread + prima de riesgo de la banda
 
-- **Costo de fondos**: lo que te cuesta tener esa plata prestada, o lo que
-  rendiría en otro lado. **Este número lo tenés que poner vos.**
+- **Costo de fondos**: lo que te cuesta tener esa plata prestada. Está en
+  **20% anual**, que es la tasa real a la que se financia Suprabond.
 - **Spread**: lo que querés ganarle al negocio de financiar.
 - **Prima de riesgo**: el recargo por banda. No se inventa: sale de cuántos
   días de más se atrasa cada banda respecto de la mejor.
 
 La columna que le sirve al vendedor es **"recargo %"**: cuánto más caro sale el
 producto por los días **extra** sobre los 30 que ya se dan sin cargo. Si dice
-3,45%, el mensaje es literalmente *"a 90 días te sale 3,45% más caro"*.
+4,44%, el mensaje es literalmente *"a 90 días te sale 4,44% más caro"*.
 """
     )
 
@@ -197,9 +197,10 @@ meses es más contexto, pero el pull tarda más.
 **Plazos por banda** — cuántos días le tocan a cada banda. Si querés ser más
 conservador, bajá los de A y B.
 
-**💰 Costo de fondos anual** — **el parámetro que importa.** Viene en 14% y es
-un supuesto, no un dato de Suprabond. De acá sale toda la tasa y todo el
-recargo. Antes de cotizarle a un cliente, poné el número real.
+**💰 Costo de fondos anual** — **el parámetro que importa.** Viene en **20%**,
+la tasa a la que se financia Suprabond. De acá sale toda la tasa y todo el
+recargo, así que el día que esa tasa cambie hay que cambiarlo. Sirve también
+para simular: subilo y mirá cómo se mueve el recargo.
 
 **Spread objetivo** — cuánto querés ganar por encima de tu costo. Es la
 decisión de si financiar es un servicio a costo o un negocio.

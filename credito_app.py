@@ -221,9 +221,9 @@ with st.sidebar.expander("Tasa de interés", expanded=True):
         st.number_input(
             "Costo de fondos anual (%)", 0.0, 100.0,
             cfg.costo_fondos_anual * 100, step=0.5,
-            help="Lo que le cuesta a GSU financiar, o lo que rendiría esa "
-                 "plata en otro lado. Es el parámetro más importante y hay "
-                 "que confirmarlo: el default de 14% es un supuesto.",
+            help="Lo que le cuesta a GSU financiar. El 20% es la tasa real a "
+                 "la que GSU se financia, confirmada en agosto de 2026. Si "
+                 "cambia, se cambia acá: de este número sale toda la tasa.",
         )
         / 100
     )

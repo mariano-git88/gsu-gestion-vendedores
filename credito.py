@@ -609,7 +609,9 @@ class ConfigScore:
     # sacar al negocio de financiar. La prima de riesgo por banda NO está
     # calibrada contra defaults: sale de la mora observada de cada banda
     # (ver `prima_por_mora_observada`).
-    costo_fondos_anual: float = 0.14   # 14% anual en UYU — PARÁMETRO A CONFIRMAR
+    costo_fondos_anual: float = 0.20   # 20% anual en UYU — confirmado por GSU
+                                       # (2026-08-15). Si cambia la tasa a la
+                                       # que GSU se financia, se cambia acá.
     spread_anual: float = 0.06
     prima_riesgo: dict[str, float] = field(
         default_factory=lambda: {"A": 0.01, "B": 0.03, "C": 0.06, "D": 0.10, "E": 0.0}
