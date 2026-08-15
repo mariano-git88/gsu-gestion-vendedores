@@ -42,12 +42,67 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-theme.apply_theme()
 
 ACCENT = "#C8552F"
+ACCENT_DARK = "#A8451F"
 INK = "#1A1A1A"
 SOFT = "#767676"
 LOGO = Path(__file__).parent / "assets" / "logo.png"
+
+# El CSS del theme sí, el `st.logo()` NO: `theme.apply_theme()` mete el logo en
+# la sidebar y acá el logo va en el encabezado, así que se veía dos veces.
+st.markdown(theme.CUSTOM_CSS, unsafe_allow_html=True)
+
+# Botones en naranja y métricas más chicas, como en el resto de las apps. Sin
+# achicar la métrica, un importe de 8 cifras se corta en la mitad de las
+# columnas.
+st.markdown(
+    """
+    <style>
+    [data-testid="stMain"] .stButton > button,
+    [data-testid="stMain"] .stDownloadButton > button,
+    [data-testid="stMain"] [data-testid="stFormSubmitButton"] > button {
+        background-color: #C8552F !important;
+        color: #FFFFFF !important;
+        border-color: #C8552F !important;
+        padding: 0.2rem 0.7rem !important;
+        font-size: 0.72rem !important;
+        letter-spacing: 0.03em;
+    }
+    [data-testid="stMain"] .stButton > button:hover,
+    [data-testid="stMain"] .stDownloadButton > button:hover,
+    [data-testid="stMain"] [data-testid="stFormSubmitButton"] > button:hover {
+        background-color: #A8451F !important;
+        border-color: #A8451F !important;
+        color: #FFFFFF !important;
+    }
+    [data-testid="stMain"] [data-testid="stMetricValue"] {
+        font-size: 1.5rem !important; line-height: 1.1 !important;
+    }
+    [data-testid="stMain"] [data-testid="stMetricLabel"] {
+        font-size: 0.75rem !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+def uyu(v, decimales: int = 0) -> str:
+    """12192334 → '$ 12.192.334'. Separadores uruguayos, no ingleses."""
+    try:
+        s = f"{float(v):,.{decimales}f}"
+    except (TypeError, ValueError):
+        return "—"
+    return "$ " + s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def num(v) -> str:
+    """1019 → '1.019'."""
+    try:
+        return f"{int(v):,}".replace(",", ".")
+    except (TypeError, ValueError):
+        return "—"
 
 
 # ---------------------------------------------------------------------
@@ -228,10 +283,13 @@ feat = feat.merge(
 )
 pol = cr.politica(cr.scorear(feat, cfg), cfg)
 
+_PLATA = lambda v: uyu(v)  # noqa: E731 — el Styler pide un callable
+
 FMT = {
-    "ventas_netas_12m": "{:,.0f}", "exposicion_neta": "{:,.0f}",
-    "limite_sugerido": "{:,.0f}", "margen_disponible": "{:,.0f}",
-    "saldo_vencido": "{:,.0f}", "capital_excedido": "{:,.0f}",
+    "ventas_netas_12m": _PLATA, "exposicion_neta": _PLATA,
+    "limite_sugerido": _PLATA, "margen_disponible": _PLATA,
+    "saldo_vencido": _PLATA, "capital_excedido": _PLATA,
+    "exposicion_extra": _PLATA, "interes_anual": _PLATA,
     "score": "{:.0f}", "dso": "{:.0f}", "exceso_dso": "{:.0f}",
     "dpd_pond": "{:.0f}", "dpd_p90": "{:.0f}", "recargo_pct": "{:.2f}%",
     "tasa_anual": "{:.1%}", "pct_cheque": "{:.0%}",
@@ -258,8 +316,8 @@ with enc_logo:
 with enc_info:
     st.markdown("##### Scoring Crediticio")
     st.caption(
-        f"{len(pol):,} clientes · {int((pol['banda'] != 'S/D').sum()):,} "
-        f"con score".replace(",", ".")
+        f"{num(len(pol))} clientes · "
+        f"{num(int((pol['banda'] != 'S/D').sum()))} con score"
     )
     st.caption(f"Datos al: **{HOY:%d/%m/%Y}** · {meses} meses de historia")
     st.caption(f"Versión de la app: {cambios_credito.ultima_actualizacion()}")
@@ -277,15 +335,15 @@ c1, c2, c3, c4 = st.columns(4)
 exp_total = pol["exposicion_neta"].sum()
 ventas_total = pol["ventas_netas_12m"].sum()
 dso_cartera = exp_total / (ventas_total / 365) if ventas_total else 0
-c1.metric("Exposición total", f"$ {exp_total:,.0f}")
+c1.metric("Exposición total", uyu(exp_total))
 c2.metric("DSO de la cartera", f"{dso_cartera:.0f} días")
 c3.metric(
     "Capital sobre el plazo pactado",
-    f"$ {pol['capital_excedido'].sum():,.0f}",
+    uyu(pol["capital_excedido"].sum()),
     help="Plata prestada por encima de los días que se pactaron. Ya se está "
          "financiando a los clientes; hoy, gratis.",
 )
-c4.metric("Clientes con score", f"{int((pol['banda'] != 'S/D').sum())}")
+c4.metric("Clientes con score", num(int((pol["banda"] != "S/D").sum())))
 
 # Con `st.tabs` el contenido de una sección se derrama a la otra al recargar,
 # así que se usa segmented_control + corte explícito del script. La `key` la
@@ -334,10 +392,15 @@ if seccion == "Resumen":
             use_container_width=True,
         )
 
-    tabla(
-        resumen,
-        ["banda", "clientes", "%_clientes", "ventas_12m", "%_ventas",
-         "exposicion", "saldo_vencido", "capital_excedido", "dso_prom"],
+    st.dataframe(
+        resumen.style.format(
+            {"ventas_12m": _PLATA, "exposicion": _PLATA,
+             "saldo_vencido": _PLATA, "capital_excedido": _PLATA,
+             "clientes": "{:.0f}", "%_clientes": "{:.1f}%",
+             "%_ventas": "{:.1f}%", "dso_prom": "{:.0f}",
+             "dpd_pond_prom": "{:.1f}"}
+        ),
+        use_container_width=True, hide_index=True,
     )
 
     st.markdown("#### Cuánto cuesta hoy la mora, medido")
@@ -353,7 +416,7 @@ if seccion == "Resumen":
         st.dataframe(
             prima.style.format(
                 {"clientes": "{:.0f}", "dpd_pond_prom": "{:.1f}",
-                 "monto_12m": "{:,.0f}", "dias_mora_extra": "{:.1f}",
+                 "monto_12m": _PLATA, "dias_mora_extra": "{:.1f}",
                  "prima_piso": "{:.2f}%"}
             ),
             use_container_width=True, hide_index=True,
@@ -401,8 +464,8 @@ elif seccion == "Clientes":
                   f"{r['exceso_dso']:+.0f} vs pactado")
         k3.metric("Plazo sugerido", f"{r['plazo_sugerido']} d",
                   f"hoy {r['plazo_actual']} d")
-        k4.metric("Límite sugerido", f"$ {r['limite_sugerido']:,.0f}",
-                  f"disponible $ {r['margen_disponible']:,.0f}")
+        k4.metric("Límite sugerido", uyu(r["limite_sugerido"]),
+                  f"disponible {uyu(r['margen_disponible'])}")
 
         st.markdown("**De dónde sale el puntaje**")
         pilares = pd.DataFrame(
@@ -436,7 +499,7 @@ elif seccion == "Clientes":
             h[["numero", "emision", "cond_venta", "total", "pagado", "saldo",
                "estado", "dpd", "dpd_corriente"]]
             .style.format(
-                {"total": "{:,.0f}", "pagado": "{:,.0f}", "saldo": "{:,.0f}",
+                {"total": _PLATA, "pagado": _PLATA, "saldo": _PLATA,
                  "dpd": "{:.0f}", "dpd_corriente": "{:.0f}"}
             ),
             use_container_width=True, hide_index=True, height=300,
@@ -456,11 +519,11 @@ elif seccion == "Oportunidad":
     sube["interes_anual"] = sube["exposicion_extra"] * sube["tasa_anual"]
 
     o1, o2, o3 = st.columns(3)
-    o1.metric("Clientes que califican a más plazo", f"{len(sube)}")
+    o1.metric("Clientes que califican a más plazo", num(len(sube)))
     o2.metric("Capital adicional a inmovilizar",
-              f"$ {sube['exposicion_extra'].sum():,.0f}")
+              uyu(sube["exposicion_extra"].sum()))
     o3.metric("Interés anual si lo usan todo",
-              f"$ {sube['interes_anual'].sum():,.0f}")
+              uyu(sube["interes_anual"].sum()))
 
     st.caption(
         "El interés de arriba es el techo teórico: supone que todos toman "
@@ -554,7 +617,7 @@ elif seccion == "Calidad de datos":
         .reset_index()
     )
     st.dataframe(
-        est.style.format({"monto": "{:,.0f}", "saldo": "{:,.0f}"}),
+        est.style.format({"monto": _PLATA, "saldo": _PLATA}),
         use_container_width=True, hide_index=True,
     )
     st.caption(
@@ -565,7 +628,7 @@ elif seccion == "Calidad de datos":
 
     st.markdown("#### Colas de rendición")
     st.metric("Saldo tratado como cola, no como deuda",
-              f"$ {pol['saldo_residual'].sum():,.0f}")
+              uyu(pol["saldo_residual"].sum()))
     st.caption(
         "Facturas vencidas hace más de 60 días a las que les quedó un resto "
         "menor al 25% del total. Casi siempre es la NC del 10% de la "
