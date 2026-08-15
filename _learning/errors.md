@@ -619,3 +619,43 @@ float which has no callable rint method`.
 **Fix:** coerción explícita (`pd.to_datetime(..., errors="coerce")` /
 `pd.to_numeric(..., errors="coerce")`) después de todo join que pueda no
 matchear. No es cosmético: es la diferencia entre andar y explotar.
+
+### Contabilium: el `Saldo` de una NC viene POSITIVO, y lo sumábamos
+
+`resumen_notas_credito` tomaba el campo `Saldo` de las notas de crédito tal
+cual y `features_por_cliente` lo SUMABA a la exposición, con el comentario
+"vienen negativos: se suman para netear". Es verdad para
+`ImporteTotalNeto`, que viene negativo. **No es verdad para `Saldo`**: viene
+positivo, porque es la *magnitud* del crédito sin aplicar. Peor: no es
+consistente — de las 17 NC de SODIMAC, 16 traen el saldo positivo y una
+negativa.
+
+Efecto: un crédito **a favor** del cliente le inflaba la deuda. Sobre la
+cartera entera, **$2,5M de exposición inventada** — DSO 85 en vez de 67, y
+$7,2M de capital fuera de plazo en vez de $5,0M. 35 clientes estaban una
+banda más abajo de lo que les correspondía.
+
+**Fix:** normalizar a `-abs()` **fila por fila** antes de agrupar. Sobre la
+suma no alcanza: la NC de signo invertido cancela a las otras. Blindado en
+`tests/test_credito.py`, caso 10.
+
+**Cómo se encontró:** Valeria revisó las cobranzas de SODIMAC a mano y dijo
+que estaban al día; la app decía 153 días de DSO. El cruce factura por
+factura contra el `Saldo` del ERP dio diferencia **cero**, así que la bajada
+estaba bien y el error tenía que estar en el cálculo. Cuando alguien de la
+operación contradice un número, cruzar contra la fuente cruda ANTES de
+defenderlo.
+
+### El bloque de facturas cobradas puede no existir
+
+Si NINGÚN cliente tiene una factura cobrada, `f_pago` salía como
+`pd.DataFrame()` vacío y desaparecían `facturas_cobradas`,
+`plazo_pactado_max` y todas las de atraso. Después, `feat.get("plazo_pactado_max")`
+devuelve `None`, `pd.to_numeric(None)` devuelve un **escalar** NaN, y
+`.fillna()` sobre un escalar tira `AttributeError`. Con la cartera real no
+pasa nunca; lo destapó un test con un solo cliente.
+
+**Fix:** declarar siempre las columnas (`COLS_PAGO`) aunque el DataFrame
+vaya vacío. Un DataFrame vacío sin columnas es una bomba de tiempo: el
+KeyError aparece lejos del lugar donde se originó
+(mismo espíritu que "errores que apuntan al lugar equivocado").
