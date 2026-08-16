@@ -45,6 +45,7 @@ DOS DECISIONES DE DATOS QUE HAY QUE CONOCER
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -261,6 +262,72 @@ def marcar_residuos(
         & (d["dpd_corriente"] > dias_min)
     )
     return d
+
+
+# Días entre la factura y su NC para considerar el par "seguro". Cuando la NC
+# sale dentro de la semana, es la anulación de esa factura: se emitió mal, se
+# anuló, se rehizo. Cuando sale meses después puede ser una devolución real
+# que se aplicó a otra cosa, y ahí hay que mirarlo a mano.
+DIAS_PAR_CONFIABLE = 7
+
+
+def pares_factura_nc(
+    hist: pd.DataFrame,
+    df_comp: pd.DataFrame,
+    dias_confianza: float = DIAS_PAR_CONFIABLE,
+) -> pd.DataFrame:
+    """Facturas abiertas que tienen una NC abierta del mismo importe.
+
+    El patrón es siempre el mismo: se anuló una factura con una nota de
+    crédito y nadie imputó la NC contra ella, así que las dos quedan
+    colgadas. La factura figura impaga y vencida, pero no es deuda: ya está
+    cancelada por la NC. Sobre la cartera de GSU (ago-2026) son 255 pares
+    por $886.701, de los cuales $862.472 se cuentan hoy como vencido.
+
+    **NO descuenta nada.** Devuelve la lista para que administración la
+    revise: emparejar por importe es una heurística, no una verdad. Dos
+    facturas del mismo monto al mismo cliente pueden emparejar con la NC
+    equivocada, y una NC vieja puede ser una devolución legítima. Por eso
+    va la columna `confianza`.
+
+    El emparejamiento es UNO A UNO: dentro de cada (cliente, importe) se
+    ordenan las dos puntas por emisión y se aparean por posición, así una
+    misma NC no puede cancelar dos facturas distintas.
+    """
+    cols = [
+        "id_cliente", "razon_social", "numero_fac", "emision_fac", "saldo",
+        "dpd_corriente", "numero_nc", "emision_nc", "dias_entre", "confianza",
+    ]
+    if hist is None or hist.empty or df_comp is None or df_comp.empty:
+        return pd.DataFrame(columns=cols)
+
+    fac = hist[hist["saldo"].abs() > 1].copy()
+    nc = df_comp[df_comp["tipo"].isin(TIPOS_NOTA_CREDITO)].copy()
+    nc = nc[nc["saldo"].abs() > 1].copy()
+    if fac.empty or nc.empty:
+        return pd.DataFrame(columns=cols)
+
+    # El importe es la clave del cruce: redondeado a centavos para que un
+    # float no rompa una igualdad que en el ERP es exacta.
+    fac["mag"] = fac["saldo"].abs().round(2)
+    nc["mag"] = nc["saldo"].abs().round(2)
+    fac = fac.sort_values(["id_cliente", "mag", "emision"])
+    nc = nc.sort_values(["id_cliente", "mag", "emision"])
+    fac["_k"] = fac.groupby(["id_cliente", "mag"]).cumcount()
+    nc["_k"] = nc.groupby(["id_cliente", "mag"]).cumcount()
+
+    par = fac.merge(
+        nc[["id_cliente", "mag", "_k", "numero", "emision"]],
+        on=["id_cliente", "mag", "_k"], suffixes=("_fac", "_nc"),
+    )
+    if par.empty:
+        return pd.DataFrame(columns=cols)
+
+    par["dias_entre"] = (par["emision_nc"] - par["emision_fac"]).dt.days
+    par["confianza"] = np.where(
+        par["dias_entre"].abs() <= dias_confianza, "alta", "revisar"
+    )
+    return par[cols].sort_values("saldo", ascending=False).reset_index(drop=True)
 
 
 def resumen_notas_credito(
@@ -904,3 +971,52 @@ def resumen_cartera(scored: pd.DataFrame) -> pd.DataFrame:
     r["%_clientes"] = (r["clientes"] / r["clientes"].sum() * 100).round(1)
     r["%_ventas"] = (r["ventas_12m"] / r["ventas_12m"].sum() * 100).round(1)
     return r.reset_index()
+
+
+# Las columnas de la foto diaria. El orden importa: es el orden de la tab del
+# Sheet, y agregar una al medio desalinea todo lo ya escrito. Van al FINAL.
+COLUMNAS_SNAPSHOT = [
+    "fecha", "clientes", "clientes_con_score", "ventas_netas_12m",
+    "exposicion", "dso", "saldo_vencido", "capital_excedido",
+    "clientes_con_vencido", "vencido_sin_pagar_90", "pares_nc_monto",
+]
+
+
+def metricas_cartera(
+    scored: pd.DataFrame,
+    fecha: date | None = None,
+    pares_nc: pd.DataFrame | None = None,
+) -> dict:
+    """La foto de hoy de la cartera, en una sola fila.
+
+    Existe porque **el histórico no se puede reconstruir hacia atrás**: el
+    `Saldo` que devuelve Contabilium es el de hoy, no el de la fecha que uno
+    quiera. Si se filtran los comprobantes por fecha, las facturas que desde
+    entonces se cobraron aparecen en cero, como si nunca hubieran estado
+    impagas — medido: el DSO "de hace 3 meses" da 18 días contra los 67 de
+    hoy, y es un artefacto, no una mejora. La única forma de tener la serie
+    es empezar a guardarla.
+    """
+    if scored is None or scored.empty:
+        return {}
+    exp = float(scored["exposicion_neta"].sum())
+    ventas = float(scored["ventas_netas_12m"].sum())
+    venc = scored[scored["saldo_vencido"] > 0]
+    sin_pagar = venc[pd.to_numeric(venc.get("dias_sin_pago"), errors="coerce") > 90]
+    return {
+        "fecha": (fecha or date.today()).isoformat(),
+        "clientes": int(len(scored)),
+        "clientes_con_score": int((scored["banda"] != "S/D").sum()),
+        "ventas_netas_12m": round(ventas, 2),
+        "exposicion": round(exp, 2),
+        "dso": round(exp / (ventas / 365.0), 1) if ventas else 0.0,
+        "saldo_vencido": round(float(scored["saldo_vencido"].sum()), 2),
+        "capital_excedido": round(float(scored["capital_excedido"].sum()), 2),
+        "clientes_con_vencido": int(len(venc)),
+        "vencido_sin_pagar_90": round(float(sin_pagar["saldo_vencido"].sum()), 2),
+        "pares_nc_monto": (
+            round(float(pares_nc["saldo"].sum()), 2)
+            if pares_nc is not None and not pares_nc.empty
+            else 0.0
+        ),
+    }

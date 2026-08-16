@@ -1,5 +1,28 @@
 [
   {
+    "fecha": "2026-08-16",
+    "hora": "09:20",
+    "titulo": "$886.701 de facturas que ya están canceladas y figuran impagas",
+    "tipo": "nuevo",
+    "puntos": [
+      "En **Calidad de datos** hay una tabla nueva: **255 facturas abiertas que tienen una nota de crédito abierta del mismo importe exacto, del mismo cliente**. Se anuló la factura con una NC y nadie imputó la NC contra ella, así que quedaron las dos colgadas.",
+      "**\\$866.718 de eso se está contando hoy como deuda vencida** — el 18% de todo el vencido de la cartera. No es plata a cobrar: es trabajo administrativo. Se arregla imputando la NC contra la factura en Contabilium, y ahí desaparecen de la lista solas.",
+      "**La app no descuenta nada por su cuenta.** Emparejar por importe es una heurística: dos facturas del mismo monto pueden emparejar con la NC equivocada. Las que tienen la NC dentro de la semana de la factura salen marcadas como **confianza alta** (\\$578.760, esas son casi seguras); el resto dice **revisar**.",
+      "Hay un botón para bajar la lista en Excel y pasársela a administración."
+    ]
+  },
+  {
+    "fecha": "2026-08-16",
+    "hora": "09:20",
+    "titulo": "Sección nueva: Tendencia",
+    "tipo": "nuevo",
+    "puntos": [
+      "**El histórico de la cartera no se puede reconstruir hacia atrás.** Contabilium devuelve el saldo de HOY, no el que había en una fecha pasada: si se filtra por fecha, las facturas que desde entonces se cobraron aparecen en cero, como si nunca hubieran estado impagas. Calculado así, el DSO \\\"de hace tres meses\\\" da 18 días contra los 67 reales de hoy — es un espejismo.",
+      "Por eso la app ahora **guarda una foto por día**: DSO, exposición, vencido, capital fuera de plazo y cuánto deben los que hace más de 90 días que no pagan. Se guarda sola al abrir la app, una vez por día.",
+      "**Hoy el gráfico está casi vacío y eso es lo esperado**: la serie arranca ahora. En un mes se va a poder ver si la cartera mejora o empeora, que es la pregunta que hoy no se puede contestar."
+    ]
+  },
+  {
     "fecha": "2026-08-15",
     "hora": "10:30",
     "titulo": "Las notas de crédito estaban SUMANDO deuda en vez de restarla",

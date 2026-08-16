@@ -32,6 +32,7 @@ import api_loader
 import cambios_credito
 import credito as cr
 import credito_api as ca
+import gsheets
 import theme
 import tutorial_credito
 
@@ -280,6 +281,24 @@ feat = feat.merge(
     df_cli[["id_cliente", "documento", "ciudad"]], on="id_cliente", how="left"
 )
 pol = cr.politica(cr.scorear(feat, cfg), cfg)
+pares_nc = cr.pares_factura_nc(hist, df_comp)
+
+
+# --- Foto del día -----------------------------------------------------
+# El histórico NO se puede reconstruir hacia atrás (ver `metricas_cartera`),
+# así que se guarda una foto por día. Best-effort: si el Sheet no está
+# configurado o falla, la app sigue igual. Se marca "intentado hoy" ANTES de
+# escribir, como en `app.py`, para no reintentar en cada rerun.
+if st.session_state.get("credito_snap_dia") != HOY.isoformat():
+    st.session_state.credito_snap_dia = HOY.isoformat()
+    try:
+        gsheets.append_credito_snapshot(
+            dict(st.secrets.get("gsheets", {})),
+            cr.metricas_cartera(pol, fecha=HOY, pares_nc=pares_nc),
+            cr.COLUMNAS_SNAPSHOT,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 _PLATA = lambda v: uyu(v)  # noqa: E731 — el Styler pide un callable
 
@@ -347,7 +366,8 @@ c4.metric("Clientes con score", num(int((pol["banda"] != "S/D").sum())))
 # `streamlit.testing` y no hay forma de probar una sección.
 seccion = st.segmented_control(
     "Sección",
-    ["Resumen", "Clientes", "Oportunidad", "Riesgo", "Calidad de datos"],
+    ["Resumen", "Clientes", "Oportunidad", "Riesgo", "Tendencia",
+     "Calidad de datos"],
     default="Resumen", label_visibility="collapsed", key="seccion_actual",
 )
 
@@ -619,8 +639,122 @@ elif seccion == "Riesgo":
     )
 
 
+# ------------------------------------------------------------ Tendencia
+elif seccion == "Tendencia":
+    st.markdown("#### Cómo viene evolucionando la cartera")
+    st.caption(
+        "**Esta serie se construye hacia adelante, no hacia atrás.** "
+        "Contabilium devuelve el saldo de HOY, no el que había en una fecha "
+        "pasada: si se filtra por fecha, las facturas que desde entonces se "
+        "cobraron aparecen en cero, como si nunca hubieran estado impagas "
+        "(el DSO \"de hace tres meses\" da 18 días contra los 67 reales de "
+        "hoy — es un espejismo, no una mejora). Por eso la app guarda una "
+        "foto por día, y el gráfico se va llenando solo."
+    )
+    try:
+        serie = gsheets.read_credito_snapshots(
+            dict(st.secrets.get("gsheets", {})), cr.COLUMNAS_SNAPSHOT
+        )
+    except Exception as e:  # noqa: BLE001
+        serie = pd.DataFrame()
+        st.warning(
+            "No se pudo leer el histórico. Falta configurar la sección "
+            f"`[gsheets]` en los secrets de este app. Detalle: {e}"
+        )
+
+    if serie.empty:
+        st.info(
+            "Todavía no hay fotos guardadas. La primera se guarda sola hoy, "
+            "al abrir la app. Volvé mañana y va a haber dos."
+        )
+    else:
+        st.caption(f"{num(len(serie))} fotos · desde el "
+                   f"{serie['fecha'].min():%d/%m/%Y}")
+        METRICAS = {
+            "DSO (días)": "dso",
+            "Exposición": "exposicion",
+            "Saldo vencido": "saldo_vencido",
+            "Capital sobre el plazo pactado": "capital_excedido",
+            "Vencido de los que no pagan hace +90 días": "vencido_sin_pagar_90",
+        }
+        elegida = st.selectbox("Qué mirar", list(METRICAS), index=0)
+        col = METRICAS[elegida]
+        st.altair_chart(
+            alt.Chart(serie).mark_line(point=True, color=ACCENT).encode(
+                x=alt.X("fecha:T", title=None),
+                y=alt.Y(f"{col}:Q", title=elegida,
+                        scale=alt.Scale(zero=False)),
+                tooltip=["fecha:T", alt.Tooltip(f"{col}:Q", format=",.0f")],
+            ).properties(height=320),
+            use_container_width=True,
+        )
+        if len(serie) >= 2:
+            pri, ult = serie.iloc[0], serie.iloc[-1]
+            d1, d2, d3 = st.columns(3)
+            d1.metric("Hoy", f"{ult[col]:,.0f}".replace(",", "."))
+            d2.metric(f"El {pri['fecha']:%d/%m}",
+                      f"{pri[col]:,.0f}".replace(",", "."))
+            d3.metric("Diferencia", f"{ult[col] - pri[col]:+,.0f}"
+                      .replace(",", "."))
+        st.dataframe(
+            serie.sort_values("fecha", ascending=False),
+            use_container_width=True, hide_index=True, height=260,
+        )
+
+
 # ---------------------------------------------------------------- Datos
 elif seccion == "Calidad de datos":
+    st.markdown("#### Facturas que ya están canceladas por una nota de crédito")
+    st.caption(
+        "Facturas abiertas que tienen **una nota de crédito abierta del mismo "
+        "importe exacto, del mismo cliente**. El patrón es siempre el mismo: "
+        "se anuló la factura con una NC y nadie imputó la NC contra ella, así "
+        "que quedaron las dos colgadas. La factura figura impaga y vencida, "
+        "pero el cliente no debe esa plata."
+    )
+    if pares_nc.empty:
+        st.success("No hay facturas en esta situación.")
+    else:
+        venc_nc = pares_nc[pares_nc["dpd_corriente"] > 0]
+        alta = pares_nc[pares_nc["confianza"] == "alta"]
+        q1, q2, q3 = st.columns(3)
+        q1.metric("Facturas a revisar", num(len(pares_nc)),
+                  help=f"{pares_nc['id_cliente'].nunique()} clientes")
+        q2.metric("Contado hoy como vencido", uyu(venc_nc["saldo"].sum()),
+                  help="Sobre el total de deuda vencida de la cartera.")
+        q3.metric("De confianza alta", uyu(alta["saldo"].sum()),
+                  help="La NC se emitió dentro de la semana de la factura: "
+                       "es la anulación de esa factura, no una devolución "
+                       "posterior.")
+        st.caption(
+            "**La app no descuenta nada de esto.** Emparejar por importe es "
+            "una heurística: dos facturas del mismo monto pueden emparejar "
+            "con la NC equivocada, y una NC de meses después puede ser una "
+            "devolución real que se aplicó a otra cosa. Por eso las de "
+            "`confianza = revisar` hay que mirarlas una por una. Lo que "
+            "corresponde es **imputar la NC contra la factura en "
+            "Contabilium**; ahí desaparecen de esta lista solas."
+        )
+        solo_alta = st.checkbox("Ver solo las de confianza alta", value=False)
+        ver = alta if solo_alta else pares_nc
+        st.dataframe(
+            ver.style.format({"saldo": _PLATA, "dpd_corriente": "{:.0f}",
+                              "dias_entre": "{:.0f}",
+                              "emision_fac": lambda d: f"{d:%d/%m/%Y}",
+                              "emision_nc": lambda d: f"{d:%d/%m/%Y}"}),
+            use_container_width=True, hide_index=True, height=380,
+            column_order=["razon_social", "numero_fac", "emision_fac", "saldo",
+                          "dpd_corriente", "numero_nc", "emision_nc",
+                          "dias_entre", "confianza"],
+        )
+        st.download_button(
+            "Bajar la lista para administración",
+            ver.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"facturas_con_nc_{HOY:%Y-%m-%d}.csv",
+            mime="text/csv",
+        )
+
+    st.divider()
     st.markdown("#### Qué se pudo bajar")
     if rep.completo:
         st.success(rep.resumen())

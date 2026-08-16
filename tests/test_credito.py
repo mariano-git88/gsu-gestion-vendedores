@@ -390,6 +390,73 @@ _true("sin formas de pago, las columnas existen igual",
 
 
 # =====================================================================
+print("\n12. Facturas canceladas por una NC que nadie imputó")
+# Sobre la cartera real son 255 pares por $886.701, casi todo contado como
+# vencido. Emparejar por importe es heurística: lo que NO puede pasar es que
+# una misma NC cancele dos facturas distintas.
+comp12 = _comp(
+    [
+        # par exacto, NC al día siguiente → confianza alta
+        {"id": 1, "cli": 1, "emision": "2026-01-10", "total": 50_000.0,
+         "saldo": 50_000.0},
+        {"id": 2, "cli": 1, "tipo": "NCF", "emision": "2026-01-11",
+         "total": -50_000.0, "saldo": 50_000.0},
+        # par exacto pero la NC salió 4 meses después → a revisar
+        {"id": 3, "cli": 1, "emision": "2026-02-01", "total": 30_000.0,
+         "saldo": 30_000.0},
+        {"id": 4, "cli": 1, "tipo": "NCF", "emision": "2026-06-01",
+         "total": -30_000.0, "saldo": 30_000.0},
+        # DOS facturas del mismo importe y UNA sola NC: solo una empareja
+        {"id": 5, "cli": 2, "emision": "2026-03-01", "total": 9_000.0,
+         "saldo": 9_000.0},
+        {"id": 6, "cli": 2, "emision": "2026-03-02", "total": 9_000.0,
+         "saldo": 9_000.0},
+        {"id": 7, "cli": 2, "tipo": "NCF", "emision": "2026-03-02",
+         "total": -9_000.0, "saldo": 9_000.0},
+        # misma plata pero de OTRO cliente: no tiene que cruzar
+        {"id": 8, "cli": 3, "emision": "2026-04-01", "total": 50_000.0,
+         "saldo": 50_000.0},
+        # factura cobrada: no está abierta, no entra
+        {"id": 9, "cli": 1, "emision": "2026-04-05", "total": 7_000.0,
+         "saldo": 0.0},
+        {"id": 10, "cli": 1, "tipo": "NCF", "emision": "2026-04-05",
+         "total": -7_000.0, "saldo": 7_000.0},
+    ]
+)
+h12 = C.armar_historial(comp12, _pagos([]), hoy=HOY)
+par = C.pares_factura_nc(h12, comp12)
+_is("empareja solo las que corresponden", len(par), 3)
+_eq("plata emparejada", par["saldo"].sum(), 89_000.0)
+_true("una NC no puede cancelar dos facturas",
+      int(par["numero_nc"].duplicated().sum()) == 0)
+_true("una factura no aparece dos veces",
+      int(par["numero_fac"].duplicated().sum()) == 0)
+_true("no cruza entre clientes distintos",
+      3 not in set(par["id_cliente"]))
+conf = dict(zip(par["numero_fac"], par["confianza"]))
+_is("NC al día siguiente → alta", conf["A-00000001"], "alta")
+_is("NC cuatro meses después → revisar", conf["A-00000003"], "revisar")
+_true("la factura ya cobrada no entra",
+      "A-00000009" not in set(par["numero_fac"]))
+_true("sin comprobantes no explota", C.pares_factura_nc(h12, _comp([])).empty)
+
+
+# =====================================================================
+print("\n13. La foto del día trae todas las columnas del Sheet")
+# Si `metricas_cartera` devuelve una clave de más o de menos, la fila entra
+# desalineada en el Sheet y ensucia la serie para siempre.
+feat13 = C.features_por_cliente(h12, None, hoy=HOY)
+pol13 = C.politica(C.scorear(feat13, C.ConfigScore()), C.ConfigScore())
+m = C.metricas_cartera(pol13, fecha=HOY.date(), pares_nc=par)
+_is("las claves son exactamente las columnas del Sheet, y en orden",
+    list(m.keys()), C.COLUMNAS_SNAPSHOT)
+_is("la fecha va en ISO", m["fecha"], "2026-08-13")
+_eq("el monto de los pares viaja en la foto", m["pares_nc_monto"], 89_000.0)
+_true("una cartera vacía devuelve {} y no una fila basura",
+      C.metricas_cartera(pd.DataFrame()) == {})
+
+
+# =====================================================================
 print("\n" + "=" * 60)
 if _fallos:
     print(f"FALLARON {len(_fallos)} casos:")

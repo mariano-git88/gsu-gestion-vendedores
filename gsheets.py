@@ -74,6 +74,11 @@ TAB_EQUIVALENCIAS_LISTAS = "equivalencias_uy_ar"
 TAB_STOCK_SNAPSHOTS = "stock_snapshots"
 STOCK_SNAPSHOT_COLUMNS = ["fecha", "sku", "stock"]
 
+# Foto diaria de la cartera para el scoring crediticio. Una fila por día.
+# Las columnas las define `credito.COLUMNAS_SNAPSHOT`; acá no se duplican
+# para que no puedan quedar desalineadas entre los dos módulos.
+TAB_CREDITO_SNAPSHOTS = "credito_snapshots"
+
 # Tabla de equivalencias entre SKUs UY (Contabilium) y SKUs AR
 # (export Lista_Marketing). Una fila por equivalencia confirmada
 # manualmente desde listas_app.py.
@@ -1062,3 +1067,71 @@ def delete_equivalencia_lista(
     ws.clear()
     ws.update("A1", grid, value_input_option="RAW")
     return {"eliminada": True, "filas_restantes": len(nuevas)}
+
+
+# =====================================================================
+# Foto diaria de la cartera de crédito
+# =====================================================================
+
+def append_credito_snapshot(
+    gsheets_section: dict,
+    metricas: dict,
+    columnas: list[str],
+) -> bool:
+    """Guarda la foto de hoy de la cartera en la tab `credito_snapshots`.
+
+    Una fila por día. Si ya hay una fila con esa fecha, **la pisa** en vez de
+    apendar: abrir la app dos veces el mismo día no tiene que dejar dos
+    fotos, y la segunda es la buena (los datos se refrescaron).
+
+    `columnas` viene de `credito.COLUMNAS_SNAPSHOT` para no duplicar el
+    schema. Devuelve True si escribió.
+
+    Se llama best-effort desde la app: que falle el Sheet no puede tumbar el
+    scoring. El caller marca "intentado hoy" ANTES de llamar.
+    """
+    if not metricas or not columnas:
+        return False
+
+    sh = _open_sheet(gsheets_section)
+    ws = _ensure_worksheet(sh, TAB_CREDITO_SNAPSHOTS, rows=2000,
+                           cols=len(columnas))
+    filas = ws.get_all_values()
+    if not filas or filas[0][:len(columnas)] != columnas:
+        ws.update("A1", [columnas], value_input_option="RAW")
+        filas = ws.get_all_values()
+
+    # RAW y no USER_ENTERED: con USER_ENTERED una fecha ISO se convierte en
+    # serial de Sheets y al releerla vuelve como número.
+    fila = [str(metricas.get(c, "")) for c in columnas]
+    fecha = str(metricas.get("fecha", ""))
+    for i, r in enumerate(filas[1:], start=2):
+        if r and r[0] == fecha:
+            ws.update(f"A{i}", [fila], value_input_option="RAW")
+            return True
+    ws.append_row(fila, value_input_option="RAW")
+    return True
+
+
+def read_credito_snapshots(
+    gsheets_section: dict,
+    columnas: list[str],
+) -> pd.DataFrame:
+    """Lee la serie histórica de la cartera. Vacía si todavía no hay nada."""
+    vacio = pd.DataFrame({c: pd.Series(dtype="float64") for c in columnas})
+    vacio["fecha"] = pd.Series(dtype="datetime64[ns]")
+    sh = _open_sheet(gsheets_section)
+    ws = _ensure_worksheet(sh, TAB_CREDITO_SNAPSHOTS, cols=len(columnas))
+    filas = ws.get_all_values()
+    if not filas or len(filas) < 2:
+        return vacio
+    df = pd.DataFrame(filas[1:], columns=filas[0])
+    for c in columnas:
+        if c not in df.columns:
+            df[c] = None
+    df = df[columnas]
+    df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce").dt.normalize()
+    for c in columnas:
+        if c != "fecha":
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df.dropna(subset=["fecha"]).sort_values("fecha").reset_index(drop=True)
