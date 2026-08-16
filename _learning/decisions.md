@@ -1845,3 +1845,56 @@ se puede medir.
 
 **Confirmado por:** pendiente de revisión de Mariano (alcance sí, parámetros
 de política no).
+
+## 2026-08-16 — El histórico de la cartera se guarda, no se reconstruye
+
+**Decisión:** la sección Tendencia del scoring crediticio se alimenta de una
+foto diaria (`credito_snapshots` en el Sheet), no de un cálculo retroactivo.
+
+**Por qué:** se probó reconstruirlo filtrando comprobantes por fecha de
+emisión y recalculando a esa fecha de corte. Da DSO 18 días para mayo y 13
+para febrero, contra 67 hoy. **Es un artefacto:** el campo `Saldo` que
+devuelve Contabilium es el de HOY, no el de la fecha de corte, así que las
+8.030 facturas emitidas antes de mayo que desde entonces se cobraron aparecen
+con saldo cero — como si nunca hubieran estado impagas. Cualquier serie
+armada así muestra una cartera que mejora mágicamente cuanto más atrás se
+mira.
+
+**Alternativas descartadas:**
+- *Reconstruir restando los recibos posteriores a la fecha de corte*: se
+  puede para las facturas que están en el pull, pero no para las anteriores
+  a la ventana, y tampoco para las NC. Da una serie a medias que igual hay
+  que explicar. Si hay que explicarla, mejor la honesta.
+- *Guardar el detalle completo por día* (una fila por factura abierta): la
+  tab crece 1.200 filas por día. Con las métricas agregadas alcanza para la
+  pregunta real ("¿mejora o empeora?"), y es una fila por día.
+- *Job programado*: el repo no tiene GitHub Actions y montar uno para esto
+  es desproporcionado. Se guarda al abrir la app, una vez por día, con el
+  mismo patrón que `app.py` usa para `stock_snapshots`. Si nadie abre la app
+  un día, falta ese punto: aceptable para una serie que se mira por mes.
+
+**Consecuencia:** la fila se PISA si ya existe una de esa fecha, así que
+abrir la app dos veces el mismo día no duplica, y la segunda foto (con datos
+más frescos) gana.
+
+## 2026-08-16 — Las facturas canceladas por NC se marcan, no se descuentan
+
+**Decisión:** `pares_factura_nc` lista las facturas abiertas que tienen una
+NC abierta del mismo importe, pero **no las resta** de la mora ni de la
+exposición.
+
+**Por qué:** son $886.701 (255 pares), de los cuales $866.718 figuran como
+vencido — el 18% de la mora. La tentación de descontarlos automáticamente es
+fuerte, pero el emparejamiento es por importe: dos facturas del mismo monto
+al mismo cliente pueden aparear con la NC equivocada, y una NC emitida meses
+después puede ser una devolución legítima que se aplicó a otra cosa. Un
+descuento automático borraría deuda real en silencio, que es exactamente el
+error que no se puede cometer en una herramienta de crédito.
+
+**Cómo se mitiga:** columna `confianza` = alta cuando la NC salió dentro de
+los 7 días de la factura (123 pares, $578.760: ahí es la anulación de esa
+factura). El resto queda como `revisar`. La corrección de verdad es imputar
+la NC en Contabilium; cuando eso pasa, el par desaparece solo de la lista.
+
+Misma familia que [[feedback_crafters_descuento_proveedor]]: medir sí,
+decidir no.
