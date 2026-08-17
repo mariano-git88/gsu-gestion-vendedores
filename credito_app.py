@@ -297,8 +297,12 @@ if st.session_state.get("credito_snap_dia") != HOY.isoformat():
             cr.metricas_cartera(pol, fecha=HOY, pares_nc=pares_nc),
             cr.COLUMNAS_SNAPSHOT,
         )
-    except Exception:  # noqa: BLE001
-        pass
+        st.session_state.credito_snap_error = None
+    except Exception as e:  # noqa: BLE001
+        # Se guarda el motivo y se muestra en Tendencia. Un `except: pass` acá
+        # deja la serie sin escribirse durante meses sin que nadie se entere:
+        # el gráfico se ve "vacío porque recién empieza", no "roto".
+        st.session_state.credito_snap_error = f"{type(e).__name__}: {e}"
 
 _PLATA = lambda v: uyu(v)  # noqa: E731 — el Styler pide un callable
 
@@ -660,6 +664,21 @@ elif seccion == "Tendencia":
         st.warning(
             "No se pudo leer el histórico. Falta configurar la sección "
             f"`[gsheets]` en los secrets de este app. Detalle: {e}"
+        )
+
+    _snap_err = st.session_state.get("credito_snap_error")
+    if _snap_err:
+        st.error(
+            f"**La foto de hoy no se pudo guardar**, así que la serie no "
+            f"avanza. Motivo: `{_snap_err}`"
+        )
+    elif not serie.empty and (
+        serie["fecha"].max().date() < HOY
+    ):
+        st.warning(
+            f"La última foto es del {serie['fecha'].max():%d/%m/%Y} y hoy es "
+            f"el {HOY:%d/%m/%Y}. Si esto se repite, algo está fallando al "
+            f"escribir."
         )
 
     if serie.empty:
