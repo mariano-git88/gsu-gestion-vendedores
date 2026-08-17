@@ -478,14 +478,23 @@ elif seccion == "Clientes":
     )
     if elegido:
         r = v[v["razon_social"] == elegido].iloc[0]
+        # `delta` con texto: Streamlit no lo puede leer como número y por
+        # defecto lo pinta VERDE con flecha para arriba. En esta ficha eso
+        # daba vuelta el sentido: "+140 días vs pactado" y "disponible
+        # -$80.863" son las dos cosas malas y se veían en verde. Los deltas
+        # informativos van en "off" (gris, sin flecha) y el exceso de DSO en
+        # "inverse", que es lo que es: más días, peor.
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Score", f"{r['score']:.0f}", f"Banda {r['banda']}")
+        k1.metric("Score", f"{r['score']:.0f}", f"Banda {r['banda']}",
+                  delta_color="off")
         k2.metric("DSO", f"{r['dso']:.0f} d",
-                  f"{r['exceso_dso']:+.0f} vs pactado")
+                  f"{r['exceso_dso']:+.0f} días vs lo pactado",
+                  delta_color="inverse")
         k3.metric("Plazo sugerido", f"{r['plazo_sugerido']} d",
-                  f"hoy {r['plazo_actual']} d")
+                  f"hoy {r['plazo_actual']} d", delta_color="off")
         k4.metric("Límite sugerido", uyu(r["limite_sugerido"]),
-                  f"disponible {uyu(r['margen_disponible'])}")
+                  f"disponible {uyu(r['margen_disponible'])}",
+                  delta_color="inverse" if r["margen_disponible"] < 0 else "off")
 
         st.markdown("**De dónde sale el puntaje**")
         pilares = pd.DataFrame(
