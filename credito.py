@@ -85,9 +85,51 @@ TIPOS_NOTA_CREDITO = frozenset({"NCF", "NCT", "NCE", "NCTK"})
 TOL_SALDO = 1.0  # UYU
 
 
+# Clientes que cuentan el plazo desde el CIERRE DEL MES de facturación, no
+# desde la fecha de la factura. Es la práctica de las grandes superficies:
+# juntan todo el mes y de ahí arrancan a contar los días.
+#
+# Verificado para SODIMAC el 17-ago-2026 contra el análisis manual de Valeria:
+# aplicando esta regla, las facturas que la app marcaba vencidas coinciden
+# EXACTAMENTE con las 7 que ella reclama ($191.662), ni una más ni una menos.
+# Con emisión + plazo, la app marcaba 4 facturas de junio como vencidas
+# ($68.163) que en realidad recién vencen el 29-ago.
+#
+# Va como lista explícita y NO como default: solo se aplica donde está
+# confirmado con el cliente. Cuando Valeria cierre el análisis de las otras
+# grandes superficies (TIENDA INGLESA, DISCO, DEVOTO, GEANT), se agregan acá.
+VENCE_FIN_DE_MES: frozenset[int] = frozenset({
+    146574,  # SODIMAC — confirmado 17-ago-2026
+})
+
+
 def plazo_pactado(condicion: str) -> int:
     """Días de plazo que implica una condición de venta."""
     return PLAZO_POR_CONDICION.get((condicion or "").strip(), PLAZO_DEFAULT)
+
+
+def fecha_vencimiento(
+    emision: pd.Series,
+    plazo_dias: pd.Series,
+    id_cliente: pd.Series | None = None,
+    clientes_fin_de_mes: frozenset[int] | set[int] | None = None,
+) -> pd.Series:
+    """Vencimiento real de cada factura.
+
+    Por defecto es emisión + plazo. Para los clientes de
+    `VENCE_FIN_DE_MES` el plazo arranca al cierre del mes de facturación,
+    que es como lo cuentan ellos (ver la nota de la constante).
+    """
+    cli_fm = VENCE_FIN_DE_MES if clientes_fin_de_mes is None else clientes_fin_de_mes
+    base = pd.to_datetime(emision)
+    if id_cliente is not None and cli_fm:
+        # MonthEnd(0) lleva al último día del mes y no mueve lo que ya está
+        # en fin de mes — con MonthEnd(1) una factura del 30/6 se iría a julio.
+        fm = id_cliente.isin(cli_fm)
+        base = base.where(~fm, base + pd.offsets.MonthEnd(0))
+    return base + pd.to_timedelta(
+        pd.to_numeric(plazo_dias, errors="coerce").fillna(PLAZO_DEFAULT), unit="D"
+    )
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -101,6 +143,7 @@ def armar_historial(
     df_comp: pd.DataFrame,
     df_pagos: pd.DataFrame,
     hoy: pd.Timestamp | None = None,
+    clientes_fin_de_mes: frozenset[int] | set[int] | None = None,
 ) -> pd.DataFrame:
     """Una fila por factura, con cuántos días tardó en cobrarse.
 
@@ -110,6 +153,8 @@ def armar_historial(
       df_pagos: imputaciones de recibos. Columnas: id_comprobante,
         fecha_pago, importe.
       hoy: fecha de corte. Default: hoy.
+      clientes_fin_de_mes: ids de clientes que cuentan el plazo desde el
+        cierre del mes de facturación. Default: `VENCE_FIN_DE_MES`.
 
     Devuelve columnas agregadas:
       plazo_pactado, vencimiento, pagado, n_pagos, fecha_pago_pond,
@@ -144,8 +189,9 @@ def armar_historial(
         return fac
 
     fac["plazo_pactado"] = fac["cond_venta"].map(plazo_pactado)
-    fac["vencimiento"] = fac["emision"] + pd.to_timedelta(
-        fac["plazo_pactado"], unit="D"
+    fac["vencimiento"] = fecha_vencimiento(
+        fac["emision"], fac["plazo_pactado"], fac.get("id_cliente"),
+        clientes_fin_de_mes=clientes_fin_de_mes,
     )
 
     # --- Agregado de pagos por factura -------------------------------------

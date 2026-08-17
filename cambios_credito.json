@@ -1,5 +1,17 @@
 [
   {
+    "fecha": "2026-08-17",
+    "hora": "13:40",
+    "titulo": "Las grandes superficies cuentan el plazo desde el cierre del mes",
+    "tipo": "arreglo",
+    "puntos": [
+      "**SODIMAC toma el mes de la factura y de ahí cuenta 60 días**, no 60 días desde la fecha de cada factura. La app contaba desde la emisión, así que marcaba **4 facturas de junio como vencidas por \\$68.164** cuando en realidad recién vencen el 29 de agosto.",
+      "Confirmado contra el análisis manual de Valeria: con la regla corregida, las facturas vencidas de SODIMAC que muestra la app son **exactamente las 7 que ella reclama, por \\$191.662**. Ni una más, ni una menos.",
+      "SODIMAC pasa a pagar **19 días antes** del vencimiento real (antes figuraba en 1 día antes) y su puntaje sube de 85,7 a 89,5. Sigue vetado, pero por la cola de facturas viejas de 2025, no por cómo paga hoy.",
+      "**La regla se aplica solo donde está confirmada con el cliente**, no por default. Hoy está SODIMAC. Cuando estén los análisis de TIENDA INGLESA, DISCO, DEVOTO y GEANT se agregan, y el vencido de la cartera va a bajar bastante más."
+    ]
+  },
+  {
     "fecha": "2026-08-16",
     "hora": "09:20",
     "titulo": "$886.701 de facturas que ya están canceladas y figuran impagas",

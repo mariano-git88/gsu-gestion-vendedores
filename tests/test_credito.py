@@ -457,6 +457,44 @@ _true("una cartera vacía devuelve {} y no una fila basura",
 
 
 # =====================================================================
+print("\n14. Las grandes superficies cuentan el plazo desde el cierre del mes")
+# SODIMAC toma el mes de facturación + 60 días. Con emisión + 60, la app
+# marcaba vencidas 4 facturas de junio por $68.163 que recién vencen el
+# 29-ago. Verificado contra el análisis manual de Valeria (17-ago-2026):
+# con esta regla, las vencidas coinciden exactamente con las que ella reclama.
+comp14 = _comp(
+    [
+        {"id": 1, "cli": 500, "emision": "2026-06-02",
+         "cond": "60 Cuenta Corriente", "total": 10_000.0, "saldo": 10_000.0},
+        {"id": 2, "cli": 500, "emision": "2026-06-30",
+         "cond": "60 Cuenta Corriente", "total": 10_000.0, "saldo": 10_000.0},
+        {"id": 3, "cli": 999, "emision": "2026-06-02",
+         "cond": "60 Cuenta Corriente", "total": 10_000.0, "saldo": 10_000.0},
+    ]
+)
+h14 = C.armar_historial(comp14, _pagos([]), hoy=HOY, clientes_fin_de_mes={500})
+venc = dict(zip(h14["id"], h14["vencimiento"]))
+_is("el plazo arranca al cierre del mes, no en la emisión",
+    str(venc[1].date()), "2026-08-29")
+_is("una factura del último día del mes NO se corre un mes más",
+    str(venc[2].date()), "2026-08-29")
+_is("el cliente que no está en la lista sigue con emisión + plazo",
+    str(venc[3].date()), "2026-08-01")
+
+# El 13-ago la de emisión+60 ya está vencida y la de fin de mes todavía no:
+# es exactamente la diferencia que hacía que la app y Valeria no coincidieran.
+d14 = dict(zip(h14["id"], h14["dpd_corriente"]))
+_true("con fin de mes todavía no vencía", d14[1] < 0)
+_true("con emisión + plazo ya figuraba vencida", d14[3] > 0)
+
+_true("por default se usa la lista del módulo",
+      500 not in C.VENCE_FIN_DE_MES and 146574 in C.VENCE_FIN_DE_MES)
+h14b = C.armar_historial(comp14, _pagos([]), hoy=HOY)
+_is("sin pasar la lista, el cliente 500 vence en emisión + plazo",
+    str(dict(zip(h14b["id"], h14b["vencimiento"]))[1].date()), "2026-08-01")
+
+
+# =====================================================================
 print("\n" + "=" * 60)
 if _fallos:
     print(f"FALLARON {len(_fallos)} casos:")
