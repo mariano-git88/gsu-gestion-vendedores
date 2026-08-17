@@ -495,6 +495,48 @@ _is("sin pasar la lista, el cliente 500 vence en emisión + plazo",
 
 
 # =====================================================================
+print("\n15. El DSO no castiga a un cliente por ser nuevo")
+# Dividir las compras de 7 meses entre 365 días achica la venta diaria e
+# infla el DSO. Sobre la cartera real le pasaba a 250 de 1.020 clientes,
+# 42 días de más en promedio. Caso testigo: LAS ÁGUILAS, DSO 170 → 100.
+# Acá: dos clientes que deben lo mismo y compran al mismo ritmo mensual;
+# el único que cambia es hace cuánto son clientes.
+comp15 = _comp(
+    # nuevo: 6 meses de historia, 10.000 por mes, debe la última
+    [{"id": 100 + i, "cli": 1, "emision": f"2026-0{i + 2}-01",
+      "total": 10_000.0, "saldo": 10_000.0 if i == 5 else 0.0}
+     for i in range(6)]
+    # viejo: 14 meses de historia, mismos 10.000 por mes, debe la última
+    + [{"id": 200 + i, "cli": 2, "emision": d, "total": 10_000.0,
+        "saldo": 10_000.0 if d == "2026-07-01" else 0.0}
+       for i, d in enumerate(
+           ["2025-06-01", "2025-07-01", "2025-08-01", "2025-09-01",
+            "2025-10-01", "2025-11-01", "2025-12-01", "2026-01-01",
+            "2026-02-01", "2026-03-01", "2026-04-01", "2026-05-01",
+            "2026-06-01", "2026-07-01"])]
+)
+f15 = C.features_por_cliente(
+    C.armar_historial(comp15, _pagos([]), hoy=HOY), None, hoy=HOY
+).set_index("id_cliente")
+_true("compran igual y deben igual: el nuevo no puede tener MÁS DSO",
+      f15.loc[1, "dso"] <= f15.loc[2, "dso"] + 1)
+_true("el denominador del nuevo son sus días de vida, no 365",
+      f15.loc[1, "dias_historia_dso"] < 250)
+_is("el del cliente con más de un año se queda en 365",
+    int(f15.loc[2, "dias_historia_dso"]), 365)
+
+# El que compró UNA vez hace días no puede salir con DSO de 1 día.
+comp15b = _comp([{"id": 300, "cli": 3, "emision": "2026-08-12",
+                  "total": 50_000.0, "saldo": 50_000.0}])
+f15b = C.features_por_cliente(
+    C.armar_historial(comp15b, _pagos([]), hoy=HOY), None, hoy=HOY
+).set_index("id_cliente")
+_is("el piso de 30 días evita el DSO ridículo del recién llegado",
+    int(f15b.loc[3, "dias_historia_dso"]), 30)
+_eq("y su DSO da el plazo estándar, no 1 día", f15b.loc[3, "dso"], 30)
+
+
+# =====================================================================
 print("\n" + "=" * 60)
 if _fallos:
     print(f"FALLARON {len(_fallos)} casos:")

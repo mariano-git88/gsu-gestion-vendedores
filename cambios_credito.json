@@ -1,6 +1,28 @@
 [
   {
     "fecha": "2026-08-17",
+    "hora": "16:20",
+    "titulo": "El DSO ya no castiga a un cliente por ser nuevo",
+    "tipo": "arreglo",
+    "puntos": [
+      "El DSO divide lo que el cliente debe por su venta **diaria**, y la venta diaria se calculaba dividiendo siempre por 365 días. **A un cliente de 7 meses le dividía sus compras entre un año**: le achicaba la venta diaria 40% y le agrandaba el DSO en la misma proporción.",
+      "Ahora se divide por los días que el cliente realmente lleva comprando. **LAS ÁGUILAS pasa de 170 a 101 días de DSO** y de banda E a D. El caso más absurdo era el que compró por primera vez hace tres semanas: figuraba con DSO 365, porque su \\\"venta anual\\\" era esa única factura.",
+      "**11 clientes suben de banda y ninguno baja.** El capital fuera de plazo baja de \\$5,02 a \\$4,73 millones. El DSO de la cartera no se mueve: 67 días.",
+      "Hay un piso de 30 días para el que recién llegó, si no pasaba lo contrario: al que compró ayer se le anualizaba una venta gigante y le daba 1 día de DSO."
+    ]
+  },
+  {
+    "fecha": "2026-08-17",
+    "hora": "16:20",
+    "titulo": "Las flechas verdes de la ficha decían lo contrario de lo que pasaba",
+    "tipo": "arreglo",
+    "puntos": [
+      "En la ficha del cliente, **\\\"+140 días vs lo pactado\\\" y \\\"disponible -\\$80.863\\\" se veían en verde con flecha para arriba**, que son justo las dos peores noticias de esa ficha.",
+      "Ahora el exceso de DSO va en rojo cuando es positivo, el margen disponible en rojo cuando es negativo, y los datos informativos (la banda, el plazo de hoy) en gris sin flecha."
+    ]
+  },
+  {
+    "fecha": "2026-08-17",
     "hora": "13:40",
     "titulo": "Las grandes superficies cuentan el plazo desde el cierre del mes",
     "tipo": "arreglo",

@@ -269,6 +269,10 @@ def armar_historial(
 
 MIN_FACTURAS_SCORE = 3  # abajo de esto no hay historia suficiente para opinar
 
+# Piso de días para el denominador del DSO. Ver la nota en
+# `features_por_cliente`: protege contra el cliente que compró ayer.
+MIN_DIAS_DSO = 30
+
 # Una factura vieja a la que le quedó un resto chico casi nunca es deuda: es
 # la **Nota de Crédito del 10% de la rendición que nunca se imputó**. Medido
 # sobre 704 facturas parciales vencidas hace más de 60 días: 125 tienen un
@@ -625,7 +629,24 @@ def features_por_cliente(
     #
     # Caso testigo: SODIMAC tiene DPD ponderado de -1,1 días (pagaría "antes
     # del vencimiento") y un DSO de 67 días con plazo pactado de 60.
-    venta_diaria = feat["ventas_netas_12m"] / 365.0
+    # La venta diaria se divide por los días que el cliente REALMENTE lleva
+    # comprando, no por 365 fijos. Dividir 7 meses de compras entre un año
+    # achica la venta diaria ~40% e infla el DSO en la misma proporción, o
+    # sea que castiga a un cliente por ser nuevo. Medido sobre la cartera:
+    # 250 de 1.020 clientes tienen menos de un año y se les inflaba el DSO
+    # 42 días en promedio; el que compró por primera vez hace tres semanas
+    # figuraba con DSO 365 porque su "venta anual" era esa única factura.
+    #
+    # El piso de 30 días corta el problema simétrico: sin él, al que compró
+    # ayer se le anualiza una venta diaria enorme y el DSO da 1 día. Con el
+    # piso, un cliente nuevo arranca midiendo contra el plazo estándar.
+    dias_historia = (
+        (hoy - pd.to_datetime(feat["primera_compra"])).dt.days
+        .clip(lower=MIN_DIAS_DSO, upper=365)
+        .fillna(365)
+    )
+    feat["dias_historia_dso"] = dias_historia
+    venta_diaria = feat["ventas_netas_12m"] / dias_historia
     feat["dso"] = pd.Series(
         np.where(
             venta_diaria > 0, feat["exposicion_neta"] / venta_diaria, np.nan
