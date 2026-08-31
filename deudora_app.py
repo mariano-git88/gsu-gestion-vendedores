@@ -46,11 +46,36 @@ INK = "#1A1A1A"
 
 theme.apply_theme()
 
+# Botones en naranja y métricas más chicas, como en el resto de las apps. Sin
+# achicar la métrica, un importe de 8 cifras se corta en la mitad de las
+# columnas. El prefijo `stMain` y el `!important` NO son decorativos: sin
+# ellos el default de Streamlit gana y el importe vuelve a cortarse.
 st.markdown(
     """
     <style>
-      div[data-testid="stMetricValue"] { font-size: 1.5rem; }
-      div[data-testid="stMetricLabel"] { font-size: 0.8rem; }
+    [data-testid="stMain"] .stButton > button,
+    [data-testid="stMain"] .stDownloadButton > button,
+    [data-testid="stMain"] [data-testid="stFormSubmitButton"] > button {
+        background-color: #C8552F !important;
+        color: #FFFFFF !important;
+        border-color: #C8552F !important;
+        padding: 0.2rem 0.7rem !important;
+        font-size: 0.72rem !important;
+        letter-spacing: 0.03em;
+    }
+    [data-testid="stMain"] .stButton > button:hover,
+    [data-testid="stMain"] .stDownloadButton > button:hover,
+    [data-testid="stMain"] [data-testid="stFormSubmitButton"] > button:hover {
+        background-color: #A8451F !important;
+        border-color: #A8451F !important;
+        color: #FFFFFF !important;
+    }
+    [data-testid="stMain"] [data-testid="stMetricValue"] {
+        font-size: 1.5rem !important; line-height: 1.1 !important;
+    }
+    [data-testid="stMain"] [data-testid="stMetricLabel"] {
+        font-size: 0.75rem !important;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -232,19 +257,6 @@ with enc_btn:
         _tutorial_dialog()
     if bt2.button("🆕 Novedades", use_container_width=True):
         _cambios_dialog()
-    # El PDF de la cartera entera se arma recién cuando alguien lo pide: son
-    # 145 páginas y generarlo en cada rerun agregaría segundos a cada click.
-    if st.button("📄 PDF de toda la cartera", use_container_width=True):
-        st.session_state.pdf_todos = DP.generar_pdf_todos(
-            resumen, movimientos, HOY)
-    if st.session_state.get("pdf_todos"):
-        st.download_button(
-            "Descargar",
-            data=st.session_state.pdf_todos,
-            file_name=f"Cuenta corriente {HOY:%Y-%m-%d}.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
     if st.button("↻ Recargar datos", use_container_width=True):
         cargar.clear()
         st.session_state.pop("pdf_todos", None)
@@ -290,15 +302,31 @@ if seccion == "Por vendedor":
         "aparte: su deuda es real y tiene que estar contada en algún lado."
     )
 
-    st.markdown("#### Descargar el informe de un vendedor")
-    v_sel = st.selectbox("Vendedor", totales["vendedor"].tolist(),
-                         key="pdf_vendedor")
-    st.download_button(
-        f"PDF de {v_sel}",
-        data=DP.generar_pdf_vendedor(v_sel, resumen, movimientos, HOY),
-        file_name=f"Cuenta corriente {v_sel} {HOY:%Y-%m-%d}.pdf",
-        mime="application/pdf",
-    )
+    st.markdown("#### Descargar el informe")
+    d1, d2 = st.columns([2, 2])
+    with d1:
+        v_sel = st.selectbox("Vendedor", totales["vendedor"].tolist(),
+                             key="pdf_vendedor")
+        st.download_button(
+            f"📄 PDF de {v_sel}",
+            data=DP.generar_pdf_vendedor(v_sel, resumen, movimientos, HOY),
+            file_name=f"Cuenta corriente {v_sel} {HOY:%Y-%m-%d}.pdf",
+            mime="application/pdf",
+        )
+    with d2:
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        # La cartera entera son ~145 páginas: se arma recién cuando alguien la
+        # pide, no en cada rerun.
+        if st.button("Armar el PDF de toda la cartera"):
+            st.session_state.pdf_todos = DP.generar_pdf_todos(
+                resumen, movimientos, HOY)
+        if st.session_state.get("pdf_todos"):
+            st.download_button(
+                "📄 Descargar toda la cartera",
+                data=st.session_state.pdf_todos,
+                file_name=f"Cuenta corriente {HOY:%Y-%m-%d}.pdf",
+                mime="application/pdf",
+            )
 
 
 # ------------------------------------------------------------ Clientes
