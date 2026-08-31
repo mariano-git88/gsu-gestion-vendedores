@@ -515,6 +515,10 @@ def _tabla_pedido_vs_preparado(items: list[dict]) -> pd.DataFrame:
             "Pedido": pedido,
             "Preparado": preparado,
             "Diferencia": preparado - pedido,
+            # El depósito elige el motivo de una lista de botones (la definió
+            # Gabriel Parodi). Viaja adentro de items_json, no en una columna
+            # propia del buzón.
+            "Por qué faltó": it.get("motivoTexto") or "",
         })
     return pd.DataFrame(filas)
 
@@ -646,11 +650,27 @@ def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> N
 
             # --- Chequeos previos a emitir ---------------------------------
             bloqueos = []
+            # El parcial sigue bloqueado ACÁ, y no es por indefinición: el
+            # body de la factura se arma con las Cantidad de la ORDEN
+            # (facturador.mapear_orden_a_body_crear), y no hay forma de
+            # pisarlas con lo que preparó el depósito. Emitir desde este
+            # botón facturaría de más, que es justo lo contrario de lo que
+            # se quiere. Además el picking expande los combos a sus
+            # componentes, así que lo preparado ni siquiera mapea 1 a 1
+            # contra las líneas facturables.
+            #
+            # Lo que sí cambió: el depósito ahora manda POR QUÉ faltó cada
+            # línea y quién lo autorizó, así que la corrección a mano se
+            # hace con el dato a la vista en vez de a ciegas.
             if not completo:
+                autorizado = str(fila.get("observacion") or "").strip()
                 bloqueos.append(
-                    "El depósito preparó una cantidad distinta a la pedida. "
-                    "Todavía no está definido cómo se facturan los parciales, "
-                    "así que esta orden hay que resolverla a mano."
+                    "El depósito preparó menos de lo pedido. Corregí la orden "
+                    "en Contabilium y facturala desde ahí: si se emitiera "
+                    "desde acá saldría por las cantidades pedidas, no por las "
+                    "despachadas. Arriba está el detalle y por qué faltó cada "
+                    "producto."
+                    + (f" {autorizado}." if autorizado else "")
                 )
             if datos["estado"] != "Pendiente":
                 bloqueos.append(
