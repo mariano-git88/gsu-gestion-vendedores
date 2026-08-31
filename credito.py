@@ -103,10 +103,11 @@ TOL_SALDO = 1.0  # UYU
 # corriente + 60 días". Los seis que se agregan ya facturan a "60 Cuenta
 # Corriente", así que la condición y la regla coinciden.
 #
-# Medido antes de aplicarlo: sobre la cartera de hoy NO cambia un peso en
-# ninguno de los seis. Sus facturas vencidas son tan viejas que correr el
-# vencimiento un mes no las rescata. Se agregan igual porque la regla es
-# correcta y el día que compren de nuevo va a importar.
+# Medido antes y después de aplicarlo: el TOTAL VENCIDO no se mueve —
+# $4.746.675 en los dos casos. Sus facturas vencidas son tan viejas que
+# correr el vencimiento un mes no las rescata. Lo que SÍ cambia es el
+# reparto por antigüedad: $20.579 pasan de "+90 días" a "61-90". Ninguna
+# factura deja de estar vencida; algunas rejuvenecen de tramo.
 #
 # TIENDA INGLESA (948394) queda AFUERA a propósito: sus 104 facturas están
 # cargadas como "90 Cuenta Corriente", no como 60. Si Valeria tiene razón

@@ -1947,10 +1947,11 @@ agrupados bajo `SIN_VENDEDOR`. Lo mismo con un `IdVendedor` que no esté en
 ### Decisión 4 — Las grandes superficies, salvo una
 
 Valeria confirmó por mail que las siete toman mes corriente + 60 días. Se
-agregaron seis a `VENCE_FIN_DE_MES`. Medido antes de aplicarlo: **no cambia
-un peso** en ninguna, porque sus facturas vencidas son demasiado viejas para
-que correr el vencimiento un mes las rescate. Se agregan igual porque la
-regla es correcta.
+agregaron seis a `VENCE_FIN_DE_MES`. Medido antes y después: el **total
+vencido no se mueve** ($4.746.675 en los dos casos), porque sus facturas
+vencidas son demasiado viejas para que correr el vencimiento un mes las
+rescate. Lo que sí cambia es el **reparto por antigüedad**: $20.579 pasan
+de "+90 días" a "61-90". Se agregan porque la regla es correcta.
 
 TIENDA INGLESA queda afuera: sus 104 facturas están cargadas como "90
 Cuenta Corriente", no como 60. Con su condición actual, agregarla le daría

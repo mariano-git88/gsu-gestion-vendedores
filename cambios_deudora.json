@@ -1,0 +1,24 @@
+[
+  {
+    "fecha": "2026-08-31",
+    "hora": "15:40",
+    "titulo": "Arranca la app de Cuenta Corriente",
+    "tipo": "nuevo",
+    "puntos": [
+      "**Por vendedor**: la cartera de cada uno, cuánto tiene afuera y cuánto vencido, con el PDF para mandarle.",
+      "**Clientes**: el listado completo, filtrable por vendedor y por antigüedad, con buscador por nombre o RUT.",
+      "**Cuenta de un cliente**: las facturas con saldo, y apagando el candado, la cuenta completa con notas de crédito y pagos en orden de fecha.",
+      "El vencimiento se calcula con la condición de pago real de cada factura. Contabilium imprime siempre 30 días aunque la venta sea a 60 o 90; acá está el que se pactó."
+    ]
+  },
+  {
+    "fecha": "2026-08-31",
+    "hora": "15:41",
+    "titulo": "Las grandes superficies cuentan desde el cierre del mes",
+    "tipo": "mejora",
+    "puntos": [
+      "Valeria confirmó que Sodimac, Geant 1, Geant 2, Disco, Devoto y Mosca juntan las facturas del mes y recién ahí arrancan a contar los días. Ya está contemplado.",
+      "Tienda Inglesa quedó pendiente: sus facturas están cargadas a 90 días y no a 60. Hasta aclararlo se la deja con los 90 que dice el sistema."
+    ]
+  }
+]

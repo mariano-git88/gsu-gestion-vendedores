@@ -26,11 +26,12 @@ import pandas as pd
 import streamlit as st
 
 import api_loader
-import credito as cr
+import cambios_deudora
 import credito_api as ca
 import deudora as D
 import deudora_pdf as DP
 import theme
+import tutorial_deudora
 import vendedores as V
 
 st.set_page_config(
@@ -86,6 +87,20 @@ def _mapa_vendedores() -> dict[int, str]:
         vid: V.NOMBRE_VENDEDOR.get(vid, email.split("@")[0].title())
         for vid, email in V.VENDEDORES.items()
     }
+
+
+# ---------------------------------------------------------------------
+# Tutorial y Novedades (modales abiertos desde el encabezado)
+# ---------------------------------------------------------------------
+
+@st.dialog("Tutorial — Cuenta Corriente", width="large")
+def _tutorial_dialog():
+    tutorial_deudora.render()
+
+
+@st.dialog("Novedades — qué cambió en la app", width="large")
+def _cambios_dialog():
+    cambios_deudora.render()
 
 
 # =====================================================================
@@ -203,21 +218,37 @@ totales = D.totales_por_vendedor(resumen)
 # Encabezado
 # =====================================================================
 
-izq, der = st.columns([3, 1])
-with izq:
-    st.markdown("## Cuenta Corriente")
+enc_info, enc_btn = st.columns([3, 1.3])
+with enc_info:
+    st.markdown("##### Cuenta Corriente")
     st.caption(
         f"{len(resumen)} clientes con saldo · al {HOY:%d/%m/%Y} · "
         f"{meses} meses de historia"
     )
-with der:
-    st.download_button(
-        "Descargar todo en PDF",
-        data=DP.generar_pdf_todos(resumen, movimientos, HOY),
-        file_name=f"Cuenta corriente {HOY:%Y-%m-%d}.pdf",
-        mime="application/pdf",
-        use_container_width=True,
-    )
+    st.caption(f"Versión de la app: {cambios_deudora.ultima_actualizacion()}")
+with enc_btn:
+    bt1, bt2 = st.columns(2)
+    if bt1.button("📖 Tutorial", use_container_width=True):
+        _tutorial_dialog()
+    if bt2.button("🆕 Novedades", use_container_width=True):
+        _cambios_dialog()
+    # El PDF de la cartera entera se arma recién cuando alguien lo pide: son
+    # 145 páginas y generarlo en cada rerun agregaría segundos a cada click.
+    if st.button("📄 PDF de toda la cartera", use_container_width=True):
+        st.session_state.pdf_todos = DP.generar_pdf_todos(
+            resumen, movimientos, HOY)
+    if st.session_state.get("pdf_todos"):
+        st.download_button(
+            "Descargar",
+            data=st.session_state.pdf_todos,
+            file_name=f"Cuenta corriente {HOY:%Y-%m-%d}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    if st.button("↻ Recargar datos", use_container_width=True):
+        cargar.clear()
+        st.session_state.pop("pdf_todos", None)
+        st.rerun()
 
 if not rep.completo:
     st.warning(f"Carga incompleta — {rep.resumen()}", icon="⚠️")
