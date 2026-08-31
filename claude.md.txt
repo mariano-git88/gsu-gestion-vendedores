@@ -797,6 +797,18 @@ Estructura de carpetas y archivos del proyecto:
   por `(vendedor, documento)` — ver `_learning/decisions.md`).
   Incluye también las funciones de análisis profundo: penetración
   pivotada por sub-rubro, heatmap cliente×sub-rubro, Pareto de clientes
+- `deudora.py` — estado de cuenta corriente por cliente y por vendedor:
+  `armar_movimientos` (extracto cronológico: facturas, notas de crédito y
+  recibos), `resumen_por_cliente` (deuda, vencido, tramos de antigüedad,
+  crédito a favor), `agregar_vendedor` y `totales_por_vendedor`. Reusa
+  `credito.py` para el vencimiento — NO recalcula la mora con otro criterio.
+  Funciones puras, no importa streamlit. Blindado en `tests/test_deudora.py`
+- `deudora_pdf.py` — la deudora en PDF, un archivo por vendedor, con el
+  formato del `Deudora 049.pdf` de ERPA. Reusa `combinar_pdfs` de
+  `pedidos_pdf.py`. Funciones puras
+- `deudora_app.py` — app de Cuenta Corriente (entry point propio, password
+  `deudora_password`). Público: Ernesto y Valeria. Los vendedores todavía
+  NO entran: reciben el PDF
 - `exports.py` — generación del archivo .xlsx de agenda personal por
   vendedor (5 hojas: Resumen / Mi cartera / Clientes dormidos /
   Penetración / Top 80%). Función pública:

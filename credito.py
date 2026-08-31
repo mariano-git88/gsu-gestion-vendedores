@@ -98,8 +98,29 @@ TOL_SALDO = 1.0  # UYU
 # Va como lista explícita y NO como default: solo se aplica donde está
 # confirmado con el cliente. Cuando Valeria cierre el análisis de las otras
 # grandes superficies (TIENDA INGLESA, DISCO, DEVOTO, GEANT), se agregan acá.
+# Ampliado el 31-ago-2026 con la respuesta de Valeria por mail: "todas las
+# grandes superficies realizan el mismo procedimiento... todos toman el mes
+# corriente + 60 días". Los seis que se agregan ya facturan a "60 Cuenta
+# Corriente", así que la condición y la regla coinciden.
+#
+# Medido antes de aplicarlo: sobre la cartera de hoy NO cambia un peso en
+# ninguno de los seis. Sus facturas vencidas son tan viejas que correr el
+# vencimiento un mes no las rescata. Se agregan igual porque la regla es
+# correcta y el día que compren de nuevo va a importar.
+#
+# TIENDA INGLESA (948394) queda AFUERA a propósito: sus 104 facturas están
+# cargadas como "90 Cuenta Corriente", no como 60. Si Valeria tiene razón
+# hay que corregir la condición en Contabilium, no compensarlo acá; si la
+# carga tiene razón, la regla no es uniforme. Agregarla ahora, con su
+# condición de 90, le daría fin de mes + 90: MÁS plazo del que nadie
+# pactó. Pendiente de confirmar con ella.
 VENCE_FIN_DE_MES: frozenset[int] = frozenset({
-    146574,  # SODIMAC — confirmado 17-ago-2026
+    146574,   # SODIMAC — confirmado 17-ago-2026
+    640010,   # GEANT 1 (Odaler) — confirmado 31-ago-2026
+    1864389,  # GEANT 2 (Ameluz) — confirmado 31-ago-2026
+    146599,   # DISCO — confirmado 31-ago-2026
+    277364,   # DEVOTO — confirmado 31-ago-2026
+    146583,   # MOSCA — confirmado 31-ago-2026
 })
 
 

@@ -89,6 +89,14 @@ _exploracion-api-contabilium/
 API Contabilium.pdf
 *.postman_collection.json
 
+# ----- PDFs: NINGUNO va al repo -----
+# Los informes de referencia de ERPA (`assets/Deudora 049.pdf`) traen
+# clientes, documentos, teléfonos y direcciones REALES de personas físicas,
+# y las deudoras que genera `deudora_pdf.py` traen la cartera entera con sus
+# saldos. Sirven como modelo y como entregable, nunca como contenido del
+# repo. El .xlsx de jefatura ya cae en la regla de `*.xlsx` de arriba.
+*.pdf
+
 # Portal landing — vive en repo separado, no commitear acá
 _portal-suprabond/
 

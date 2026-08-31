@@ -1898,3 +1898,98 @@ la NC en Contabilium; cuando eso pasa, el par desaparece solo de la lista.
 
 Misma familia que [[feedback_crafters_descuento_proveedor]]: medir sí,
 decidir no.
+
+---
+
+## 2026-08-31 — Deudora: cuenta corriente por vendedor
+
+**Problema:** Ernesto no tiene visibilidad de los saldos. Depende de lo que
+le pasa Valeria o de entrar cliente por cliente en Contabilium. Pidió algo
+como las "deudoras" de ERPA, y para los vendedores de UY, poder llevar los
+saldos a la visita sin la copia de la factura.
+
+### Decisión 1 — El saldo NO se calcula sumando los movimientos
+
+El informe de ERPA trae "Saldo Acum." sumando debe y haber. Acá esa columna
+sería mentira por dos razones independientes:
+
+1. **La ventana.** Los recibos se bajan por rango de fechas; un pago
+   anterior al rango no aparece, así que el acumulado arrancaría de un saldo
+   inicial desconocido.
+2. **El descuento del 10% se contaría dos veces.** En GSU el descuento se
+   instrumenta como nota de crédito, y esa NC aparece *también* como forma
+   de pago dentro del recibo que cancela la factura.
+
+La deuda sale del campo `saldo` del comprobante, igual que en
+`credito.armar_historial`. Los movimientos son detalle informativo.
+
+*Alternativa descartada:* reconstruir el saldo inicial pidiendo TODO el
+histórico. Son ~10 min de bajada por cada mes que se agregue y el ERP ya
+tiene el número calculado.
+
+### Decisión 2 — `vencido` bruto y `vencido_neto`
+
+`vencido` es la suma de las facturas pasadas de fecha, sin descontar el
+crédito a favor: es el número comparable con el scoring y con el tablero.
+Pero un cliente con notas de crédito sin aplicar quedaba con `vencido`
+MAYOR que `deuda_total`, que en una tabla no se entiende. `vencido_neto`
+descuenta el crédito pendiente (cancela primero lo más viejo, que es la
+convención de cualquier cuenta corriente) y es el que va en la UI.
+
+### Decisión 3 — Los clientes sin vendedor NO se filtran
+
+Son 189 de 1.184 clientes. Si la deudora los escondiera por no tener
+cartera asignada, su deuda no aparecería en la pantalla de nadie. Van
+agrupados bajo `SIN_VENDEDOR`. Lo mismo con un `IdVendedor` que no esté en
+`vendedores.VENDEDORES`: queda como `ID_<n>`, visible, en vez de perderse
+(hoy hay uno: el 239).
+
+### Decisión 4 — Las grandes superficies, salvo una
+
+Valeria confirmó por mail que las siete toman mes corriente + 60 días. Se
+agregaron seis a `VENCE_FIN_DE_MES`. Medido antes de aplicarlo: **no cambia
+un peso** en ninguna, porque sus facturas vencidas son demasiado viejas para
+que correr el vencimiento un mes las rescate. Se agregan igual porque la
+regla es correcta.
+
+TIENDA INGLESA queda afuera: sus 104 facturas están cargadas como "90
+Cuenta Corriente", no como 60. Con su condición actual, agregarla le daría
+fin de mes + 90 — más plazo del que nadie pactó. Pendiente de confirmar con
+Valeria si hay que corregir la condición en el ERP o anotar la excepción.
+
+### Lo que NO se puede replicar del informe de ERPA
+
+Medido contra la API, no supuesto:
+
+- **Columna Cuota.** Contabilium emite una sola factura por una venta a
+  30/60/90, con un solo saldo. No sabe qué parte vence en cada cuota.
+- **"Saldo Documentos" (cheques en cartera).** No hay endpoint: probados
+  `/api/cheques`, `/api/cheques/search`, `/api/valores/search` y
+  `/api/chequesterceros/search`, los cuatro 404. La colección oficial tiene
+  15 familias y ninguna es de valores. Los cheques solo aparecen como forma
+  de pago dentro del recibo.
+- **Plazo en la ficha del cliente.** Los 24 campos de `/api/clientes/` no
+  incluyen condición de venta; `CondicionIva` es fiscal (EMPUY/CF/EXT). El
+  plazo vive solo en el comprobante. En la práctica alcanza: solo 41 de 936
+  clientes tienen más de una condición en 12 meses.
+
+### Contexto: por qué la cola de facturas viejas NO es un error
+
+Primero se diagnosticó como imputación mal hecha (201 de 562 clientes con
+saldo, $1,66M marcados vencidos). Valeria lo corrigió: el cliente **elige**
+pagar la factura nueva completa para no perder el 10% de descuento, y lo
+que entrega a cuenta va a la vieja. La aplicación es la que pidió el
+vendedor. Por lo tanto la factura vieja está impaga de verdad y la
+antigüedad del informe estaba bien. El mecanismo es masivo: 4.569 notas de
+crédito para 5.882 facturas en 12 meses.
+
+Queda pendiente una decisión comercial de Ernesto: aplicar siempre los
+pagos a la factura más vieja ordenaría las cuentas, y le haría perder el
+descuento al cliente que hoy paga para conservarlo.
+
+### Contexto: el vencimiento impreso en la factura NO se corrige
+
+Se podría mandar la fecha real en `FechaVencimiento` al facturar, pero
+Ernesto lo vetó: si el cliente ve 90 días paga a los 90, cuando hoy paga
+antes. La fecha que ve el cliente y la que usamos para medir mora son
+distintas **a propósito**. No es un descuido que haya que arreglar.
