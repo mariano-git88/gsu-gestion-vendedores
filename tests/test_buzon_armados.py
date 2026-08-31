@@ -345,3 +345,44 @@ def test_revisar_iva_lista_los_problemas_sin_romper():
 
 def test_revisar_iva_no_dice_nada_si_esta_todo_bien():
     assert facturador.revisar_iva_de_la_orden(_orden_con_iva(22)) == []
+
+
+# ---------------------------------------------------------------------
+# Clientes que no se pueden facturar sin adenda
+#
+# Contabilium no tiene sucursales: la sucursal y el número de orden de
+# compra del cliente se escriben a mano en la adenda. Ese dato no está en
+# ningún sistema (la orden lleva un texto fijo en Observaciones), así que
+# el depósito no lo tiene. Valeria, 2026-08-31.
+# ---------------------------------------------------------------------
+
+def test_grandes_superficies_exigen_adenda():
+    for nombre in (
+        "TIENDA INGLESA S.A.",
+        "Sodimac Uruguay S.A.",
+        "MOSCA HNOS SA",
+        "KROSER S.A.",
+    ):
+        assert facturador.cliente_exige_adenda(nombre), nombre
+
+
+def test_un_cliente_cualquiera_no_exige_adenda():
+    assert facturador.cliente_exige_adenda("FERRETERIA LOS ANDES SRL") is None
+    assert facturador.cliente_exige_adenda("") is None
+    assert facturador.cliente_exige_adenda(None) is None
+
+
+def test_devuelve_cual_matcheo_para_poder_nombrarlo():
+    assert facturador.cliente_exige_adenda("Sodimac Uruguay S.A.") == "SODIMAC"
+
+
+def test_fin_de_mes():
+    from datetime import date as _date
+    assert facturador.es_fin_de_mes(_date(2026, 8, 31))
+    assert not facturador.es_fin_de_mes(_date(2026, 8, 15))
+    # Febrero no bisiesto: el 28 es el último día.
+    assert facturador.es_fin_de_mes(_date(2026, 2, 28))
+    assert not facturador.es_fin_de_mes(_date(2026, 2, 20))
+    # Y uno de 30 días.
+    assert facturador.es_fin_de_mes(_date(2026, 9, 30))
+    assert not facturador.es_fin_de_mes(_date(2026, 9, 28))

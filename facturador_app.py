@@ -689,8 +689,13 @@ def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> N
                     st.error(b, icon="🚫")
                 continue
 
+            # Clientes que exigen sucursal y/o número de orden de compra en
+            # la factura. Ese dato no está en ningún sistema: lo tiene quien
+            # habló con el cliente, no el depósito.
+            exige_adenda = facturador.cliente_exige_adenda(datos["comprador"])
+
             adenda = st.text_area(
-                "Adenda (opcional)",
+                "Adenda" + (" (obligatoria para este cliente)" if exige_adenda else " (opcional)"),
                 key=f"adenda_{id_orden}",
                 placeholder="Sucursal, número de orden de compra del cliente…",
                 help=(
@@ -700,6 +705,32 @@ def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> N
                 ),
                 height=70,
             )
+
+            if exige_adenda and facturador.es_fin_de_mes():
+                st.warning(
+                    "**Estamos a fin de mes.** Si esta mercadería se entrega el "
+                    "mes que viene, la gran superficie no la recibe con una "
+                    "factura de este mes. Verificá la fecha de entrega antes de "
+                    "emitir.",
+                    icon="📅",
+                )
+
+            if exige_adenda and not adenda.strip():
+                st.error(
+                    f"**{exige_adenda} necesita la sucursal y el número de orden "
+                    f"de compra en la factura**, y Contabilium no tiene dónde "
+                    f"ponerlos salvo la adenda. Completala arriba para poder "
+                    f"emitir. Si no tenés el dato, esta factura la emite quien "
+                    f"lo tenga — no se factura desde el depósito.",
+                    icon="🚫",
+                )
+                if str(exige_adenda) == "SODIMAC":
+                    st.info(
+                        "Acordate que la factura de Sodimac hay que subirla a "
+                        "su plataforma **antes** de mandar el envío.",
+                        icon="📤",
+                    )
+                continue
 
             if st.button(
                 "Emitir factura",

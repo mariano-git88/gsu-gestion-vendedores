@@ -81,6 +81,40 @@ DIAS_VENCIMIENTO_DEFAULT = 30
 # documentar cuál es el producto.
 IVA_TASAS_VALIDAS = frozenset({10.0, 22.0})
 
+# Clientes que NO se pueden facturar sin adenda.
+#
+# Contabilium no tiene sucursales, así que la sucursal a la que va la
+# mercadería y el número de orden de compra del cliente se escriben a mano en
+# la adenda al emitir. Valeria Falero (2026-08-31): las grandes superficies no
+# las factura con la herramienta masiva justamente por esto, y Kroser es un
+# caso puntual que también pide la OC en la factura.
+#
+# Ese dato hoy NO existe en ningún sistema: la orden lleva un texto fijo en
+# Observaciones (ver pedidos_orden.OBSERVACIONES_ADENDA) y la planilla del
+# vendedor no tiene columna para la sucursal ni para la OC. Mientras siga así,
+# estas facturas las emite quien tenga el dato — no el depósito.
+#
+# Se matchea por texto contenido en la razón social, en mayúsculas. Un match
+# de más solo obliga a escribir algo en la adenda; un match de menos deja la
+# factura como estaba. **Conviene revisar estos nombres contra las razones
+# sociales reales de Contabilium.**
+CLIENTES_QUE_EXIGEN_ADENDA = (
+    "TIENDA INGLESA",
+    "DISCO",
+    "DEVOTO",
+    "GEANT",
+    "SODIMAC",
+    "MOSCA",
+    "KROSER",
+)
+
+# Últimos días del mes en que conviene avisar antes de facturar a una gran
+# superficie. Valeria: "se factura 31/08 y se entrega al otro día 01/09 y las
+# grandes superficies no reciben al siguiente mes". Es un aviso, no un
+# bloqueo: no sabemos la fecha de entrega, así que el número es una heurística
+# y equivocarlo solo cuesta una línea de texto de más.
+DIAS_FIN_DE_MES_AVISO = 2
+
 USER_AGENT = "GSU-Facturador/1.0"
 DEFAULT_TIMEOUT = 60
 
@@ -518,6 +552,27 @@ def _iva_del_item(item: dict, id_orden: object) -> float:
         )
 
     return tasa
+
+
+def cliente_exige_adenda(comprador: str) -> str | None:
+    """El nombre de la lista que matchea con el cliente, o None.
+
+    Sirve para no dejar emitir sin sucursal ni número de orden de compra a
+    los clientes que los exigen en la factura.
+    """
+    nombre = (comprador or "").upper()
+    for clave in CLIENTES_QUE_EXIGEN_ADENDA:
+        if clave in nombre:
+            return clave
+    return None
+
+
+def es_fin_de_mes(fecha: date | None = None) -> bool:
+    """True en los últimos DIAS_FIN_DE_MES_AVISO días del mes."""
+    fecha = fecha or date.today()
+    dia_siguiente_mes = (fecha.replace(day=28) + timedelta(days=4)).replace(day=1)
+    ultimo_dia = (dia_siguiente_mes - timedelta(days=1)).day
+    return (ultimo_dia - fecha.day) < DIAS_FIN_DE_MES_AVISO
 
 
 def revisar_iva_de_la_orden(orden: dict) -> list[str]:
