@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -257,3 +258,90 @@ def test_el_body_de_la_factura_lleva_la_adenda():
     )
     assert body["Observaciones"].startswith("OC 88-2026 SODIMAC Carrasco")
     assert body["RefExterna"] == "2311651"
+
+
+# ---------------------------------------------------------------------
+# El IVA no se adivina
+#
+# Valeria Falero (2026-08-31) contó que uno de los errores que caza a ojo
+# antes de facturar son "productos sin el IVA". El código hacía justo lo
+# contrario de ayudarla: `float(it.get("Iva") or 22)` emitía con 22 igual,
+# en silencio. Si la facturación se mueve al depósito ese ojo no está.
+# ---------------------------------------------------------------------
+
+def _orden_con_iva(iva):
+    return {
+        "ID": 2311651,
+        "IDCliente": 415839,
+        "Observaciones": _MACHETE,
+        "Items": [{
+            "IdConcepto": 123, "Cantidad": 2, "Concepto": "ADHESIVO SB-100",
+            "PrecioUnitario": "1.234,56", "Iva": iva, "Bonificacion": 0,
+            "IDMoneda": 794,
+        }],
+    }
+
+
+def _mapear(orden):
+    return facturador.mapear_orden_a_body_crear(
+        orden, condicion_venta_nombre="30 Cuenta Corriente",
+        punto_venta_id=1, inventario_id=1,
+    )
+
+
+def test_iva_22_pasa():
+    assert _mapear(_orden_con_iva(22))["Items"][0]["Iva"] == 22.0
+
+
+def test_iva_10_pasa():
+    assert _mapear(_orden_con_iva(10))["Items"][0]["Iva"] == 10.0
+
+
+def test_producto_sin_iva_frena_la_factura():
+    """El caso de Valeria: antes salía con 22 y nadie se enteraba."""
+    for vacio in (None, "", "   "):
+        with pytest.raises(facturador.IvaNoConfiableError) as e:
+            _mapear(_orden_con_iva(vacio))
+        assert "ADHESIVO SB-100" in str(e.value)
+        assert "no se puede" in str(e.value).lower()
+
+
+def test_iva_cero_frena_en_vez_de_convertirse_en_22():
+    """`0 or 22` da 22: un exento se facturaba con IVA. Ahora frena."""
+    with pytest.raises(facturador.IvaNoConfiableError) as e:
+        _mapear(_orden_con_iva(0))
+    assert "0%" in str(e.value)
+
+
+def test_iva_con_tasa_rara_frena():
+    with pytest.raises(facturador.IvaNoConfiableError):
+        _mapear(_orden_con_iva(21))
+
+
+def test_iva_ilegible_frena():
+    with pytest.raises(facturador.IvaNoConfiableError):
+        _mapear(_orden_con_iva("veintidós"))
+
+
+def test_el_error_de_iva_es_un_no_facturable():
+    """El facturador ya atrapa OrdenNoFacturableError para saltear la orden
+    y seguir con el lote; el error de IVA tiene que entrar por ahí."""
+    assert issubclass(
+        facturador.IvaNoConfiableError, facturador.OrdenNoFacturableError
+    )
+
+
+def test_revisar_iva_lista_los_problemas_sin_romper():
+    """La cola del depósito los muestra como bloqueo ANTES de apretar Emitir."""
+    orden = _orden_con_iva(22)
+    orden["Items"].append({
+        "IdConcepto": 456, "Cantidad": 1, "Concepto": "SELLADOR SB-200",
+        "PrecioUnitario": "500,00", "Iva": None, "Bonificacion": 0,
+    })
+    problemas = facturador.revisar_iva_de_la_orden(orden)
+    assert len(problemas) == 1
+    assert "SELLADOR SB-200" in problemas[0]
+
+
+def test_revisar_iva_no_dice_nada_si_esta_todo_bien():
+    assert facturador.revisar_iva_de_la_orden(_orden_con_iva(22)) == []

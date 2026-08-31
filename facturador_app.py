@@ -466,6 +466,7 @@ def _datos_orden(id_orden: str) -> dict:
         "estado": (orden.get("Estado") or "").strip(),
         "id_comprobante": orden.get("IDComprobante") or 0,
         "observaciones": orden.get("Observaciones") or "",
+        "problemas_iva": facturador.revisar_iva_de_la_orden(orden),
     }
 
 
@@ -660,6 +661,8 @@ def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> N
                 bloqueos.append(
                     "La orden ya tiene un comprobante asociado en Contabilium."
                 )
+            for problema in datos.get("problemas_iva") or []:
+                bloqueos.append(problema)
 
             if bloqueos:
                 for b in bloqueos:

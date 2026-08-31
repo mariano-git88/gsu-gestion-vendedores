@@ -67,6 +67,20 @@ ID_MONEDA_UYU = 794
 # Cambiar acá si se ajusta la política.
 DIAS_VENCIMIENTO_DEFAULT = 30
 
+# Tasas de IVA que la API puede recibir sin que nadie las haya revisado.
+# En Uruguay son 22 (básico) y 10 (mínimo).
+#
+# **El 0 NO está acá a propósito.** Un item con IVA 0 puede ser un producto
+# exento de verdad o un producto cargado sin IVA en el catálogo — desde acá
+# son indistinguibles, y Valeria Falero reportó (2026-08-31) que "productos
+# sin el IVA" es uno de los errores que caza a ojo antes de facturar. Emitir
+# con la tasa adivinada es peor que frenar: la factura sale mal y se
+# corrige con nota de crédito a mano, que no se puede automatizar.
+#
+# Si algún día GSU vende algo genuinamente exento, agregar 0.0 acá y
+# documentar cuál es el producto.
+IVA_TASAS_VALIDAS = frozenset({10.0, 22.0})
+
 USER_AGENT = "GSU-Facturador/1.0"
 DEFAULT_TIMEOUT = 60
 
@@ -85,6 +99,14 @@ class BorradorYaEmitidoError(FacturadorError):
 
 class OrdenNoFacturableError(FacturadorError):
     """La orden no es facturable (anulada, ya facturada, sin items, etc.)."""
+
+
+class IvaNoConfiableError(OrdenNoFacturableError):
+    """Un item de la orden tiene un IVA que no se puede usar sin revisar.
+
+    Se levanta cuando el IVA no viene, viene vacío, o viene con una tasa
+    que no es 22 ni 10. Antes esto se tapaba con un default de 22.
+    """
 
 
 # =====================================================================
@@ -459,6 +481,62 @@ def _observaciones_con_adenda(observaciones: str, adenda: str | None) -> str:
     return f"{adenda}{separador}{observaciones[:espacio_restante]}"
 
 
+def _iva_del_item(item: dict, id_orden: object) -> float:
+    """Devuelve la tasa de IVA del item, o levanta si no es confiable.
+
+    Antes acá había `float(it.get("Iva") or 22)`. Ese default hacía dos
+    cosas malas en silencio: emitía con 22 un producto que venía sin IVA
+    cargado, y convertía un IVA 0 legítimo en 22 (`0 or 22` es 22).
+    Ninguna de las dos se veía en ningún lado hasta que llegaba el
+    reclamo del cliente.
+    """
+    crudo = item.get("Iva")
+    concepto = str(item.get("Concepto") or item.get("IdConcepto") or "sin nombre")
+
+    if crudo is None or (isinstance(crudo, str) and not crudo.strip()):
+        raise IvaNoConfiableError(
+            f"Orden {id_orden}: el producto \"{concepto}\" no trae IVA. "
+            f"Revisalo en el catálogo de Contabilium: no se puede "
+            f"facturar esta orden hasta corregirlo."
+        )
+
+    try:
+        tasa = float(crudo)
+    except (TypeError, ValueError):
+        raise IvaNoConfiableError(
+            f"Orden {id_orden}: el producto \"{concepto}\" trae un IVA "
+            f"ilegible ({crudo!r}). No se puede facturar esta orden."
+        ) from None
+
+    if tasa not in IVA_TASAS_VALIDAS:
+        esperadas = " o ".join(f"{t:g}" for t in sorted(IVA_TASAS_VALIDAS))
+        raise IvaNoConfiableError(
+            f"Orden {id_orden}: el producto \"{concepto}\" tiene IVA "
+            f"{tasa:g}%, que no es {esperadas}%. Si está bien cargado hay "
+            f"que facturarlo desde Contabilium; si está mal, corregí el "
+            f"producto. No se puede facturar esta orden desde acá."
+        )
+
+    return tasa
+
+
+def revisar_iva_de_la_orden(orden: dict) -> list[str]:
+    """Los problemas de IVA de una orden, sin levantar excepción.
+
+    Sirve para avisar ANTES de que alguien apriete "Emitir": el guard duro
+    vive en `_iva_del_item`, pero descubrir el problema recién al apretar
+    el botón es una mala pantalla para el depósito.
+    """
+    id_orden = orden.get("ID") or orden.get("Id") or orden.get("id") or 0
+    problemas = []
+    for it in orden.get("Items") or []:
+        try:
+            _iva_del_item(it, id_orden)
+        except IvaNoConfiableError as exc:
+            problemas.append(str(exc))
+    return problemas
+
+
 def mapear_orden_a_body_crear(
     orden: dict,
     condicion_venta_nombre: str,
@@ -491,11 +569,11 @@ def mapear_orden_a_body_crear(
     Levanta OrdenNoFacturableError si la orden tiene problemas estructurales
     (sin items, items con IdConcepto null, etc.).
     """
+    id_orden = orden.get("ID") or orden.get("Id") or orden.get("id") or 0
+
     items_orden = orden.get("Items") or []
     if not items_orden:
-        raise OrdenNoFacturableError(
-            f"Orden {orden.get('ID') or orden.get('Id')} no tiene items."
-        )
+        raise OrdenNoFacturableError(f"Orden {id_orden} no tiene items.")
 
     items_body = []
     id_moneda_item: int | None = None
@@ -503,8 +581,8 @@ def mapear_orden_a_body_crear(
         id_concepto = it.get("IdConcepto")
         if id_concepto in (None, "", 0):
             raise OrdenNoFacturableError(
-                f"Orden {orden.get('ID') or orden.get('Id')} tiene item con "
-                f"IdConcepto inválido (línea libre no soportada por API). "
+                f"Orden {id_orden} tiene item con IdConcepto inválido "
+                f"(línea libre no soportada por API). "
                 f"Item: {it.get('Concepto')!r}"
             )
         items_body.append({
@@ -512,14 +590,13 @@ def mapear_orden_a_body_crear(
             "Cantidad": float(it.get("Cantidad") or 0),
             "Concepto": it.get("Concepto", ""),
             "PrecioUnitario": float(api_loader.parse_monto_uy(it.get("PrecioUnitario"))),
-            "Iva": float(it.get("Iva") or 22),
+            "Iva": _iva_del_item(it, id_orden),
             "Bonificacion": float(it.get("Bonificacion") or 0),
         })
         if id_moneda_item is None and it.get("IDMoneda"):
             id_moneda_item = int(it.get("IDMoneda"))
 
     fecha_emision = fecha_emision or date.today()
-    id_orden = orden.get("ID") or orden.get("Id") or orden.get("id") or 0
 
     # Resolver IDVendedor desde el email del vendedor.
     # CAVEAT: GET /api/ordenesventa/?id= NO devuelve el campo Vendedor
