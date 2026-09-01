@@ -2026,3 +2026,54 @@ un centavo, que es justo la diferencia que después nadie encuentra.
 *Alternativa descartada:* pedirle a Contabilium que emita una factura por
 cuota. Cambia el circuito fiscal entero y multiplica por tres los
 comprobantes, para un problema que se resuelve con una planilla.
+
+### 2026-09-01 — Comisiones: la base es lo vendido, no lo facturado neto
+
+Mariano comparó "Ventas del mes" del dashboard de Contabilium (UYU 3,09M para
+agosto 2026) con "Ventas brutas" de la app de comisiones ($3.410.328) y pidió
+explicar la diferencia. **No había error de cálculo**: son dos métricas
+distintas, y el puente cierra al peso.
+
+- El dashboard suma **comprobantes emitidos, SIN IVA, netos de notas de
+  crédito**: FAC 3.328.359 + TIK 55.726 − NCF 291.914 − NCTK 6.144 =
+  **3.086.026**.
+- La app suma **órdenes de venta del período, CON IVA**, de vendedores
+  comisionables: **3.410.328** (= 2.795.351 sin IVA).
+
+Puente completo, sin IVA:
+
+| | Monto |
+|---|---:|
+| App (3.410.328 ÷ 1,22) | 2.795.351 |
+| + OVs facturadas de OPJESICA/OPVALERIA (excluidas por decisión 2026-04-10) | +483.897 |
+| + diferencia OV vs comprobante emitido | +13.021 |
+| + 68 facturas sin OV de agosto (mostrador, OVs de julio, manuales) | +91.816 |
+| − 361 notas de crédito | −298.059 |
+| = Contabilium | **3.086.026** |
+
+El cruce OV↔factura es casi perfecto: 383 de 395 OVs de agosto tienen
+comprobante vinculado (por `IDComprobante` si la orden quedó Finalizada, por
+`RefExterna` si el facturador masivo la canceló). Las 12 sueltas son 8
+pendientes de OPJESICA y 4 canceladas sin facturar — ninguna entra en
+comisiones.
+
+**Decisión de Mariano:** *"El vendedor comisiona por lo que vendió, no se
+modifica."* Las notas de crédito NO se restan de la base de comisión. La
+mayoría de esas NC no son devoluciones: son el **descuento comercial del 10%
+por pago** que emite la Rendición de Cobranzas (246 de 361 están asociadas a
+facturas de meses anteriores, 84 lo dicen en las Observaciones; solo 4 con
+ratio distinto de 10% parecen devoluciones reales, por $38.121). Restarlas
+habría bajado la comisión por venta de agosto de $14.054 a ~$8.296 y dejado a
+Arturo en cero por cruzar hacia abajo el umbral de $600.000.
+
+**Lo único que se cambió es la etiqueta.** El KPI decía "Ventas brutas (UYU)"
+—sin aclarar el IVA— y eso es lo que invita a compararlo con el dashboard. Ahora
+dice "Ventas brutas (UYU, c/IVA)" con un `help` que explica por qué los dos
+números no son comparables. El PDF ya lo decía bien.
+
+**Dato de API para la próxima:** en Contabilium UY `ImporteTotalBruto` es
+**sin IVA** e `ImporteTotalNeto` es **con IVA** — al revés de lo que sugieren
+los nombres (3.240,00 bruto → 3.952,80 neto = ×1,22). Y el header de
+`/api/comprobantes/search` devuelve `IDVendedor: null` para TODOS los
+comprobantes: para atribuir una NC a un vendedor hay que traer el detalle uno
+por uno.

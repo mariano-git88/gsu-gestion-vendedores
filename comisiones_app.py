@@ -447,7 +447,11 @@ if seccion == _SECCIONES[0]:
             # Fila 1: tres KPIs anchos para que las cifras grandes
             # entren completas (no se trunquen con "...").
             r1a, r1b, r1c = st.columns(3)
-            r1a.metric("Ventas brutas (UYU)", f"{total_ventas_brutas:,.0f}")
+            r1a.metric(
+                "Ventas brutas (UYU, c/IVA)",
+                f"{total_ventas_brutas:,.0f}",
+                help="Órdenes de venta del período, CON IVA, de vendedores comisionables. NO es comparable con 'Ventas del mes' del dashboard de Contabilium: ese número es facturación SIN IVA y ya tiene restadas las notas de crédito (el descuento del 10% por pago). La comisión se paga sobre lo vendido, no sobre lo facturado neto de descuentos.",
+            )
             r1b.metric("Cobranzas (UYU)", f"{total_cobranzas:,.0f}")
             r1c.metric("Comisión del mes (UYU)", f"{total_neto_normal:,.0f}")
 
@@ -470,7 +474,11 @@ if seccion == _SECCIONES[0]:
             )
         else:
             r1a, r1b, r1c = st.columns(3)
-            r1a.metric("Ventas brutas (UYU)", f"{total_ventas_brutas:,.0f}")
+            r1a.metric(
+                "Ventas brutas (UYU, c/IVA)",
+                f"{total_ventas_brutas:,.0f}",
+                help="Órdenes de venta del período, CON IVA, de vendedores comisionables. NO es comparable con 'Ventas del mes' del dashboard de Contabilium: ese número es facturación SIN IVA y ya tiene restadas las notas de crédito (el descuento del 10% por pago). La comisión se paga sobre lo vendido, no sobre lo facturado neto de descuentos.",
+            )
             r1b.metric("Cobranzas (UYU)", f"{total_cobranzas:,.0f}")
             r1c.metric(
                 "TOTAL a pagar (UYU)",
@@ -532,7 +540,10 @@ if seccion == _SECCIONES[0]:
         }
         col_config = {
             "vendedor": st.column_config.TextColumn("Vendedor"),
-            "ventas_brutas": st.column_config.NumberColumn("Ventas brutas"),
+            "ventas_brutas": st.column_config.NumberColumn(
+                "Ventas brutas",
+                help="Órdenes de venta del período, con IVA.",
+            ),
             "ventas_netas": st.column_config.NumberColumn("Ventas netas"),
             "cobranzas": st.column_config.NumberColumn("Cobranzas"),
             "comision_venta": st.column_config.NumberColumn(
