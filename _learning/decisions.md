@@ -2064,7 +2064,7 @@ por pago** que emite la Rendición de Cobranzas (246 de 361 están asociadas a
 facturas de meses anteriores, 84 lo dicen en las Observaciones; solo 4 con
 ratio distinto de 10% parecen devoluciones reales, por $38.121). Restarlas
 habría bajado la comisión por venta de agosto de $14.054 a ~$8.296 y dejado a
-Arturo en cero por cruzar hacia abajo el umbral de $600.000.
+un vendedor en cero por cruzar hacia abajo el umbral de $600.000.
 
 **Lo único que se cambió es la etiqueta.** El KPI decía "Ventas brutas (UYU)"
 —sin aclarar el IVA— y eso es lo que invita a compararlo con el dashboard. Ahora
@@ -2103,19 +2103,20 @@ vendedor en M-1 si esas cobranzas se hubieran considerado.*
 **Impacto medido en agosto 2026** ($399.111 de cobranzas de julio que
 entraron tarde):
 
-| vendedor | base julio | tardías | 3% plano | marginal | dif |
-|---|---:|---:|---:|---:|---:|
-| ARTURO | 752.242 | 76.568 | 2.297 | 2.297 | ✓ |
-| MARCELO | 806.730 | 75.607 | 2.268 | 2.268 | ✓ |
-| MARIO | 1.437.792 | 225.261 | 6.758 | **8.388** | −1.631 |
-| NESTOR | 474.578 | 21.675 | **650** | **0** | +650 |
+| situación en julio | 3% plano | marginal | dif |
+|---|---:|---:|---:|
+| dos vendedores en el tramo del medio | correcto | correcto | ✓ |
+| uno cruzó el $1,5M con las tardías | 3% | **4% del excedente** | −1.631 |
+| uno bajo el umbral de $700.000 | 3% | **0%** | +650 |
 
-La tasa plana solo acertaba en el tramo del medio. Mario cruzó el $1,5M con
-las tardías y cobró 3% donde correspondía 4%. Néstor está bajo el umbral de
-$700.000 con y sin las tardías: su comisión marginal por cobranza es cero,
-pero cobró 3%. De hecho **la liquidación de agosto de Néstor eran esos $651 y
-nada más** — sus ventas ($484.719) no llegan al umbral de $600.000 y sus
-cobranzas ($379.349) no llegan al de $700.000.
+La tasa plana solo acertaba en el tramo del medio. Quien cruzó el $1,5M cobró
+3% donde correspondía 4%. Quien quedó bajo el umbral de $700.000 con y sin las
+tardías tiene comisión marginal cero por cobranza, pero cobró 3% igual — y en
+ese caso el ajuste **era toda su liquidación del mes**, porque ni sus ventas ni
+sus cobranzas llegaban a los umbrales respectivos.
+
+Los montos por vendedor NO se documentan acá: **este repo es público.** El
+detalle vive en el Sheet del histórico y en la app.
 
 Tests nuevos en `test_comisiones_v12.py`: `test_ajuste_api_por_tramos`
 (los tres tramos), `test_ajuste_api_cruza_umbral_y_anuladas` (cruce de
