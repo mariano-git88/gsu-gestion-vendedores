@@ -44,7 +44,60 @@ from collections import defaultdict
 import pandas as pd
 
 import api_loader
-from commissions import ESQUEMA_VIGENTE, VENDEDOR_HUERFANAS, comision_cobranza
+from commissions import (
+    ESQUEMA_VIGENTE,
+    UMBRAL_COBRANZA_PLENO,
+    UMBRAL_COBRANZA_TIER_ALTO,
+    VENDEDOR_HUERFANAS,
+    comision_cobranza,
+)
+
+
+# =====================================================================
+# Explicación para el vendedor
+# =====================================================================
+
+# Texto corto para mostrar cada mes que haya ajuste. Lo usa RRHH tal cual
+# al explicarle el recibo a un vendedor — por eso está en segunda persona y
+# sin jerga. Si cambian los umbrales de `commissions.py`, cambiar acá también.
+EXPLICACION_AJUSTE = (
+    "El ajuste se calcula con el escalón en el que quedaste ESE mes, no con "
+    "el de hoy. Si las cobranzas que entraron tarde te hacen cruzar los "
+    "$700.000, comisiona solo la parte que pasó esa línea; si te hacen cruzar "
+    "$1.500.000, esa parte pasa al 4%. Si aun sumándolas quedaste abajo de "
+    "$700.000, el ajuste da cero."
+)
+
+
+def cruces_de_escalon(ajuste: dict) -> list[dict]:
+    """Vendedores cuyo ajuste los movió de escalón (o los dejó sin ninguno).
+
+    Es lo que hay que poder explicar cuando alguien pregunta por qué su
+    ajuste no es el 3% de lo que entró tarde. Devuelve una lista de
+    {vendedor, tipo, base, final}, con `tipo` en:
+      - "cruza_umbral":    pasó los $700.000 gracias a las tardías.
+      - "cruza_tier_alto": pasó el $1,5M, así que parte va al 4%.
+      - "sigue_bajo_umbral": ni con las tardías llegó — ajuste cero.
+    Los vendedores que se quedaron dentro del mismo tramo no aparecen: ahí
+    el ajuste es el 3% parejo y no hay nada que explicar.
+    """
+    base = ajuste.get("base_cobranzas_por_vendedor", {})
+    out: list[dict] = []
+    for v, d in ajuste.get("delta_importe_por_vendedor", {}).items():
+        if d <= 0:
+            continue
+        b = base.get(v, 0.0)
+        f = b + d
+        if f <= UMBRAL_COBRANZA_PLENO:
+            tipo = "sigue_bajo_umbral"
+        elif b <= UMBRAL_COBRANZA_PLENO:
+            tipo = "cruza_umbral"
+        elif b <= UMBRAL_COBRANZA_TIER_ALTO < f:
+            tipo = "cruza_tier_alto"
+        else:
+            continue
+        out.append({"vendedor": v, "tipo": tipo, "base": b, "final": f})
+    return out
 
 
 # =====================================================================
