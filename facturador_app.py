@@ -519,6 +519,10 @@ def _tabla_pedido_vs_preparado(items: list[dict]) -> pd.DataFrame:
             # Gabriel Parodi). Viaja adentro de items_json, no en una columna
             # propia del buzón.
             "Por qué faltó": it.get("motivoTexto") or "",
+            # El depósito no lo pudo escanear porque el producto no tiene
+            # código de barra en el catálogo. La mercadería salió completa —
+            # lo que falta es dar de alta el EAN.
+            "Contado a mano": "sí" if it.get("contadoAMano") else "",
         })
     return pd.DataFrame(filas)
 
