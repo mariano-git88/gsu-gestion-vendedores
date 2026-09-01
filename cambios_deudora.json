@@ -1,5 +1,16 @@
 [
   {
+    "fecha": "2026-09-01",
+    "hora": "09:30",
+    "titulo": "Aparecen los datos de contacto que faltaban",
+    "tipo": "arreglo",
+    "puntos": [
+      "Seis clientes estaban cargados en Contabilium como **proveedores**, y por eso salían sin RUT, sin ciudad y sin teléfono. Entre ellos Sodimac, que es el de más saldo de toda la cartera.",
+      "Ahora la app también lee el listado de proveedores para completar esas fichas. Barraca La Fe, que Ernesto marcó, es uno de esos casos.",
+      "Ojo: esto arregla los **datos de contacto**, no la asignación de vendedor. Para que dejen de figurar en «sin vendedor asignado» hay que asignárselos en el panel de Contabilium."
+    ]
+  },
+  {
     "fecha": "2026-08-31",
     "hora": "15:40",
     "titulo": "Arranca la app de Cuenta Corriente",

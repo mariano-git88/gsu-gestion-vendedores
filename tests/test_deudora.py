@@ -354,6 +354,22 @@ _is("la última compra es la factura más nueva",
 _is("el último pago es el recibo más nuevo",
     str(res18.loc[18, "ultimo_pago"].date()), "2026-08-20")
 
+print("\n18b. Una ficha repetida no duplica al cliente en la deudora")
+# El maestro se arma juntando /api/clientes/search con /api/proveedores/search
+# porque hay clientes cargados como proveedores que el primero no devuelve
+# (SODIMAC entre ellos, con $1,44M). Si esa unión dejara un id repetido, el
+# cliente aparecería dos veces y su deuda se contaría doble.
+cli18b = pd.concat([
+    _clientes([{"cli": 180, "vend": 1, "doc": "111"}]),
+    _clientes([{"cli": 180, "vend": 1, "doc": "111"}]),   # la misma ficha
+], ignore_index=True)
+res18b = D.resumen_por_cliente(
+    _comp([{"id": 165, "cli": 180, "emision": "2026-07-01", "total": 400.0,
+            "saldo": 400.0}]),
+    None, D.agregar_vendedor(cli18b, VEND), hoy=HOY)
+_is("el cliente aparece una sola vez", len(res18b), 1)
+_eq("y su deuda no se cuenta dos veces", res18b.loc[0, "deuda_total"], 400.0)
+
 print("\n19. La deudora usa el mismo vencimiento que el scoring")
 # Si estas dos difieren, el mismo cliente tiene dos antigüedades distintas
 # según qué pantalla se abra. Ya nos pasó entre metrics.py y credito.py.

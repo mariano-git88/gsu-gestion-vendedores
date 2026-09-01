@@ -358,11 +358,42 @@ def bajar_cobranzas(
     return session, df_imp, df_formas, rep
 
 
-def bajar_clientes(session: ApiSession) -> tuple[ApiSession, pd.DataFrame]:
+def bajar_clientes(
+    session: ApiSession, incluir_proveedores: bool = True
+) -> tuple[ApiSession, pd.DataFrame]:
     """Maestro completo de clientes.
 
     OJO: `/api/clientes/search?pageSize=0` NO trae todo (devuelve 50 de 1.140);
     hay que paginar con `api_paginate`.
+
+    **Y `/api/clientes/search` tampoco trae a todos los que facturan.** En
+    Contabilium una persona puede estar clasificada como proveedor y aun así
+    tener facturas de venta: esas fichas NO salen en el search de clientes,
+    aunque `GET /api/clientes/?id=` sí las devuelve una por una. Medido el
+    31-ago-2026: 6 de 942 clientes que facturaron en 12 meses estaban solo en
+    proveedores, y entre ellos **SODIMAC, con $1,44M de saldo**. Sin esto sus
+    facturas aparecen sin RUT, sin ciudad y sin teléfono.
+
+    Con `incluir_proveedores=True` (default) se completan esas fichas desde
+    `/api/proveedores/search`. Se deduplica por id dando prioridad a la ficha
+    de cliente: si alguien está en las dos listas, manda la de cliente.
     """
     session, items = api_paginate(session, "/api/clientes/search")
-    return session, parse_clientes(items)
+    df = parse_clientes(items)
+    if not incluir_proveedores:
+        return session, df
+
+    try:
+        session, prov = api_paginate(session, "/api/proveedores/search")
+    except Exception:  # noqa: BLE001
+        # Un fallo acá no puede tumbar la carga entera: sin los proveedores
+        # la deudora funciona igual, solo que esas fichas van sin contacto.
+        return session, df
+
+    df_prov = parse_clientes(prov)
+    if df_prov.empty:
+        return session, df
+    faltantes = df_prov[~df_prov["id_cliente"].isin(set(df["id_cliente"]))]
+    if faltantes.empty:
+        return session, df
+    return session, pd.concat([df, faltantes], ignore_index=True)
