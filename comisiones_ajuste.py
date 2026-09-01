@@ -17,6 +17,22 @@ Tipos de diferencia:
     el delta. Mantiene el vendedor que estaba en el Sheet (no se
     re-asigna).
 
+El ajuste NO es `delta × 3%`. La comisión por cobranza de v1.2 es por
+tramos (0% hasta $700.000, 3% hasta $1,5M, 4% sobre el excedente), así que
+el ajuste es el **marginal sobre la base de M-1**:
+
+    comision_cobranza(base_M1 + delta) − comision_cobranza(base_M1)
+
+Es decir: qué comisión habría cobrado el vendedor en M-1 si esas cobranzas
+se hubieran considerado, menos la que efectivamente cobró. Es la misma
+fórmula que usa `commissions.compute_retroactive_adjustment` (camino legacy
+xlsx); se había perdido al portar el módulo a la API, y con la tasa plana el
+ajuste solo acertaba si el vendedor caía en el tramo del medio — pagaba de
+más por debajo del umbral y de menos por encima de $1,5M.
+
+`base_M1` es el total de cobranzas por vendedor del snapshot de M-1 que hay
+en el Sheet: exactamente la base sobre la que se liquidó ese mes.
+
 El output es compatible con `commissions.merge_commissions_with_adjustment`
 del legacy — esa función ya maneja la regla "si ajuste < 0, NO descontar".
 """
@@ -28,7 +44,7 @@ from collections import defaultdict
 import pandas as pd
 
 import api_loader
-from commissions import TASA_COBRANZA, VENDEDOR_HUERFANAS
+from commissions import ESQUEMA_VIGENTE, VENDEDOR_HUERFANAS, comision_cobranza
 
 
 # =====================================================================
@@ -121,11 +137,31 @@ def detectar_diferencias(
 # Cálculo del ajuste
 # =====================================================================
 
+def base_cobranzas_desde_sheet(cobranzas_sheet_df) -> dict[str, float]:
+    """Total de cobranzas por vendedor del snapshot de M-1.
+
+    Es la base sobre la que se liquidó ese mes — la que determina en qué
+    tramo cae el ajuste. Usa el vendedor guardado en el Sheet, no la cartera
+    actual: lo que importa acá es cuánto cobró efectivamente cada uno.
+    Las filas sin vendedor (cliente descartado) no suman a nadie.
+    """
+    base: dict[str, float] = defaultdict(float)
+    if cobranzas_sheet_df is None or cobranzas_sheet_df.empty:
+        return {}
+    for _, r in cobranzas_sheet_df.iterrows():
+        v = str(r.get("vendedor") or "").strip()
+        if v:
+            base[v] += float(r.get("importe", 0.0) or 0.0)
+    return dict(base)
+
+
 def calcular_ajuste(
     diferencias: dict,
     mapa_clientes_actual: dict[str, str | None],
     cobranzas_api_total: float = 0.0,
     cobranzas_sheet_total: float = 0.0,
+    base_cobranzas_por_vendedor: dict[str, float] | None = None,
+    esquema: str = ESQUEMA_VIGENTE,
 ) -> dict:
     """Aplica reglas y devuelve un dict en el formato que espera
     `commissions.merge_commissions_with_adjustment`.
@@ -139,10 +175,16 @@ def calcular_ajuste(
             (para reporte).
         cobranzas_sheet_total: monto total de cobranzas en Sheet M-1
             (para reporte).
+        base_cobranzas_por_vendedor: total de cobranzas de M-1 por vendedor
+            tal como se liquidó (de `base_cobranzas_desde_sheet`). Determina
+            en qué tramo cae el ajuste. Si no se pasa, se asume base cero —
+            que bajo v1.2 deja el ajuste en 0 hasta los $700.000.
+        esquema: "v1.2" (vigente, tramos) o "v1" (plano, para comparar).
 
     Returns:
         Dict compatible con merge_commissions_with_adjustment:
-          - ajuste_comision_por_vendedor: {vendedor: monto_comisión_3pct}
+          - ajuste_comision_por_vendedor: {vendedor: comisión marginal
+            sobre la base de M-1}
             (puede tener positivos y negativos; merge_commissions_with_adjustment
             aplica solo los positivos al pago final)
           - vendedores_con_ajuste_negativo: {vendedor: monto} subconjunto
@@ -153,7 +195,6 @@ def calcular_ajuste(
           - tardias_huerfanas_a_mario: lista de tardías que cayeron a MARIO.
           - tardias_descartadas: lista de tardías sin vendedor en cartera.
     """
-    ajuste: dict[str, float] = defaultdict(float)
     delta_importe: dict[str, float] = defaultdict(float)
     cambios: list[dict] = []
     huerfanas_tardias: list[dict] = []
@@ -164,7 +205,6 @@ def calcular_ajuste(
         rut = t["rut"]
         importe = t["importe"]
         if rut not in mapa_clientes_actual:
-            ajuste[VENDEDOR_HUERFANAS] += importe * TASA_COBRANZA
             delta_importe[VENDEDOR_HUERFANAS] += importe
             huerfanas_tardias.append(t)
             cambios.append({
@@ -191,7 +231,6 @@ def calcular_ajuste(
             })
         else:
             v = mapa_clientes_actual[rut]
-            ajuste[v] += importe * TASA_COBRANZA
             delta_importe[v] += importe
             cambios.append({
                 "tipo": "tardía",
@@ -208,7 +247,6 @@ def calcular_ajuste(
     for a in diferencias["anuladas"]:
         v = a["vendedor"] or ""
         if v:
-            ajuste[v] += -a["importe"] * TASA_COBRANZA
             delta_importe[v] += -a["importe"]
         cambios.append({
             "tipo": "anulada",
@@ -225,7 +263,6 @@ def calcular_ajuste(
     for m in diferencias["modificadas"]:
         v = m["vendedor"] or ""
         if v:
-            ajuste[v] += m["delta"] * TASA_COBRANZA
             delta_importe[v] += m["delta"]
         cambios.append({
             "tipo": "modificada",
@@ -238,7 +275,17 @@ def calcular_ajuste(
             "asignacion": v,
         })
 
-    ajuste_por_vendedor = {v: round(m, 2) for v, m in ajuste.items()}
+    # El ajuste es el MARGINAL sobre la base de M-1, no delta × 3%: la
+    # comisión de cobranza v1.2 es por tramos, así que los mismos $10.000
+    # tardíos valen 0, $300 o $400 según dónde haya quedado el vendedor ese
+    # mes. Misma fórmula que `commissions.compute_retroactive_adjustment`.
+    base = dict(base_cobranzas_por_vendedor or {})
+    ajuste_por_vendedor = {}
+    for v, d in delta_importe.items():
+        b = base.get(v, 0.0)
+        ajuste_por_vendedor[v] = round(
+            comision_cobranza(b + d, esquema) - comision_cobranza(b, esquema), 2
+        )
     delta_por_vendedor = {v: round(m, 2) for v, m in delta_importe.items()}
     # Cubrir el caso de que `build_xlsx_bytes` itere sobre las claves
     # de ajuste_por_vendedor: cada vendedor que está en una tiene que
@@ -257,6 +304,9 @@ def calcular_ajuste(
         "cambios": cambios,
         "total_orig": round(cobranzas_sheet_total, 2),
         "total_actualizada": round(cobranzas_api_total, 2),
+        "base_cobranzas_por_vendedor": {
+            v: round(base.get(v, 0.0), 2) for v in ajuste_por_vendedor
+        },
         "tardias_huerfanas_a_mario": huerfanas_tardias,
         "tardias_descartadas": descartadas_tardias,
     }

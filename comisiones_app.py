@@ -377,6 +377,13 @@ if seccion == _SECCIONES[0]:
                         resultado["mapa_clientes"],
                         cobranzas_api_total=api_total,
                         cobranzas_sheet_total=sheet_total,
+                        # Base de M-1 tal como se liquidó: define en qué
+                        # tramo cae el ajuste (v1.2 es por tramos, no 3% plano).
+                        base_cobranzas_por_vendedor=(
+                            comisiones_ajuste.base_cobranzas_desde_sheet(
+                                prev_sheet_df
+                            )
+                        ),
                     )
                 else:
                     ajuste_msg = (
@@ -460,8 +467,11 @@ if seccion == _SECCIONES[0]:
             r2a.metric(
                 f"Ajuste {prev_label} (UYU)",
                 f"{total_ajuste:,.0f}",
-                help="Cobranzas tardías de M-1 × 3%. Ajustes "
-                     "negativos quedan en alerta, no se descuentan.",
+                help="Comisión que le habría correspondido en M-1 por "
+                     "las cobranzas que entraron tarde, según el tramo en "
+                     "que quedó ese mes (0% hasta $700.000, 3% hasta $1,5M, "
+                     "4% sobre el excedente). Ajustes negativos quedan en "
+                     "alerta, no se descuentan.",
             )
             r2b.metric(
                 "TOTAL a pagar (UYU)",

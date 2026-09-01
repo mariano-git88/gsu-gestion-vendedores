@@ -2077,3 +2077,54 @@ los nombres (3.240,00 bruto → 3.952,80 neto = ×1,22). Y el header de
 `/api/comprobantes/search` devuelve `IDVendedor: null` para TODOS los
 comprobantes: para atribuir una NC a un vendedor hay que traer el detalle uno
 por uno.
+
+### 2026-09-01 — El ajuste retroactivo va por tramos, no 3% plano
+
+`comisiones_ajuste.calcular_ajuste` (camino API) calculaba el ajuste como
+`importe_tardío × TASA_COBRANZA` = **3% plano**, la tasa del esquema v1
+legacy. El esquema vigente v1.2 es por tramos: 0% hasta $700.000, 3% hasta
+$1,5M, 4% sobre el excedente.
+
+**El camino legacy xlsx ya lo hacía bien.** `commissions.compute_retroactive_adjustment`
+calcula el marginal (`comision_cobranza(total_nuevo) − comision_cobranza(total_orig)`)
+y `test_retro_tramos` blinda justo los cruces de umbral. La lógica se perdió
+al portar el módulo a la API — el mismo patrón de "el fix estaba en un solo
+lado" que ya nos pasó antes.
+
+**Arreglo:** el ajuste ahora es el marginal sobre la base de M-1:
+
+    comision_cobranza(base_M1 + delta) − comision_cobranza(base_M1)
+
+`base_M1` sale del snapshot de cobranzas de M-1 que está en el Sheet
+(`base_cobranzas_desde_sheet`), que es exactamente la base sobre la que se
+liquidó ese mes. Responde la pregunta correcta: *qué habría cobrado el
+vendedor en M-1 si esas cobranzas se hubieran considerado.*
+
+**Impacto medido en agosto 2026** ($399.111 de cobranzas de julio que
+entraron tarde):
+
+| vendedor | base julio | tardías | 3% plano | marginal | dif |
+|---|---:|---:|---:|---:|---:|
+| ARTURO | 752.242 | 76.568 | 2.297 | 2.297 | ✓ |
+| MARCELO | 806.730 | 75.607 | 2.268 | 2.268 | ✓ |
+| MARIO | 1.437.792 | 225.261 | 6.758 | **8.388** | −1.631 |
+| NESTOR | 474.578 | 21.675 | **650** | **0** | +650 |
+
+La tasa plana solo acertaba en el tramo del medio. Mario cruzó el $1,5M con
+las tardías y cobró 3% donde correspondía 4%. Néstor está bajo el umbral de
+$700.000 con y sin las tardías: su comisión marginal por cobranza es cero,
+pero cobró 3%. De hecho **la liquidación de agosto de Néstor eran esos $651 y
+nada más** — sus ventas ($484.719) no llegan al umbral de $600.000 y sus
+cobranzas ($379.349) no llegan al de $700.000.
+
+Tests nuevos en `test_comisiones_v12.py`: `test_ajuste_api_por_tramos`
+(los tres tramos), `test_ajuste_api_cruza_umbral_y_anuladas` (cruce de
+$700.000 y anulada que resta) y `test_ajuste_api_sin_base_no_inventa`.
+
+**Trampa del snapshot:** `gsheets.write_cobranzas_periodo` reescribe con
+`ws.clear()`, sin versionado. Al guardar la liquidación de M, el paso 3
+actualiza el snapshot de M-1 con las cobranzas actuales — así las tardías no
+se re-detectan y no se pagan dos veces. Correcto, pero significa que
+**recalcular M después de haberlo guardado NO reproduce el ajuste**: las
+tardías ya fueron consumidas. Si hay que rehacer una liquidación, primero hay
+que restaurar el snapshot de M-1 al estado en que se liquidó.

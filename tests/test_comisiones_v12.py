@@ -16,7 +16,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from openpyxl import Workbook
 
+import comisiones_ajuste as A
 import commissions as C
+import pandas as pd
 
 _fallos = []
 
@@ -134,10 +136,103 @@ def test_retro_tramos():
     _eq("V2 v1 plano", aj1["V2"], 3_000)
 
 
+def _sheet(filas):
+    """DataFrame con el shape del snapshot de cobranzas de M-1."""
+    return pd.DataFrame(
+        [{"numero": n, "periodo_cobranza": "2026-07", "vendedor": v,
+          "rut_cliente": r, "razon_social": "Cli", "fecha_cobranza": "01/07/2026",
+          "importe": float(i)} for n, v, r, i in filas]
+    )
+
+
+def test_ajuste_api_por_tramos():
+    """El ajuste retroactivo del camino API es el marginal sobre la base de
+    M-1, no delta x 3% plano. Es el mismo invariante que test_retro_tramos
+    blinda para el camino xlsx: se habia perdido al portar a la API."""
+    print("Ajuste retroactivo (camino API) por tramos:")
+    # Snapshot de M-1: tres vendedores en tres tramos distintos.
+    sheet = _sheet([
+        ("S1", "BAJO", "R1", 500_000),      # bajo el umbral de 700k
+        ("S2", "MEDIO", "R2", 900_000),     # tramo del 3%
+        ("S3", "ALTO", "R3", 1_450_000),    # a punto de cruzar 1,5M
+    ])
+    base = A.base_cobranzas_desde_sheet(sheet)
+    _eq("base BAJO", base["BAJO"], 500_000)
+    _eq("base ALTO", base["ALTO"], 1_450_000)
+
+    # Una cobranza tardia de 100k para cada uno.
+    api = [
+        {"Numero": "S1", "NroDocumento": "R1", "RazonSocial": "Cli",
+         "ImporteTotal": "500.000,00", "Fecha": "01/07/2026"},
+        {"Numero": "S2", "NroDocumento": "R2", "RazonSocial": "Cli",
+         "ImporteTotal": "900.000,00", "Fecha": "01/07/2026"},
+        {"Numero": "S3", "NroDocumento": "R3", "RazonSocial": "Cli",
+         "ImporteTotal": "1.450.000,00", "Fecha": "01/07/2026"},
+        {"Numero": "T1", "NroDocumento": "R1", "RazonSocial": "Cli",
+         "ImporteTotal": "100.000,00", "Fecha": "20/07/2026"},
+        {"Numero": "T2", "NroDocumento": "R2", "RazonSocial": "Cli",
+         "ImporteTotal": "100.000,00", "Fecha": "20/07/2026"},
+        {"Numero": "T3", "NroDocumento": "R3", "RazonSocial": "Cli",
+         "ImporteTotal": "100.000,00", "Fecha": "20/07/2026"},
+    ]
+    mapa = {"R1": "BAJO", "R2": "MEDIO", "R3": "ALTO"}
+    dif = A.detectar_diferencias(api, sheet)
+    _eq("tardias detectadas", len(dif["tardias"]), 3)
+    aj = A.calcular_ajuste(
+        dif, mapa, base_cobranzas_por_vendedor=base
+    )["ajuste_comision_por_vendedor"]
+
+    # 500k -> 600k: sigue bajo el umbral, no genera comision.
+    _eq("bajo umbral -> 0 (con 3% plano daba 3.000)", aj["BAJO"], 0)
+    # 900k -> 1M: todo dentro del tramo medio.
+    _eq("tramo medio -> 100k x 3%", aj["MEDIO"], 3_000)
+    # 1,45M -> 1,55M: 50k al 3% + 50k al 4%.
+    _eq("cruza 1,5M -> 50k x 3% + 50k x 4%", aj["ALTO"], 3_500)
+
+
+def test_ajuste_api_cruza_umbral_y_anuladas():
+    """Cruce del umbral de 700k hacia arriba, y anulada que resta."""
+    print("Ajuste retroactivo (camino API): cruce de umbral y anulada:")
+    sheet = _sheet([
+        ("S1", "SUBE", "R1", 650_000),
+        ("S2", "ANULA", "R2", 1_000_000),
+    ])
+    base = A.base_cobranzas_desde_sheet(sheet)
+    api = [
+        {"Numero": "S1", "NroDocumento": "R1", "RazonSocial": "Cli",
+         "ImporteTotal": "650.000,00", "Fecha": "01/07/2026"},
+        {"Numero": "T1", "NroDocumento": "R1", "RazonSocial": "Cli",
+         "ImporteTotal": "100.000,00", "Fecha": "20/07/2026"},
+    ]
+    mapa = {"R1": "SUBE", "R2": "ANULA"}
+    dif = A.detectar_diferencias(api, sheet)
+    _eq("anuladas detectadas", len(dif["anuladas"]), 1)
+    res = A.calcular_ajuste(dif, mapa, base_cobranzas_por_vendedor=base)
+    aj = res["ajuste_comision_por_vendedor"]
+    # 650k -> 750k: solo los 50k que pasan el umbral comisionan.
+    _eq("cruza 700k -> 50k x 3% (no 100k)", aj["SUBE"], 1_500)
+    # 1M -> 0: el ajuste es negativo por todo el excedente del umbral.
+    _eq("anulada -> negativo", aj["ANULA"], -9_000)
+    _eq("negativo queda en alerta", len(res["vendedores_con_ajuste_negativo"]), 1)
+
+
+def test_ajuste_api_sin_base_no_inventa():
+    """Sin base de M-1 el ajuste no puede inventar tramo: arranca de cero."""
+    print("Ajuste retroactivo (camino API) sin base:")
+    sheet = _sheet([])
+    api = [{"Numero": "T1", "NroDocumento": "R1", "RazonSocial": "Cli",
+            "ImporteTotal": "100.000,00", "Fecha": "20/07/2026"}]
+    dif = A.detectar_diferencias(api, sheet)
+    aj = A.calcular_ajuste(dif, {"R1": "V1"})["ajuste_comision_por_vendedor"]
+    _eq("base 0 + 100k -> bajo umbral -> 0", aj["V1"], 0)
+
+
 def main():
     for t in [
         test_tramos_venta, test_tramos_cobranza, test_dual_run_v1,
         test_clasificar_pilar, test_bono_y_licencia,
+        test_ajuste_api_por_tramos, test_ajuste_api_cruza_umbral_y_anuladas,
+        test_ajuste_api_sin_base_no_inventa,
         test_compute_commissions_fijo_total, test_retro_tramos,
     ]:
         t()
