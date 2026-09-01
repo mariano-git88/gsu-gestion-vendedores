@@ -81,3 +81,17 @@ NOMBRE_VENDEDOR: dict[int, str] = {
 # 2026-07-05). Contabilium no expone un maestro de usuarios por API, por
 # eso el número se mantiene a mano acá.
 ID_VENDEDOR_TELEVENTAS: int | None = 231
+
+
+def nombre_por_email(email: str) -> str:
+    """Nombre "lindo" a partir del email del vendedor ("Néstor", no "Nestor").
+
+    Sirve para textos que lee una persona. Si el email no está mapeado,
+    devuelve la parte anterior a la @ capitalizada, que es lo mejor que se
+    puede hacer sin inventar.
+    """
+    e = (email or "").strip().upper()
+    for _id, mail in VENDEDORES.items():
+        if mail.upper() == e and _id in NOMBRE_VENDEDOR:
+            return NOMBRE_VENDEDOR[_id]
+    return e.split("@")[0].title() if e else ""

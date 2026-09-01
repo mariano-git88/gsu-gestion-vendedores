@@ -35,6 +35,7 @@ import comisiones_data
 import commissions
 import gsheets
 import theme
+import vendedores
 
 
 # =====================================================================
@@ -482,6 +483,41 @@ if seccion == _SECCIONES[0]:
                 ),
                 delta_color="off",
             )
+
+            # La explicación del ajuste va acá, a la vista, no dentro de un
+            # expander: RRHH la necesita todos los meses que haya ajuste, y
+            # es la pregunta que llega apenas el vendedor mira el recibo.
+            st.info(comisiones_ajuste.EXPLICACION_AJUSTE, icon="💬")
+            _cruces = comisiones_ajuste.cruces_de_escalon(ajuste)
+            if _cruces:
+                _txt = {
+                    "cruza_umbral": (
+                        "cruzó los $700.000 con las tardías → comisiona solo "
+                        "la parte que pasó esa línea, no todo lo que entró"
+                    ),
+                    "cruza_tier_alto": (
+                        "cruzó el $1.500.000 → esa parte va al 4%, no al 3%"
+                    ),
+                    "sigue_bajo_umbral": (
+                        "sigue abajo de $700.000 aun con las tardías → su "
+                        "ajuste es cero"
+                    ),
+                }
+                st.markdown(
+                    "**A quién hay que explicárselo este mes**\n\n"
+                    + "\n".join(
+                        f"- **{vendedores.nombre_por_email(c['vendedor'])}** "
+                        f"(${c['base']:,.0f} → ${c['final']:,.0f}): "
+                        f"{_txt[c['tipo']]}"
+                        for c in _cruces
+                    )
+                )
+            else:
+                st.caption(
+                    "Este mes nadie se movió de escalón con el ajuste: todos "
+                    "quedaron dentro del mismo tramo, así que el ajuste es el "
+                    "3% parejo sobre lo que entró tarde."
+                )
         else:
             r1a, r1b, r1c = st.columns(3)
             r1a.metric(
@@ -689,35 +725,6 @@ if seccion == _SECCIONES[0]:
                     f"Total guardado en Sheet: ${ajuste['total_orig']:,.2f} · "
                     f"Delta: ${ajuste['total_actualizada'] - ajuste['total_orig']:+,.2f}"
                 )
-
-                # Explicación para el vendedor. Se muestra siempre que haya
-                # ajuste; si además alguien se movió de escalón, se dice
-                # quién — que es justo la pregunta que llega a RRHH.
-                st.info(comisiones_ajuste.EXPLICACION_AJUSTE)
-                _cruces = comisiones_ajuste.cruces_de_escalon(ajuste)
-                if _cruces:
-                    _txt = {
-                        "cruza_umbral": (
-                            "cruzó los $700.000 con las tardías → comisiona "
-                            "solo la parte que pasó esa línea"
-                        ),
-                        "cruza_tier_alto": (
-                            "cruzó el $1.500.000 → esa parte va al 4%, no al 3%"
-                        ),
-                        "sigue_bajo_umbral": (
-                            "sigue abajo de $700.000 aun con las tardías → "
-                            "ajuste cero"
-                        ),
-                    }
-                    st.markdown(
-                        "**Este mes hay que explicar:**\n"
-                        + "\n".join(
-                            f"- **{c['vendedor'].split('@')[0].title()}** "
-                            f"({c['base']:,.0f} → {c['final']:,.0f}): "
-                            f"{_txt[c['tipo']]}"
-                            for c in _cruces
-                        )
-                    )
 
                 if ajuste["cambios"]:
                     df_aj = pd.DataFrame(ajuste["cambios"])
