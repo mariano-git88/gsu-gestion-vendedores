@@ -146,6 +146,29 @@ ARMADOS_COLUMNS = [
 
 # Una celda de Sheets aguanta 50.000 caracteres. El detalle de items va
 # serializado en una sola celda, así que lo cortamos bastante antes.
+# --- Cuotas cargadas a mano ------------------------------------------------
+# Contabilium emite UNA factura con UN saldo aunque la venta sea a 30/60/90.
+# Acá vive la división que carga una persona desde la app de Cuenta Corriente.
+#
+# Append-only, igual que los logs: corregir una división es volver a cargarla
+# entera con un `timestamp` nuevo, y al leer gana el juego más reciente de cada
+# factura (ver `cuotas.indexar`). `anulado="SI"` borra la división y la factura
+# vuelve a mostrarse como una sola línea. Nunca se editan filas existentes: la
+# planilla queda como historial de quién dividió qué y cuándo.
+TAB_CUOTAS = "cuotas"
+CUOTAS_COLUMNS = [
+    "timestamp",        # ISO UTC de la carga — desempata las correcciones
+    "id_comprobante",   # str, ID interno de Contabilium
+    "numero",           # str con ceros, ej "A-00031613" — escribir RAW
+    "id_cliente",       # str
+    "nro_cuota",        # int, 1..N
+    "vencimiento",      # YYYY-MM-DD
+    "importe",          # float como str
+    "usuario",          # quién la cargó
+    "nota",             # texto libre, opcional
+    "anulado",          # "SI" para deshacer la división; vacío si vale
+]
+
 ITEMS_JSON_MAX = 45000
 
 LOG_CARGA_PEDIDOS_COLUMNS = [
@@ -1135,3 +1158,62 @@ def read_credito_snapshots(
         if c != "fecha":
             df[c] = pd.to_numeric(df[c], errors="coerce")
     return df.dropna(subset=["fecha"]).sort_values("fecha").reset_index(drop=True)
+
+
+def append_cuotas(gsheets_section: dict, filas: list[dict]) -> int:
+    """Apenda una división en cuotas. Append-only.
+
+    Todas las filas de una misma factura tienen que venir con el MISMO
+    `timestamp`: es lo que las agrupa como una sola carga. Si dos filas del
+    mismo comprobante llegaran con timestamps distintos, `cuotas.indexar` se
+    quedaría solo con la más nueva y la división saldría incompleta.
+
+    Se escribe todo con `value_input_option="RAW"`: `numero` viene con ceros
+    a la izquierda y con USER_ENTERED Sheets se los come.
+    """
+    if not filas:
+        return 0
+
+    sh = _open_sheet(gsheets_section)
+    ws = _ensure_worksheet(
+        sh, TAB_CUOTAS, rows=10000, cols=len(CUOTAS_COLUMNS),
+    )
+
+    existing_header = ws.row_values(1)
+    if not existing_header or len(existing_header) < len(CUOTAS_COLUMNS):
+        ws.update(range_name="A1", values=[CUOTAS_COLUMNS],
+                  value_input_option="RAW")
+
+    rows_data = [
+        [str(f.get(c, "") or "") for c in CUOTAS_COLUMNS] for f in filas
+    ]
+    ws.append_rows(rows_data, value_input_option="RAW")
+    return len(rows_data)
+
+
+def read_cuotas(gsheets_section: dict) -> pd.DataFrame:
+    """Lee todas las cargas de cuotas, sin derivar cuál vale.
+
+    Quedarse con la última carga de cada factura es tarea de
+    `cuotas.indexar`: acá se devuelve el historial completo tal cual, que es
+    lo que permite auditar una corrección.
+
+    Si la tab no existe o está vacía devuelve un DataFrame con las columnas
+    declaradas — nunca uno sin columnas, que rompe lejos de donde se originó.
+    """
+    cols = CUOTAS_COLUMNS
+    sh = _open_sheet(gsheets_section)
+    ws = _ensure_worksheet(sh, TAB_CUOTAS, rows=10000, cols=len(cols))
+    rows = ws.get_all_values()
+
+    if not rows or len(rows) < 2:
+        return pd.DataFrame({c: pd.Series(dtype="object") for c in cols})
+
+    df = pd.DataFrame(rows[1:], columns=rows[0])
+    for c in cols:
+        if c not in df.columns:
+            df[c] = ""
+    df = df[cols]
+    for c in ("id_comprobante", "numero", "id_cliente"):
+        df[c] = df[c].astype(str).str.strip()
+    return df

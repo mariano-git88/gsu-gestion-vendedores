@@ -1994,3 +1994,35 @@ Se podría mandar la fecha real en `FechaVencimiento` al facturar, pero
 Ernesto lo vetó: si el cliente ve 90 días paga a los 90, cuando hoy paga
 antes. La fecha que ve el cliente y la que usamos para medir mora son
 distintas **a propósito**. No es un descuido que haya que arreglar.
+
+### 2026-09-01 — Cuotas cargadas a mano
+
+Ernesto aceptó la limitación del ERP y pidió resolverla a mano: *"una vez
+que tenemos ese detalle, ya queda hasta que se cobra. Será una tarea manual
+pero mucho menor a lo que se hacía"*. `cuotas.py` + tab `cuotas` del Sheet.
+
+**Nadie marca cuotas pagas.** Sería una segunda tarea manual que se
+desincroniza con el ERP a la primera distracción. El saldo lo sigue mandando
+Contabilium y se reparte entre las cuotas **de la más vieja a la más nueva**:
+si una factura de $3.000 en tres cuotas tiene saldo $1.500, la cuota 1 está
+paga, la 2 debe $500 y la 3 debe $1.000. Es un supuesto, y es el correcto
+para una venta a 30/60/90, donde el cliente paga en orden.
+
+**La invariante que blinda el test:** la suma de las cuotas pendientes es
+SIEMPRE igual al saldo del ERP, para cualquier saldo. Dividir una factura no
+puede cambiar lo que el cliente debe — solo mueve plata entre tramos de
+antigüedad. Si eso se rompe, la deudora del cliente queda desbalanceada y el
+error aparece lejos de la causa.
+
+**Append-only con versionado**, igual que el buzón de armados: corregir una
+división es volver a cargarla entera con un `timestamp` nuevo, y al leer gana
+el juego más reciente (`cuotas.indexar`). `anulado="SI"` deshace la división.
+La planilla queda como historial de quién dividió qué y cuándo.
+
+**El reparto de importes le da el resto a la última cuota.** Tres cuotas de
+$1.000,33 suman $3.000,99 y no $3.001: sin esto la factura deja de cerrar por
+un centavo, que es justo la diferencia que después nadie encuentra.
+
+*Alternativa descartada:* pedirle a Contabilium que emita una factura por
+cuota. Cambia el circuito fiscal entero y multiplica por tres los
+comprobantes, para un problema que se resuelve con una planilla.

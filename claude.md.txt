@@ -803,6 +803,11 @@ Estructura de carpetas y archivos del proyecto:
   crédito a favor), `agregar_vendedor` y `totales_por_vendedor`. Reusa
   `credito.py` para el vencimiento — NO recalcula la mora con otro criterio.
   Funciones puras, no importa streamlit. Blindado en `tests/test_deudora.py`
+- `cuotas.py` — división manual de una factura en cuotas: sugerencia a
+  partir de la condición de venta, reparto del saldo del ERP de la cuota más
+  vieja a la más nueva, validación de que cierre con el total, e indexado de
+  la planilla (gana la última carga de cada factura). Funciones puras.
+  Blindado en `tests/test_cuotas.py`
 - `deudora_pdf.py` — la deudora en PDF, un archivo por vendedor, con el
   formato del `Deudora 049.pdf` de ERPA. Reusa `combinar_pdfs` de
   `pedidos_pdf.py`. Funciones puras

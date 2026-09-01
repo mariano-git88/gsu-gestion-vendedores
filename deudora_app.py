@@ -20,7 +20,7 @@ ir a cobrarle esta semana". Comparten los datos, no la lectura.
 from __future__ import annotations
 
 import hmac
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import streamlit as st
@@ -28,8 +28,10 @@ import streamlit as st
 import api_loader
 import cambios_deudora
 import credito_api as ca
+import cuotas as CU
 import deudora as D
 import deudora_pdf as DP
+import gsheets
 import theme
 import tutorial_deudora
 import vendedores as V
@@ -231,9 +233,29 @@ hoy_ts = pd.Timestamp(HOY)
 with st.spinner("Bajando datos de Contabilium… la primera vez del día tarda."):
     df_comp, df_imp, df_cli, rep = cargar(meses, HOY)
 
+@st.cache_data(ttl=300, show_spinner=False)
+def cargar_cuotas():
+    """Divisiones en cuotas cargadas a mano. TTL corto: se editan a diario.
+
+    Best-effort igual que la foto del día del Scoring: si la planilla no está
+    configurada o falla, la deudora funciona sin las cuotas. Lo que NO se
+    hace es un `except: pass` mudo — el motivo se guarda y se muestra, porque
+    si no la app parecería "sin cuotas cargadas" en vez de "rota".
+    """
+    try:
+        df = gsheets.read_cuotas(dict(st.secrets.get("gsheets", {})))
+        return CU.indexar(df), None
+    except Exception as e:  # noqa: BLE001
+        return {}, f"{type(e).__name__}: {e}"
+
+
+cuotas_idx, error_cuotas = cargar_cuotas()
+
 df_cli = D.agregar_vendedor(df_cli, _mapa_vendedores(), V.VENDEDORES_OP_EXCLUIDOS)
-resumen = D.resumen_por_cliente(df_comp, df_imp, df_cli, hoy=hoy_ts)
-movimientos = D.armar_movimientos(df_comp, df_imp, hoy=hoy_ts)
+resumen = D.resumen_por_cliente(df_comp, df_imp, df_cli, hoy=hoy_ts,
+                                cuotas_idx=cuotas_idx)
+movimientos = D.armar_movimientos(df_comp, df_imp, hoy=hoy_ts,
+                                  cuotas_idx=cuotas_idx)
 if solo_deuda:
     resumen = resumen[resumen["deuda_total"] > 1.0].reset_index(drop=True)
 totales = D.totales_por_vendedor(resumen)
@@ -413,11 +435,11 @@ else:
     )
     ext = D.extracto_de_cliente(movimientos, cid, solo_abiertas=solo_abiertas)
 
-    vista = ext[["fecha", "tipo_mov", "comprobante", "cond_pago",
+    vista = ext[["fecha", "tipo_mov", "comprobante", "cuota", "cond_pago",
                  "vencimiento", "dias_vencido", "debe", "haber",
                  "saldo_pendiente"]].rename(columns={
         "fecha": "Fecha", "tipo_mov": "Tipo", "comprobante": "Comprobante",
-        "cond_pago": "Condición", "vencimiento": "Vence",
+        "cuota": "Cuota", "cond_pago": "Condición", "vencimiento": "Vence",
         "dias_vencido": "Días", "debe": "Debe", "haber": "Haber",
         "saldo_pendiente": "Saldo",
     })
@@ -438,3 +460,144 @@ else:
             "columna de saldo acumulado: sería un total que empieza a "
             "contar por la mitad."
         )
+
+    # ---------------------------------------------------- Dividir en cuotas
+    st.markdown("---")
+    with st.expander("✂️ Dividir una factura en cuotas"):
+        st.caption(
+            "Contabilium emite una sola factura aunque la venta sea a "
+            "30/60/90: no sabe qué parte vence en cada cuota. Acá se carga "
+            "esa división una vez y queda hasta que la factura se cobre. "
+            "**Dividir no cambia lo que el cliente debe**, solo reparte el "
+            "saldo entre las fechas que le corresponden."
+        )
+        if error_cuotas:
+            st.error(
+                f"No pude leer la planilla de cuotas: {error_cuotas}",
+                icon="⚠️",
+            )
+
+        abiertas_cli = D.extracto_de_cliente(movimientos, cid,
+                                             solo_abiertas=True)
+        ids_fac = (abiertas_cli[["id_comprobante", "comprobante", "cond_pago"]]
+                   .drop_duplicates(subset="id_comprobante"))
+        if ids_fac.empty:
+            st.info("Este cliente no tiene facturas con saldo para dividir.")
+        else:
+            etiq = {
+                f"{r.comprobante} — {r.cond_pago}"
+                + ("  ·  YA DIVIDIDA" if int(r.id_comprobante) in cuotas_idx
+                   else ""): int(r.id_comprobante)
+                for r in ids_fac.itertuples()
+            }
+            elegida = st.selectbox("Factura", list(etiq), key="fac_cuotas")
+            fid = etiq[elegida]
+            fila = df_comp[df_comp["id"] == fid].iloc[0]
+            total_fac = float(abs(fila["total"]))
+
+            st.caption(
+                f"Total de la factura: **{uyu(total_fac, 2)}** · "
+                f"emitida el {fecha_corta(fila['emision'])}"
+            )
+
+            if fid in cuotas_idx:
+                propuesta = cuotas_idx[fid].copy()
+            else:
+                propuesta = CU.sugerir(fid, fila["cond_venta"],
+                                       fila["emision"], total_fac)
+                if propuesta.empty:
+                    # Condición sin cuotas: igual se puede dividir a mano,
+                    # que es el caso del cliente al que se le cobra de a poco
+                    # sin que la condición lo diga.
+                    propuesta = CU.sugerir(
+                        fid, "1/2", fila["emision"], total_fac)
+                    propuesta["vencimiento"] = [
+                        pd.Timestamp(fila["emision"]) + pd.Timedelta(days=30),
+                        pd.Timestamp(fila["emision"]) + pd.Timedelta(days=60),
+                    ]
+
+            editada = st.data_editor(
+                propuesta[["nro_cuota", "vencimiento", "importe"]],
+                num_rows="dynamic", use_container_width=True, hide_index=True,
+                key=f"editor_cuotas_{fid}",
+                column_config={
+                    "nro_cuota": st.column_config.NumberColumn(
+                        "Cuota", min_value=1, step=1, format="%d"),
+                    "vencimiento": st.column_config.DateColumn(
+                        "Vence", format="DD/MM/YYYY"),
+                    "importe": st.column_config.NumberColumn(
+                        "Importe", min_value=0.0, step=100.0, format="%.2f"),
+                },
+            )
+
+            suma = pd.to_numeric(editada["importe"], errors="coerce").sum()
+            dif = suma - total_fac
+            if abs(dif) > 0.05:
+                st.warning(
+                    f"Las cuotas suman {uyu(suma, 2)} y la factura es de "
+                    f"{uyu(total_fac, 2)} — faltan {uyu(abs(dif), 2)}.",
+                    icon="⚠️",
+                )
+            else:
+                st.success(f"Las cuotas cierran con la factura: {uyu(suma, 2)}")
+
+            quien = st.text_input(
+                "Tu nombre", key=f"quien_cuotas_{fid}",
+                placeholder="Para saber quién cargó la división")
+            nota = st.text_input(
+                "Nota (opcional)", key=f"nota_cuotas_{fid}",
+                placeholder="Ej: acordado con el cliente por teléfono")
+
+            b1, b2 = st.columns([1, 1])
+            if b1.button("Guardar la división", key=f"guardar_cuotas_{fid}"):
+                problemas = CU.validar(editada, total_fac)
+                if problemas:
+                    for p in problemas:
+                        st.error(p)
+                else:
+                    # Un solo timestamp para todas las filas: es lo que las
+                    # agrupa como una carga. Va en UTC — `%X` con locale es-AR
+                    # imprime las 19:02 como 07:02.
+                    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                    filas = [
+                        {
+                            "timestamp": ts,
+                            "id_comprobante": str(fid),
+                            "numero": str(fila["numero"]),
+                            "id_cliente": str(cid),
+                            "nro_cuota": str(int(r.nro_cuota)),
+                            "vencimiento": f"{pd.Timestamp(r.vencimiento):%Y-%m-%d}",
+                            "importe": f"{float(r.importe):.2f}",
+                            "usuario": quien.strip(),
+                            "nota": nota.strip(),
+                            "anulado": "",
+                        }
+                        for r in editada.itertuples()
+                    ]
+                    try:
+                        n = gsheets.append_cuotas(
+                            dict(st.secrets.get("gsheets", {})), filas)
+                        cargar_cuotas.clear()
+                        st.success(f"Guardadas {n} cuotas.")
+                        st.rerun()
+                    except Exception as e:  # noqa: BLE001
+                        st.error(f"No se pudo guardar: {type(e).__name__}: {e}")
+
+            if fid in cuotas_idx and b2.button(
+                    "Deshacer la división", key=f"anular_cuotas_{fid}"):
+                ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                try:
+                    gsheets.append_cuotas(
+                        dict(st.secrets.get("gsheets", {})),
+                        [{
+                            "timestamp": ts, "id_comprobante": str(fid),
+                            "numero": str(fila["numero"]), "id_cliente": str(cid),
+                            "nro_cuota": "1", "vencimiento": "", "importe": "0",
+                            "usuario": quien.strip(), "nota": "anulación",
+                            "anulado": "SI",
+                        }])
+                    cargar_cuotas.clear()
+                    st.success("La factura vuelve a mostrarse entera.")
+                    st.rerun()
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"No se pudo deshacer: {type(e).__name__}: {e}")

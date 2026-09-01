@@ -1,6 +1,18 @@
 [
   {
     "fecha": "2026-09-01",
+    "hora": "12:10",
+    "titulo": "Ya se pueden dividir las facturas en cuotas",
+    "tipo": "nuevo",
+    "puntos": [
+      "En **Cuenta de un cliente**, al final, está *Dividir una factura en cuotas*. La app propone las fechas leyendo la condición de pago y vos corregís lo que haga falta.",
+      "**Se carga una sola vez y queda hasta que la factura se cobre.** No hay que marcar qué cuota se pagó: la app reparte el saldo que informa Contabilium de la cuota más vieja a la más nueva.",
+      "Dividir **no cambia lo que el cliente debe**. Lo que cambia es la antigüedad: cada cuota cae en el tramo que le corresponde en vez de amontonarse toda en uno.",
+      "No deja guardar una división que no cierra con el total de la factura. Y se puede corregir o deshacer cuando haga falta."
+    ]
+  },
+  {
+    "fecha": "2026-09-01",
     "hora": "09:30",
     "titulo": "Aparecen los datos de contacto que faltaban",
     "tipo": "arreglo",

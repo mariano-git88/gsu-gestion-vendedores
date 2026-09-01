@@ -82,10 +82,11 @@ decidió no cambiar lo que ve el cliente, porque al ver 90 días empezaría a
 pagar a los 90. Si un cliente reclama con la factura en la mano, tiene razón
 él en lo que dice el papel, y tiene razón la app en lo que se pactó.
 
-**Las ventas en cuotas se muestran como una sola factura.** Contabilium
-emite un solo comprobante por una venta a 30/60/90, con un solo saldo: no
-sabe qué parte vence en cada cuota. La app le pone el vencimiento promedio.
-En Summa cada cuota era una línea; acá no se puede.
+**Las ventas en cuotas vienen como una sola factura, hasta que alguien las
+divide.** Contabilium emite un solo comprobante por una venta a 30/60/90,
+con un solo saldo: no sabe qué parte vence en cada cuota, así que por
+defecto la app le pone el vencimiento promedio. Se arregla dividiéndola a
+mano una sola vez — ver más abajo.
 
 **No están los cheques en cartera.** El "Saldo Documentos" del informe viejo
 no existe en Contabilium: un cheque queda registrado como forma de pago de
@@ -95,6 +96,40 @@ un recibo, pero no hay una lista de cheques a cobrar con sus fechas.
 por defecto) una factura impaga de hace dos años no aparece. Si sospechan
 de un cliente muy viejo, subir el control de "Meses de historia" en el
 panel de la izquierda.
+
+---
+
+### Dividir una factura en cuotas
+
+En **Cuenta de un cliente**, al final, está *"Dividir una factura en cuotas"*.
+Sirve para las ventas a 30/60/90 y también para el cliente al que se le
+cobra de a poco aunque la condición no lo diga.
+
+Cómo funciona:
+
+1. Elegís la factura. La app propone las cuotas leyendo la condición de
+   pago: una venta a 30/60/90 emitida el 1° de junio propone tres cuotas
+   que vencen el 1° de julio, el 31 de julio y el 30 de agosto.
+2. Corregís fechas e importes si el acuerdo real fue otro. Podés agregar o
+   sacar filas.
+3. Ponés tu nombre y guardás.
+
+**Se carga una sola vez y queda hasta que la factura se cobre.** No hay que
+ir marcando qué cuota se pagó: la app reparte el saldo que informa
+Contabilium entre las cuotas, de la más vieja a la más nueva. Si la factura
+era de $3.000 en tres cuotas y el saldo bajó a $2.000, la primera cuota
+aparece cobrada sola.
+
+Tres cosas importantes:
+
+- **Dividir no cambia lo que el cliente debe.** Reparte el mismo saldo entre
+  varias fechas. Lo que sí cambia es la antigüedad: cada cuota cae en el
+  tramo que le corresponde en vez de amontonarse toda en uno.
+- **La app no deja guardar una división que no cierra** con el total de la
+  factura. Si las cuotas suman de más o de menos, avisa y no guarda.
+- **Se puede corregir**: volvés a entrar, cambiás y guardás de nuevo. Queda
+  el historial de quién cargó qué. Con *"Deshacer la división"* la factura
+  vuelve a mostrarse entera.
 
 ---
 

@@ -41,6 +41,7 @@ from __future__ import annotations
 import pandas as pd
 
 import credito
+import cuotas as CU
 
 # ────────────────────────────────────────────────────────────────────────────
 # Constantes
@@ -69,7 +70,7 @@ TIPO_RECIBO = "Recibo"
 
 COLS_MOV = [
     "id_cliente", "razon_social", "fecha", "tipo_mov", "comprobante",
-    "cond_pago", "vencimiento", "dias_vencido", "debe", "haber",
+    "cuota", "cond_pago", "vencimiento", "dias_vencido", "debe", "haber",
     "saldo_pendiente", "id_comprobante",
 ]
 
@@ -85,11 +86,83 @@ COLS_RESUMEN = [
 # Movimientos — el detalle cronológico de la cuenta
 # ────────────────────────────────────────────────────────────────────────────
 
+def _expandir_facturas(
+    fac: pd.DataFrame,
+    hoy: pd.Timestamp,
+    clientes_fin_de_mes: frozenset[int] | set[int] | None,
+    cuotas_idx: dict[int, pd.DataFrame] | None,
+) -> pd.DataFrame:
+    """Una fila por factura, o una por cuota si la factura fue dividida.
+
+    Es la base común del extracto y del resumen: si cada uno armara sus
+    propias filas, la deudora podría mostrar una antigüedad en la tabla de
+    clientes y otra en el detalle del cliente.
+
+    Columnas: id, id_cliente, razon_social, numero, cond_venta, emision,
+    vencimiento, total, saldo, cuota.
+    """
+    cols = ["id", "id_cliente", "razon_social", "numero", "cond_venta",
+            "emision", "vencimiento", "total", "saldo", "cuota"]
+    if fac.empty:
+        # Los dtypes NO son cosmética: un cliente que solo tiene notas de
+        # crédito deja esto vacío, y una columna de fechas vacía queda como
+        # `object`. Restarle un Timestamp tira "Can only use .dt accessor
+        # with datetimelike values" lejos de acá (errors.md 2026-08-13).
+        vacio = pd.DataFrame(columns=cols)
+        for c in ("emision", "vencimiento"):
+            vacio[c] = pd.to_datetime(vacio[c], errors="coerce")
+        for c in ("total", "saldo"):
+            vacio[c] = pd.to_numeric(vacio[c], errors="coerce")
+        return vacio
+
+    base = fac.copy()
+    base["plazo"] = base["cond_venta"].map(credito.plazo_pactado)
+    base["vencimiento"] = credito.fecha_vencimiento(
+        base["emision"], base["plazo"], base.get("id_cliente"),
+        clientes_fin_de_mes=clientes_fin_de_mes,
+    )
+    base["cuota"] = ""
+    base["total"] = base["total"].abs()
+
+    if not cuotas_idx:
+        return base[cols]
+
+    # Las facturas divididas se reemplazan por sus cuotas. El saldo del ERP
+    # se reparte de la más vieja a la más nueva (ver `cuotas.estado`), así
+    # que la deuda del cliente no cambia por dividir una factura.
+    con_cuotas = base[base["id"].isin(cuotas_idx)]
+    if con_cuotas.empty:
+        return base[cols]
+
+    filas = []
+    for _, f in con_cuotas.iterrows():
+        est = CU.estado(cuotas_idx[int(f["id"])], f["saldo"])
+        n = len(est)
+        for _, c in est.iterrows():
+            filas.append({
+                "id": f["id"],
+                "id_cliente": f["id_cliente"],
+                "razon_social": f["razon_social"],
+                "numero": f["numero"],
+                "cond_venta": f["cond_venta"],
+                "emision": f["emision"],
+                "vencimiento": c["vencimiento"],
+                "total": c["importe"],
+                "saldo": c["pendiente"],
+                "cuota": f"{int(c['nro_cuota'])}/{n}",
+            })
+
+    enteras = base[~base["id"].isin(cuotas_idx)][cols]
+    return pd.concat([enteras, pd.DataFrame(filas, columns=cols)],
+                     ignore_index=True)
+
+
 def armar_movimientos(
     df_comp: pd.DataFrame,
     df_imp: pd.DataFrame | None = None,
     hoy: pd.Timestamp | None = None,
     clientes_fin_de_mes: frozenset[int] | set[int] | None = None,
+    cuotas_idx: dict[int, pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     """Una fila por movimiento de la cuenta, ordenada por cliente y fecha.
 
@@ -123,14 +196,9 @@ def armar_movimientos(
     comp["emision"] = pd.to_datetime(comp["emision"], errors="coerce")
     es_nc = comp["tipo"].isin(credito.TIPOS_NOTA_CREDITO)
 
-    # --- Facturas -----------------------------------------------------------
-    fac = comp[~es_nc].copy()
+    # --- Facturas (una fila por factura, o una por cuota si fue dividida) ---
+    fac = _expandir_facturas(comp[~es_nc], hoy, clientes_fin_de_mes, cuotas_idx)
     if not fac.empty:
-        fac["plazo"] = fac["cond_venta"].map(credito.plazo_pactado)
-        fac["vencimiento"] = credito.fecha_vencimiento(
-            fac["emision"], fac["plazo"], fac.get("id_cliente"),
-            clientes_fin_de_mes=clientes_fin_de_mes,
-        )
         abierta = fac["saldo"] > credito.TOL_SALDO
         fac_mov = pd.DataFrame({
             "id_cliente": fac["id_cliente"],
@@ -138,11 +206,12 @@ def armar_movimientos(
             "fecha": fac["emision"],
             "tipo_mov": TIPO_FACTURA,
             "comprobante": fac["numero"],
+            "cuota": fac["cuota"],
             "cond_pago": fac["cond_venta"],
             "vencimiento": fac["vencimiento"],
             "dias_vencido": ((hoy - fac["vencimiento"]).dt.days)
                             .where(abierta & (fac["vencimiento"] < hoy)),
-            "debe": fac["total"].abs(),
+            "debe": fac["total"],
             "haber": 0.0,
             "saldo_pendiente": fac["saldo"].where(abierta, 0.0),
             "id_comprobante": fac["id"],
@@ -162,6 +231,7 @@ def armar_movimientos(
             "fecha": nc["emision"],
             "tipo_mov": TIPO_NOTA_CREDITO,
             "comprobante": nc["numero"],
+            "cuota": "",
             "cond_pago": "",
             "vencimiento": pd.NaT,
             "dias_vencido": pd.NA,
@@ -186,7 +256,10 @@ def armar_movimientos(
     # leído de arriba abajo, el extracto cuenta la historia en orden.
     orden = {TIPO_FACTURA: 0, TIPO_NOTA_CREDITO: 1, TIPO_RECIBO: 2}
     mov["_ord"] = mov["tipo_mov"].map(orden).fillna(9)
-    mov = (mov.sort_values(["id_cliente", "fecha", "_ord", "comprobante"])
+    # Las cuotas de una misma factura comparten fecha de emisión, así que se
+    # desempatan por vencimiento: 1/3, 2/3, 3/3 en ese orden.
+    mov = (mov.sort_values(["id_cliente", "fecha", "_ord", "comprobante",
+                            "vencimiento"])
               .drop(columns="_ord")
               .reset_index(drop=True))
     return mov[COLS_MOV]
@@ -226,6 +299,7 @@ def _movimientos_de_recibos(
         "tipo_mov": TIPO_RECIBO,
         "comprobante": detalle.where(~a_cuenta, "Pago a cuenta").fillna(
             "Pago (factura fuera del período)"),
+        "cuota": "",
         "cond_pago": "",
         "vencimiento": pd.NaT,
         "dias_vencido": pd.NA,
@@ -256,6 +330,7 @@ def resumen_por_cliente(
     df_cli: pd.DataFrame | None = None,
     hoy: pd.Timestamp | None = None,
     clientes_fin_de_mes: frozenset[int] | set[int] | None = None,
+    cuotas_idx: dict[int, pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     """Una fila por cliente con deuda viva, con su antigüedad y contacto.
 
@@ -281,12 +356,10 @@ def resumen_por_cliente(
     es_nc = comp["tipo"].isin(credito.TIPOS_NOTA_CREDITO)
 
     # --- Facturas abiertas, por tramo de antigüedad -------------------------
-    fac = comp[~es_nc].copy()
-    fac["plazo"] = fac["cond_venta"].map(credito.plazo_pactado)
-    fac["vencimiento"] = credito.fecha_vencimiento(
-        fac["emision"], fac["plazo"], fac.get("id_cliente"),
-        clientes_fin_de_mes=clientes_fin_de_mes,
-    )
+    # Misma expansión que el extracto: si una factura está dividida en
+    # cuotas, cada cuota cae en el tramo que le corresponde por su propio
+    # vencimiento. `facturas_abiertas` cuenta cuotas, no comprobantes.
+    fac = _expandir_facturas(comp[~es_nc], hoy, clientes_fin_de_mes, cuotas_idx)
     abiertas = fac[fac["saldo"] > credito.TOL_SALDO].copy()
     abiertas["dias"] = (hoy - abiertas["vencimiento"]).dt.days
     abiertas["tramo"] = abiertas["dias"].map(_tramo)
