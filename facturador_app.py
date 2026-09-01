@@ -387,6 +387,9 @@ with st.sidebar:
         index=list(invs_options.keys()).index(inv_default_label),
     )
     inventario_id = invs_options[inv_label]
+    # El stock se consulta por NOMBRE de depósito (getStockBySKU devuelve
+    # "VENTAS", "MFLEX"…), y el selector muestra "VENTAS (ID 832)".
+    st.session_state["inventario_nombre"] = inv_label.split(" (ID")[0].strip()
 
     st.markdown("---")
     if st.button("Buscar pendientes", use_container_width=True, type="primary"):
@@ -741,6 +744,12 @@ def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> N
                 key=f"facturar_{id_orden}",
                 type="primary",
             ):
+                # El st.stop() NO puede ir adentro del spinner: corta el
+                # script sin salir del context manager y el "Emitiendo la
+                # factura..." queda girando para siempre arriba del error.
+                # Parece que sigue trabajando cuando ya falló.
+                emision = None
+                error_emision = None
                 with st.spinner(f"Emitiendo la factura de la orden {fila['numero_orden']}..."):
                     try:
                         session = _api_session()
@@ -752,8 +761,59 @@ def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> N
                             adenda=adenda,
                         )
                     except Exception as exc:
-                        st.error(f"No se pudo emitir: {exc}")
-                        st.stop()
+                        error_emision = str(exc)
+
+                if error_emision is not None:
+                    st.error(f"No se pudo emitir: {error_emision}")
+                    if "stock suficiente" in error_emision.lower():
+                        st.caption(
+                            "La factura **no se emitió** y no quedó ningún "
+                            "borrador colgado: falla al crear el comprobante, "
+                            "antes de pedir el CAE."
+                        )
+                        # Contabilium no dice cuál producto ni cuánto falta:
+                        # hay que ir a buscarlo.
+                        try:
+                            with st.spinner("Buscando cuál producto lo frena..."):
+                                sesion_dx = _api_session()
+                                sesion_dx, orden_dx = facturador.obtener_orden(
+                                    sesion_dx, int(id_orden)
+                                )
+                                sesion_dx, faltas = facturador.diagnosticar_stock(
+                                    sesion_dx, orden_dx,
+                                    st.session_state.get("inventario_nombre", "VENTAS"),
+                                )
+                        except Exception:
+                            faltas = []
+
+                        if faltas:
+                            st.dataframe(
+                                pd.DataFrame([{
+                                    "Producto": f["concepto"],
+                                    "Pide": f["pedido"],
+                                    "Stock": f["stock"],
+                                    "Reservado": f["reservado"],
+                                    "Libre": f["libre"],
+                                    "En otros depósitos": ", ".join(
+                                        f"{n}: {c:g}" for n, c in f["otros_depositos"].items()
+                                    ) or "—",
+                                } for f in faltas]),
+                                use_container_width=True, hide_index=True,
+                            )
+                            if any(f["stock"] >= f["pedido"] for f in faltas):
+                                st.info(
+                                    "**La mercadería está**, pero figura "
+                                    "**reservada**. Contabilium valida contra el "
+                                    "stock *libre* (stock − reservado), y **la "
+                                    "propia orden reserva lo que pide**: cuando el "
+                                    "stock justo alcanza, la reserva de esta misma "
+                                    "orden lo deja en cero y rechaza la factura.\n\n"
+                                    "Se destraba liberando esa reserva —cancelando "
+                                    "la orden en Contabilium— o ajustando el stock. "
+                                    "Avisale a Mariano si te pasa seguido.",
+                                    icon="🔒",
+                                )
+                    st.stop()
 
                 _registrar_facturado_en_buzon(fila, emision, adenda)
 

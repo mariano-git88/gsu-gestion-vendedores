@@ -386,3 +386,73 @@ def test_fin_de_mes():
     # Y uno de 30 días.
     assert facturador.es_fin_de_mes(_date(2026, 9, 30))
     assert not facturador.es_fin_de_mes(_date(2026, 9, 28))
+
+
+# ---------------------------------------------------------------------
+# Diagnóstico de stock
+#
+# Contabilium rechaza con "El producto no tiene stock suficiente en el
+# inventario seleccionado" sin decir cuál. Y valida contra el stock LIBRE,
+# que la propia orden reserva: visto el 1/9/2026 en la orden 00012321 de
+# Sodimac, ABROJO SUJETADOR pedía 3, había 3, reservados 3, libre 0.
+# ---------------------------------------------------------------------
+
+class _RespFalsa:
+    def __init__(self, payload): self.status_code, self._p = 200, payload
+    def json(self): return self._p
+
+
+def _stock(actual, reservado, mflex=0.0):
+    return {
+        "stock": [
+            {"Codigo": "VENTAS", "StockActual": actual, "StockReservado": reservado,
+             "StockConReservas": actual - reservado},
+            {"Codigo": "MFLEX", "StockActual": mflex, "StockReservado": 0.0,
+             "StockConReservas": mflex},
+        ]
+    }
+
+
+def _diagnosticar(monkeypatch, orden, respuestas):
+    llamadas = iter(respuestas)
+    monkeypatch.setattr(facturador, "_get", lambda s, path: (s, _RespFalsa(next(llamadas))))
+    _, problemas = facturador.diagnosticar_stock(None, orden)
+    return problemas
+
+
+def _orden_items(*pares):
+    return {"ID": 1, "Items": [
+        {"Codigo": c, "Concepto": c, "Cantidad": n} for c, n in pares
+    ]}
+
+
+def test_no_reporta_nada_si_hay_stock_libre(monkeypatch):
+    assert _diagnosticar(monkeypatch, _orden_items(("A", 3)), [_stock(100, 10)]) == []
+
+
+def test_encuentra_el_item_sin_stock_libre(monkeypatch):
+    p = _diagnosticar(monkeypatch, _orden_items(("ABROJO", 3)), [_stock(3, 3)])
+    assert len(p) == 1
+    assert p[0]["concepto"] == "ABROJO"
+    assert p[0]["stock"] == 3 and p[0]["reservado"] == 3 and p[0]["libre"] == 0
+
+
+def test_señala_solo_el_problematico_entre_varios(monkeypatch):
+    p = _diagnosticar(
+        monkeypatch,
+        _orden_items(("BIEN", 12), ("ABROJO", 3), ("TAMBIEN BIEN", 24)),
+        [_stock(2041, 12), _stock(3, 3), _stock(541, 24)],
+    )
+    assert [x["concepto"] for x in p] == ["ABROJO"]
+
+
+def test_avisa_donde_mas_hay_stock(monkeypatch):
+    p = _diagnosticar(monkeypatch, _orden_items(("X", 10)), [_stock(0, 0, mflex=50)])
+    assert p[0]["otros_depositos"] == {"MFLEX": 50.0}
+
+
+def test_item_sin_codigo_no_rompe(monkeypatch):
+    orden = {"ID": 1, "Items": [{"Codigo": "", "Concepto": "libre", "Cantidad": 1}]}
+    monkeypatch.setattr(facturador, "_get", lambda s, p: (_ for _ in ()).throw(AssertionError("no debería consultar")))
+    _, problemas = facturador.diagnosticar_stock(None, orden)
+    assert problemas == []

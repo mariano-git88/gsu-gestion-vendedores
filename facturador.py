@@ -575,6 +575,63 @@ def es_fin_de_mes(fecha: date | None = None) -> bool:
     return (ultimo_dia - fecha.day) < DIAS_FIN_DE_MES_AVISO
 
 
+def diagnosticar_stock(
+    session: api_loader.ApiSession,
+    orden: dict,
+    inventario_nombre: str = "VENTAS",
+) -> tuple[api_loader.ApiSession, list[dict]]:
+    """Qué items de la orden no tienen stock LIBRE suficiente.
+
+    Contabilium rechaza la factura con "El producto no tiene stock
+    suficiente en el inventario seleccionado" sin decir cuál producto ni
+    cuánto falta, así que hay que ir a buscarlo.
+
+    **Valida contra el stock libre (actual − reservado), y la propia orden
+    reserva su mercadería.** Cuando el stock justo alcanza, la reserva de
+    esa misma orden lo deja en cero y la factura se rechaza aunque la
+    mercadería esté físicamente ahí. Visto el 1/9/2026 en la orden 00012321
+    de Sodimac: ABROJO SUJETADOR pedía 3, había 3, reservados 3, libre 0.
+
+    Devuelve una fila por item problemático con lo que hace falta para
+    entenderlo: pedido, stock del depósito, reservado, libre y dónde más
+    hay stock.
+    """
+    problemas = []
+    for it in orden.get("Items") or []:
+        codigo = str(it.get("Codigo") or "").strip()
+        if not codigo:
+            continue
+        session, r = _get(session, f"/api/inventarios/getStockBySKU?codigo={codigo}")
+        if r.status_code != 200:
+            continue
+        datos = r.json()
+        depositos = {
+            str(d.get("Codigo") or "").strip(): d for d in (datos.get("stock") or [])
+        }
+        dep = depositos.get(inventario_nombre)
+        if dep is None:
+            continue
+        pedido = float(it.get("Cantidad") or 0)
+        libre = float(dep.get("StockConReservas") or 0)
+        if libre >= pedido:
+            continue
+        otros = {
+            n: float(d.get("StockActual") or 0)
+            for n, d in depositos.items()
+            if n != inventario_nombre and float(d.get("StockActual") or 0) > 0
+        }
+        problemas.append({
+            "concepto": it.get("Concepto") or codigo,
+            "codigo": codigo,
+            "pedido": pedido,
+            "stock": float(dep.get("StockActual") or 0),
+            "reservado": float(dep.get("StockReservado") or 0),
+            "libre": libre,
+            "otros_depositos": otros,
+        })
+    return session, problemas
+
+
 def revisar_iva_de_la_orden(orden: dict) -> list[str]:
     """Los problemas de IVA de una orden, sin levantar excepción.
 
