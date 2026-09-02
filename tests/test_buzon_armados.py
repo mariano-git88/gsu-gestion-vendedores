@@ -232,7 +232,12 @@ def test_una_adenda_larga_no_se_recorta():
 
 
 def test_orden_sin_observaciones():
-    assert facturador._observaciones_con_adenda("", "OC 12345") == "OC 12345"
+    """Este test afirmaba que sin Observaciones quedaba SOLO la adenda — o sea
+    que daba por buena la factura sin el machete de cuentas bancarias. Es
+    justo lo que reportó Valeria el 2/9/2026."""
+    out = facturador._observaciones_con_adenda("", "OC 12345")
+    assert out.startswith("OC 12345")
+    assert facturador.MACHETE_CUENTAS in out
 
 
 def test_adenda_mas_larga_que_el_tope_se_corta_al_tope():
@@ -506,3 +511,43 @@ def test_comprobante_sin_refexterna_no_matchea(monkeypatch):
     ))
     _, comp = facturador.comprobante_de_la_orden(None, 2376407)
     assert comp is None
+
+
+# ---------------------------------------------------------------------
+# El machete de cuentas bancarias va en TODA factura
+#
+# Llegaba a la factura solo porque venía en las Observaciones de la orden,
+# que las escribe Carga de Pedidos. Las órdenes creadas a mano en la web de
+# Contabilium las tienen vacías —13 de 60 en ago-sep 2026, casi todas de
+# Sodimac— y esas facturas salían sin machete. Valeria lo notó el 2/9 al
+# escribir una adenda: ahí quedaba la adenda sola y se veía.
+# ---------------------------------------------------------------------
+
+def test_orden_sin_observaciones_igual_lleva_el_machete():
+    out = facturador._observaciones_con_adenda("", "MALDONADO - OC #499048")
+    assert out.startswith("MALDONADO - OC #499048")
+    assert facturador.MACHETE_CUENTAS in out
+
+
+def test_sin_observaciones_y_sin_adenda_lleva_el_machete():
+    assert facturador._observaciones_con_adenda("", "") == facturador.MACHETE_CUENTAS
+
+
+def test_la_adenda_no_reemplaza_las_observaciones_que_ya_estaban():
+    """El caso que sí andaba: la orden trae el machete y se agrega la adenda."""
+    out = facturador._observaciones_con_adenda(_MACHETE, "ORDEN DE VENTA N° 00012351")
+    assert out.startswith("ORDEN DE VENTA N° 00012351")
+    assert _MACHETE.strip() in out
+
+
+def test_el_machete_no_se_desincronizo():
+    """La constante está duplicada en pedidos_orden (importarlo acá tarda
+    ~40s). Si alguien cambia una cuenta bancaria en un lado y no en el otro,
+    las facturas y las órdenes dirían cosas distintas."""
+    import re
+    fuente = Path(__file__).resolve().parents[1] / "pedidos_orden.py"
+    texto = fuente.read_text(encoding="utf-8")
+    bloque = re.search(r"OBSERVACIONES_ADENDA = \(\n(.*?)\n\)", texto, re.S)
+    assert bloque, "no encontré OBSERVACIONES_ADENDA en pedidos_orden.py"
+    literal = "".join(re.findall(r'"([^"]*)"', bloque.group(1)))
+    assert literal == facturador.MACHETE_CUENTAS

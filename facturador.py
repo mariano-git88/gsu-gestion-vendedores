@@ -523,6 +523,26 @@ def armados_pendientes_de_facturar(df_eventos):
 
 OBSERVACIONES_MAX = 500
 
+# Machete de cuentas bancarias que va al pie de TODA factura.
+#
+# Está duplicado a propósito de `pedidos_orden.OBSERVACIONES_ADENDA`: importar
+# ese módulo acá tarda ~40s. `test_el_machete_no_se_desincronizo` falla si
+# alguien cambia uno y no el otro.
+#
+# **Por qué hace falta acá:** hasta ahora el machete llegaba a la factura
+# porque venía en las Observaciones de la ORDEN, que las escribe Carga de
+# Pedidos. Pero las órdenes creadas a mano en la web de Contabilium tienen
+# Observaciones vacías —13 de 60 en agosto-septiembre 2026, casi todas de
+# Sodimac— y esas facturas salían sin el machete. No lo borraba nadie: nunca
+# estuvo. Valeria lo notó el 2/9 al escribir una adenda, porque ahí quedaba
+# la adenda sola y se veía.
+MACHETE_CUENTAS = (
+    "Cuentas bancarias habilitadas para cobros: "
+    "BROU 110954910-00001 || ITAÚ 9818174 || BBVA 25540491 || "
+    "SANTANDER Sucursal: 0073 Cuenta: 1391763. "
+    "Consultas a pedidos@suprabond.com.uy o 093 900 536"
+)
+
 
 def _observaciones_con_adenda(observaciones: str, adenda: str | None) -> str:
     """Combina la adenda de administración con las Observaciones de la orden,
@@ -540,6 +560,12 @@ def _observaciones_con_adenda(observaciones: str, adenda: str | None) -> str:
     """
     adenda = (adenda or "").strip()
     observaciones = (observaciones or "").strip()
+
+    # Si la orden no trae Observaciones, poner el machete igual: es texto fijo
+    # de la empresa y va en todas las facturas, no depende de cómo se creó la
+    # orden.
+    if not observaciones:
+        observaciones = MACHETE_CUENTAS
 
     if not adenda:
         return observaciones[:OBSERVACIONES_MAX]
