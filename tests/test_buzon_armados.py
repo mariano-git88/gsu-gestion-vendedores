@@ -456,3 +456,53 @@ def test_item_sin_codigo_no_rompe(monkeypatch):
     monkeypatch.setattr(facturador, "_get", lambda s, p: (_ for _ in ()).throw(AssertionError("no debería consultar")))
     _, problemas = facturador.diagnosticar_stock(None, orden)
     assert problemas == []
+
+
+# ---------------------------------------------------------------------
+# "Cancelada" no significa "ya facturada"
+#
+# Una orden queda Cancelada por dos motivos OPUESTOS: porque se emitió la
+# factura (cancelar libera la reserva, lo hace facturar_orden al final) o
+# porque alguien la canceló SIN emitir nada, para destrabar el stock que
+# ella misma reservaba. Verificado el 2/9/2026 contra producción: la orden
+# 2291825 está Cancelada Y facturada (A-00035153); la 2376407 está
+# Cancelada y SIN facturar. El estado no distingue; RefExterna sí.
+# ---------------------------------------------------------------------
+
+def _comprobantes(*items):
+    return lambda session, path: (session, list(items))
+
+
+def test_encuentra_la_factura_de_la_orden(monkeypatch):
+    monkeypatch.setattr(facturador.api_loader, "api_paginate", _comprobantes(
+        {"Numero": "A-00035153", "RefExterna": "2291825", "Cae": "123"},
+        {"Numero": "A-00035154", "RefExterna": "999", "Cae": "456"},
+    ))
+    _, comp = facturador.comprobante_de_la_orden(None, 2291825)
+    assert comp["Numero"] == "A-00035153"
+
+
+def test_orden_cancelada_sin_factura_devuelve_none(monkeypatch):
+    monkeypatch.setattr(facturador.api_loader, "api_paginate", _comprobantes(
+        {"Numero": "A-00035153", "RefExterna": "2291825", "Cae": "123"},
+    ))
+    _, comp = facturador.comprobante_de_la_orden(None, 2376407)
+    assert comp is None
+
+
+def test_un_borrador_no_cuenta_como_facturada(monkeypatch):
+    """Si contara, un borrador colgado bloquearía la factura de verdad."""
+    monkeypatch.setattr(facturador.api_loader, "api_paginate", _comprobantes(
+        {"Numero": f"FAC A{facturador.SUFIJO_BORRADOR}", "RefExterna": "2376407"},
+    ))
+    _, comp = facturador.comprobante_de_la_orden(None, 2376407)
+    assert comp is None
+
+
+def test_comprobante_sin_refexterna_no_matchea(monkeypatch):
+    """Los emitidos desde la web de Contabilium no traen RefExterna."""
+    monkeypatch.setattr(facturador.api_loader, "api_paginate", _comprobantes(
+        {"Numero": "A-00035153", "RefExterna": "", "Cae": "123"},
+    ))
+    _, comp = facturador.comprobante_de_la_orden(None, 2376407)
+    assert comp is None

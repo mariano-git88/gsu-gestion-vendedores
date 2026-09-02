@@ -346,6 +346,44 @@ def cargar_facturas_via_api(
 # Lectura — orden de venta
 # =====================================================================
 
+def comprobante_de_la_orden(
+    session: api_loader.ApiSession,
+    id_orden: int,
+    *,
+    dias_atras: int = 60,
+) -> tuple[api_loader.ApiSession, dict | None]:
+    """El comprobante EMITIDO que corresponde a esta orden, o None.
+
+    **Este es el anti-doble-facturación de verdad, no el estado de la orden.**
+    La orden nunca queda vinculada al comprobante (`IDComprobante` se queda en
+    0 al emitir por API); el vínculo lo guarda el comprobante en `RefExterna`.
+
+    Hace falta poder preguntarlo para UNA orden: el estado "Cancelada" no
+    alcanza para saber si ya se facturó — una orden se cancela al emitir
+    (para liberar la reserva) y también se puede cancelar sin haber emitido
+    nada. Son dos situaciones opuestas con el mismo estado.
+
+    El server ignora `?refExterna=`, así que hay que traer el rango y
+    filtrar acá.
+    """
+    hasta = date.today()
+    desde = hasta - timedelta(days=dias_atras)
+    path = (
+        f"/api/comprobantes/search"
+        f"?fechaDesde={desde.isoformat()}&fechaHasta={hasta.isoformat()}"
+    )
+    session, items = api_loader.api_paginate(session, path)
+
+    objetivo = str(id_orden).strip()
+    for it in items:
+        numero = str(it.get("Numero") or "")
+        if not numero or numero.endswith(SUFIJO_BORRADOR):
+            continue  # los borradores no cuentan como facturado
+        if str(it.get("RefExterna") or "").strip() == objetivo:
+            return session, it
+    return session, None
+
+
 def obtener_orden(
     session: api_loader.ApiSession,
     id_orden: int,
@@ -959,13 +997,20 @@ def facturar_orden(
     # emitida con CAE válido. Solo registramos el error en el dict
     # para que el caller pueda mostrarlo y eventualmente cancelar
     # manualmente desde Contabilium.
-    orden_cancelada = False
+    #
+    # Si la orden YA estaba cancelada (se la canceló a mano justamente para
+    # liberar la reserva y poder emitir), no hay nada que cancelar: la reserva
+    # ya está libre. Cancelar de nuevo solo agregaría un error confuso al
+    # resultado de una emisión que salió bien.
+    ya_estaba_cancelada = (orden.get("Estado") or "").strip() == "Cancelada"
+    orden_cancelada = ya_estaba_cancelada
     orden_cancel_error: str | None = None
-    try:
-        session = cancelar_orden(session, id_orden)
-        orden_cancelada = True
-    except Exception as exc_cancel:
-        orden_cancel_error = str(exc_cancel)
+    if not ya_estaba_cancelada:
+        try:
+            session = cancelar_orden(session, id_orden)
+            orden_cancelada = True
+        except Exception as exc_cancel:
+            orden_cancel_error = str(exc_cancel)
 
     return session, {
         "id_borrador": id_borrador,

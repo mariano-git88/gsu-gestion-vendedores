@@ -458,6 +458,17 @@ def _leer_buzon() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def _comprobante_de_la_orden(id_orden: str) -> dict | None:
+    """¿Esta orden ya tiene factura emitida? Cacheado porque cuesta ~13s:
+    hay que traer todos los comprobantes del rango y filtrar por RefExterna
+    (el server ignora `?refExterna=`). Solo se consulta para las órdenes que
+    figuran Canceladas, que son la excepción."""
+    session = _api_session()
+    session, comp = facturador.comprobante_de_la_orden(session, int(id_orden))
+    return comp
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def _datos_orden(id_orden: str) -> dict:
     """Cliente y total de la orden, que el buzón no trae (el depósito no los
     necesita para armar). Se piden a Contabilium al mostrar la cola."""
@@ -679,11 +690,36 @@ def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> N
                     "producto."
                     + (f" {autorizado}." if autorizado else "")
                 )
+            # "Cancelada" NO significa "ya facturada".
+            #
+            # Una orden queda Cancelada por dos motivos opuestos: porque se
+            # emitió la factura (cancelar libera la reserva de stock, lo hace
+            # facturar_orden al final) o porque alguien la canceló SIN emitir
+            # nada — por ejemplo para destrabar el stock reservado. El estado
+            # es el mismo en los dos casos, así que no sirve para decidir.
+            #
+            # El que sabe de verdad es el comprobante: la orden no guarda el
+            # vínculo (IDComprobante se queda en 0 al emitir por API), lo
+            # guarda el comprobante en RefExterna.
+            cancelada_sin_facturar = False
             if datos["estado"] != "Pendiente":
-                bloqueos.append(
-                    f"En Contabilium la orden figura como **{datos['estado']}**, "
-                    "no como Pendiente."
-                )
+                if datos["estado"] == "Cancelada":
+                    with st.spinner("Revisando si esta orden ya tiene factura..."):
+                        comp = _comprobante_de_la_orden(id_orden)
+                    if comp:
+                        bloqueos.append(
+                            f"Esta orden **ya se facturó**: comprobante "
+                            f"**{comp.get('Numero')}**"
+                            + (f" (CAE {comp.get('Cae')})" if comp.get("Cae") else "")
+                            + ". No hay que volver a emitirla."
+                        )
+                    else:
+                        cancelada_sin_facturar = True
+                else:
+                    bloqueos.append(
+                        f"En Contabilium la orden figura como "
+                        f"**{datos['estado']}**, no como Pendiente."
+                    )
             if (datos["id_comprobante"] or 0) > 0:
                 bloqueos.append(
                     "La orden ya tiene un comprobante asociado en Contabilium."
@@ -695,6 +731,26 @@ def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> N
                 for b in bloqueos:
                     st.error(b, icon="🚫")
                 continue
+
+            # Cancelada y sin factura: se puede emitir, pero que quede claro
+            # que se está facturando una orden cancelada y que eso lo decide
+            # una persona, no la app.
+            if cancelada_sin_facturar:
+                st.warning(
+                    "**Esta orden figura como Cancelada en Contabilium y "
+                    "todavía no tiene factura.**\n\n"
+                    "Suele pasar cuando se la canceló a propósito para liberar "
+                    "el stock que ella misma reservaba. En ese caso está bien "
+                    "facturarla: la mercadería salió y el cliente la tiene.\n\n"
+                    "Pero si el cliente **canceló el pedido de verdad**, no hay "
+                    "que emitir nada.",
+                    icon="⚠",
+                )
+                if not st.checkbox(
+                    "El pedido se despachó: confirmo que hay que facturarlo",
+                    key=f"confirmar_cancelada_{id_orden}",
+                ):
+                    continue
 
             # Clientes que exigen sucursal y/o número de orden de compra en
             # la factura. Ese dato no está en ningún sistema: lo tiene quien
@@ -807,10 +863,20 @@ def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> N
                                     "stock *libre* (stock − reservado), y **la "
                                     "propia orden reserva lo que pide**: cuando el "
                                     "stock justo alcanza, la reserva de esta misma "
-                                    "orden lo deja en cero y rechaza la factura.\n\n"
-                                    "Se destraba liberando esa reserva —cancelando "
-                                    "la orden en Contabilium— o ajustando el stock. "
-                                    "Avisale a Mariano si te pasa seguido.",
+                                    "orden lo deja en cero y rechaza la factura."
+                                    "\n\n**Cómo se destraba, en este orden:**\n\n"
+                                    "1. Cancelá la orden en Contabilium. Eso "
+                                    "libera la reserva.\n"
+                                    "2. Volvé acá y tocá **Buscar pendientes** de "
+                                    "nuevo.\n"
+                                    "3. La orden va a aparecer marcada como "
+                                    "*Cancelada*. Tildá la confirmación y emitila "
+                                    "normalmente.\n\n"
+                                    "El paso 3 existe porque cancelar deja la "
+                                    "orden en estado Cancelada: la app te pide "
+                                    "confirmar que el pedido igual se despachó, "
+                                    "para no facturar algo que el cliente canceló "
+                                    "de verdad.",
                                     icon="🔒",
                                 )
                     st.stop()
