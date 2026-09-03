@@ -37,7 +37,7 @@ Caveats heredados de facturador.py (ver docstring del módulo):
 from __future__ import annotations
 
 import hmac
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import io
 import zipfile
@@ -471,6 +471,62 @@ def _leer_buzon() -> pd.DataFrame:
     )
 
 
+@st.cache_data(ttl=180, show_spinner=False)
+def _estado_real_de_las_ordenes(dias_atras: int = 90) -> dict[str, dict]:
+    """Estado real en Contabilium de las órdenes recientes, en UNA paginación.
+
+    **Por qué hace falta:** el buzón es un log de lo que hizo el DEPÓSITO, y
+    solo se entera de una factura si se emitió desde la pestaña del depósito.
+    Lo que se factura desde el lote masivo o desde la web de Contabilium nunca
+    escribe el evento `facturado`, así que esos armados quedaban en la cola
+    para siempre. Medido el 3/9/2026: de 58 pedidos en la cola, **55 ya
+    estaban facturados** (49 Cancelada por el flujo de la API, 6 Finalizada
+    con comprobante desde la web) y solo 3 estaban realmente pendientes.
+
+    Preguntarle a Contabilium orden por orden serían ~58 requests con
+    throttling; esto es una sola paginación para todas.
+    """
+    session = _api_session()
+    hasta = date.today()
+    desde = hasta - timedelta(days=dias_atras)
+    session, ordenes = api_loader.api_paginate(
+        session,
+        f"/api/ordenesventa/search"
+        f"?fechaDesde={desde.isoformat()}&fechaHasta={hasta.isoformat()}",
+    )
+    session, refs = facturador.cargar_facturas_via_api(
+        session, desde.isoformat(), hasta.isoformat()
+    )
+    out: dict[str, dict] = {}
+    for o in ordenes:
+        idd = str(o.get("ID") or o.get("Id") or "").strip()
+        if not idd:
+            continue
+        out[idd] = {
+            "estado": (o.get("Estado") or "").strip(),
+            "id_comprobante": o.get("IDComprobante") or 0,
+            "facturada_via_api": idd in refs,
+        }
+    return out
+
+
+def _ya_esta_facturada(estado_real: dict | None) -> bool:
+    """¿Esta orden ya tiene factura, mire por donde se mire?
+
+    Los tres caminos por los que una orden puede estar facturada:
+      - desde la web de Contabilium  -> Finalizada + IDComprobante
+      - desde el lote masivo o el depósito -> RefExterna en un comprobante
+        (y la orden queda Cancelada, porque se cancela para liberar la reserva)
+      - a mano, cancelando antes     -> Cancelada sin comprobante: ese caso NO
+        se puede afirmar desde acá, y por eso Cancelada sola no cuenta.
+    """
+    if not estado_real:
+        return False
+    if (estado_real.get("id_comprobante") or 0) > 0:
+        return True
+    return bool(estado_real.get("facturada_via_api"))
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _comprobante_de_la_orden(id_orden: str) -> dict | None:
     """¿Esta orden ya tiene factura emitida? Cacheado porque cuesta ~13s:
@@ -530,6 +586,30 @@ def _registrar_facturado_en_buzon(fila_armado, emision: dict, adenda: str) -> No
             "en la cola: no la factures de nuevo, avisá.",
             icon="⚠",
         )
+
+
+def _cerrar_en_el_buzon_si_el_deposito_lo_armo(id_orden, numero_orden, emision) -> None:
+    """Si esta orden la había armado el depósito, apendar el evento
+    `facturado` para que salga de su cola.
+
+    El lote masivo no escribía nada en el buzón, así que todo lo que el
+    depósito armaba y se facturaba desde acá quedaba en su cola para siempre
+    (58 pedidos el 3/9/2026, de los cuales 55 ya estaban facturados).
+
+    Best effort y silencioso: la factura ya está emitida y es válida, y la
+    cola además se cruza contra el estado real de Contabilium.
+    """
+    try:
+        df = _leer_buzon()
+        armados = df[
+            (df["id_orden"].astype(str) == str(id_orden))
+            & (df["evento"] == "armado")
+        ]
+        if armados.empty:
+            return  # no la armó el depósito: no hay nada que cerrar
+        _registrar_facturado_en_buzon(armados.iloc[-1], emision, "")
+    except Exception:
+        pass
 
 
 def _tabla_pedido_vs_preparado(items: list[dict]) -> pd.DataFrame:
@@ -617,6 +697,48 @@ def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> N
         return
 
     pendientes = facturador.armados_pendientes_de_facturar(df_eventos)
+
+    # El buzón dice qué armó el depósito, NO si ya se facturó: solo aprende de
+    # las facturas emitidas desde esta misma pestaña. Todo lo que se factura
+    # desde el lote masivo o desde la web de Contabilium quedaba acá para
+    # siempre. Así que la cola se cruza contra el estado real.
+    ya_facturadas = pd.DataFrame()
+    if not pendientes.empty:
+        try:
+            with st.spinner("Revisando cuáles ya se facturaron..."):
+                estados = _estado_real_de_las_ordenes()
+        except Exception as exc:
+            estados = None
+            st.warning(
+                f"No pude confirmar contra Contabilium cuáles ya se facturaron "
+                f"({exc}). Puede que aparezcan pedidos que ya están facturados.",
+                icon="⚠",
+            )
+        if estados is not None:
+            marca = pendientes["id_orden"].astype(str).map(
+                lambda i: _ya_esta_facturada(estados.get(i))
+            )
+            ya_facturadas = pendientes[marca]
+            pendientes = pendientes[~marca]
+
+    if not ya_facturadas.empty:
+        with st.expander(
+            f"{len(ya_facturadas)} pedido(s) que el depósito armó y ya se facturaron"
+        ):
+            st.caption(
+                "Se facturaron desde la pestaña de facturación masiva o desde "
+                "Contabilium, así que nunca volvieron al buzón. No hay que "
+                "hacer nada con ellos."
+            )
+            st.dataframe(
+                ya_facturadas[["numero_orden", "fecha_local", "usuario"]]
+                .rename(columns={
+                    "numero_orden": "Orden",
+                    "fecha_local": "Armado",
+                    "usuario": "Armó",
+                }),
+                use_container_width=True, hide_index=True,
+            )
 
     if pendientes.empty:
         st.info(
@@ -1293,6 +1415,9 @@ else:
                         punto_venta_id=punto_venta_id,
                         inventario_id=inventario_id,
                         vendedor_email=vendedor_email_orden,
+                    )
+                    _cerrar_en_el_buzon_si_el_deposito_lo_armo(
+                        id_orden, fila["numero_orden"], emision
                     )
                     resultados.append({
                         "id_orden": id_orden,
