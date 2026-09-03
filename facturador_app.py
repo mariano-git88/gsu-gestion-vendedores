@@ -242,9 +242,23 @@ def _pull_pendientes(fecha_desde_iso: str, fecha_hasta_iso: str) -> pd.DataFrame
     )
     session, ordenes = api_loader.api_paginate(session, path_ordenes)
 
-    # 2. Pull de facturas via API en el mismo rango (anti-duplicado).
+    # 2. Pull de facturas via API para el anti-duplicado.
+    #
+    # El rango de facturas va desde el inicio del rango de órdenes HASTA HOY,
+    # no hasta `fecha_hasta`. Una orden se factura el mismo día o después,
+    # nunca antes: si se buscan las facturas en la misma ventana que las
+    # órdenes, una orden del 20/8 facturada el 2/9 no aparece como facturada
+    # cuando se consulta agosto.
+    #
+    # Normalmente eso lo ataja igual el estado de la orden (Finalizada si se
+    # facturó desde la web, Cancelada si se facturó por API). Pero
+    # `facturar_orden` cancela con best effort: si ese Cancel falla, la orden
+    # queda Pendiente con IDComprobante=0 y **lo único que la delata es
+    # RefExterna**. Ahí el rango decide entre detectarla o volver a
+    # facturarla.
+    hoy_iso = date.today().isoformat()
     session, refs_facturadas = facturador.cargar_facturas_via_api(
-        session, fecha_desde_iso, fecha_hasta_iso
+        session, fecha_desde_iso, max(fecha_hasta_iso, hoy_iso)
     )
 
     # 3. Filtrar pendientes y traer detalle (con items) de cada una.
@@ -983,12 +997,26 @@ if "last_search" not in st.session_state:
 
 # Pull (cacheado).
 fd_iso, fh_iso = st.session_state["last_search"]
+# El st.stop() NO puede ir adentro del spinner: corta el script sin salir del
+# context manager y "Buscando pendientes..." queda girando para siempre arriba
+# del error. Para quien mira, la app sigue buscando cuando ya falló — que es
+# exactamente lo que reportó Valeria como "se tranca".
+_error_pull = None
 with st.spinner(f"Buscando pendientes entre {fd_iso} y {fh_iso}..."):
     try:
         df_pend = _pull_pendientes(fd_iso, fh_iso)
     except Exception as exc:
-        st.error(f"Error al pullear pendientes: {exc}")
-        st.stop()
+        _error_pull = str(exc)
+
+if _error_pull is not None:
+    st.error(f"Error al pullear pendientes: {_error_pull}")
+    st.info(
+        "Si el rango de fechas es largo hay que traer todas las órdenes **y** "
+        "todos los comprobantes del período, y Contabilium tiene un límite de "
+        "pedidos por minuto. Probá con un rango más corto — una o dos semanas.",
+        icon="📅",
+    )
+    st.stop()
 
 # Splitear en 3 buckets.
 if df_pend.empty:
@@ -1191,6 +1219,56 @@ else:
         )
         if emitir_btn and gate_ok:
             session = _api_session()
+
+            # RELEER ANTES DE ESCRIBIR.
+            #
+            # La lista de pendientes está cacheada 5 minutos, y la pantalla
+            # puede quedar abierta mucho más. En el medio alguien pudo
+            # facturar desde la web de Contabilium o desde la cola del
+            # depósito. Emitir contra una lista vieja es emitir una factura
+            # duplicada, y una factura emitida no se deshace.
+            #
+            # Una sola paginación para todo el lote, sin caché.
+            with st.spinner("Verificando que ninguna se haya facturado mientras tanto..."):
+                try:
+                    session, refs_frescas = facturador.cargar_facturas_via_api(
+                        session, fd_iso, date.today().isoformat()
+                    )
+                except Exception as exc:
+                    refs_frescas = None
+                    st.warning(
+                        f"No se pudo revalidar contra Contabilium ({exc}). "
+                        f"Se emite igual, con el chequeo de IDComprobante que "
+                        f"hace cada orden.",
+                        icon="⚠",
+                    )
+
+            ya_facturadas = []
+            if refs_frescas is not None:
+                ya_facturadas = [i for i in ids_seleccionados if str(i) in refs_frescas]
+                if ya_facturadas:
+                    ids_seleccionados = [
+                        i for i in ids_seleccionados if str(i) not in refs_frescas
+                    ]
+                    detalle = ", ".join(
+                        str(df_facturables[df_facturables["id_orden"] == i]["numero_orden"].iloc[0])
+                        for i in ya_facturadas
+                    )
+                    st.warning(
+                        f"**{len(ya_facturadas)} orden(es) ya se habían facturado** "
+                        f"mientras esta pantalla estaba abierta y se salteron: "
+                        f"{detalle}. Se emiten las {len(ids_seleccionados)} restantes.",
+                        icon="🔁",
+                    )
+                    n_sel = len(ids_seleccionados)
+
+            if not ids_seleccionados:
+                st.info(
+                    "Todas las órdenes que habías seleccionado ya estaban "
+                    "facturadas. No se emitió nada."
+                )
+                st.stop()
+
             resultados = []
             pdfs_bajados: list[tuple[str, bytes]] = []  # (filename, bytes) por factura emitida
             progreso = st.progress(0.0, text="Iniciando...")
