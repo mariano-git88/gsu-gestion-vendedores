@@ -278,6 +278,7 @@ def _pull_pendientes(fecha_desde_iso: str, fecha_hasta_iso: str) -> pd.DataFrame
         # ya está marcada via API, no necesitamos el detalle (se va al
         # bucket "ya_via_api" igual).
         tiene_linea_libre = False
+        es_asu = False
         if not ya_facturada_via_api:
             try:
                 session, detalle = facturador.obtener_orden(session, int(id_orden))
@@ -289,6 +290,12 @@ def _pull_pendientes(fecha_desde_iso: str, fecha_hasta_iso: str) -> pd.DataFrame
                         if it.get("IdConcepto") in (None, "", 0):
                             tiene_linea_libre = True
                             break
+                # Clientes con formato ASU (Grupo Disco): la factura tiene
+                # que llevar el número de orden y el GLN en el XML, y esos
+                # datos salen del campo Ref. Externa de la ORDEN, que la API
+                # no expone. Emitirlas por API las manda sin esos datos y la
+                # cadena no las paga.
+                es_asu = _cliente_es_asu(str(detalle.get("IDCliente") or ""))
             except Exception:
                 # Si falla el detalle, asumimos facturable y dejamos
                 # que el run lo capture como error real.
@@ -296,6 +303,8 @@ def _pull_pendientes(fecha_desde_iso: str, fecha_hasta_iso: str) -> pd.DataFrame
 
         if ya_facturada_via_api:
             bucket = "ya_via_api"
+        elif es_asu:
+            bucket = "formato_asu"
         elif tiene_linea_libre:
             bucket = "linea_libre"
         else:
@@ -506,6 +515,10 @@ def _estado_real_de_las_ordenes(dias_atras: int = 90) -> dict[str, dict]:
             "estado": (o.get("Estado") or "").strip(),
             "id_comprobante": o.get("IDComprobante") or 0,
             "facturada_via_api": idd in refs,
+            # El detalle (GET /?id=) NO trae el vendedor: solo el listado.
+            # Sin esto, Contabilium le pone el vendedor del API key y la
+            # factura sale a nombre de "OP".
+            "vendedor": str(o.get("Vendedor") or "").strip(),
         }
     return out
 
@@ -525,6 +538,40 @@ def _ya_esta_facturada(estado_real: dict | None) -> bool:
     if (estado_real.get("id_comprobante") or 0) > 0:
         return True
     return bool(estado_real.get("facturada_via_api"))
+
+
+def _vendedor_de_la_orden(id_orden: str) -> str:
+    """Email del vendedor de la orden, para que la factura NO salga a nombre
+    del usuario del API key ("OP"). Sale del listado de órdenes, que ya se
+    pagina entero en `_estado_real_de_las_ordenes`."""
+    try:
+        return (_estado_real_de_las_ordenes().get(str(id_orden)) or {}).get("vendedor", "")
+    except Exception:
+        return ""
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cliente_es_asu(id_cliente: str) -> bool:
+    """¿Este cliente tiene el tag ASU en Contabilium?
+
+    Las cadenas del Grupo Disco (Disco, Devoto, Geant) necesitan que la
+    factura electrónica lleve el número de orden y el GLN de entrega en el
+    XML. Eso lo produce Contabilium con el formato ASU, tomando datos que se
+    cargan a mano en el campo **Ref. Externa de la orden de venta** — un campo
+    que la API **no expone** (verificado el 4/9/2026: el detalle de la orden
+    devuelve solo Comprador, Estado, EstadoWMS, FechaCreacion,
+    FechaVencimiento, ID, IDCliente, IDComprobante, IDPack, Integracion,
+    NumeroOrden, Observaciones, Total, TotalNeto e Items).
+
+    No podemos leer ese dato, así que no lo podemos trasladar: estas facturas
+    hay que emitirlas desde Contabilium. Cacheado 30 min porque la ficha del
+    cliente casi no cambia.
+    """
+    if not id_cliente:
+        return False
+    session = _api_session()
+    session, es = facturador.cliente_tiene_tag(session, id_cliente)
+    return es
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -860,6 +907,20 @@ def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> N
                 bloqueos.append(
                     "La orden ya tiene un comprobante asociado en Contabilium."
                 )
+            if _cliente_es_asu(str(fila.get("id_cliente") or "")):
+                bloqueos.append(
+                    "**Este cliente factura con el formato ASU** (Grupo Disco: "
+                    "Disco, Devoto, Geant). Su factura electrónica tiene que "
+                    "llevar el **número de orden** y el **GLN de entrega** en "
+                    "el XML, y esos datos se cargan a mano en el campo "
+                    "**Ref. Externa de la orden de venta**, que la API de "
+                    "Contabilium no deja leer. Si se emitiera desde acá, la "
+                    "factura saldría sin esos datos y la cadena no la paga.\n\n"
+                    "**Esta factura hay que emitirla desde Contabilium.** El "
+                    "pedido ya está armado y controlado: el detalle de arriba "
+                    "es lo que salió del depósito."
+                )
+
             for problema in datos.get("problemas_iva") or []:
                 bloqueos.append(problema)
 
@@ -945,12 +1006,17 @@ def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> N
                 with st.spinner(f"Emitiendo la factura de la orden {fila['numero_orden']}..."):
                     try:
                         session = _api_session()
+                        # El vendedor sale del LISTADO de órdenes: el
+                        # detalle no lo trae y el buzón tampoco. Sin esto
+                        # Contabilium le asigna el vendedor del API key y la
+                        # factura sale a nombre de "OP".
                         session, emision = facturador.facturar_orden(
                             session, int(id_orden),
                             condicion_venta_nombre=condicion_venta_nombre,
                             punto_venta_id=punto_venta_id,
                             inventario_id=inventario_id,
                             adenda=adenda,
+                            vendedor_email=_vendedor_de_la_orden(id_orden),
                         )
                     except Exception as exc:
                         error_emision = str(exc)
@@ -1145,10 +1211,12 @@ if df_pend.empty:
     df_facturables = df_pend
     df_ya_api = df_pend
     df_linea_libre = df_pend
+    df_asu = df_pend
 else:
     df_facturables = df_pend[df_pend["bucket"] == "facturable"].copy()
     df_ya_api = df_pend[df_pend["bucket"] == "ya_via_api"].copy()
     df_linea_libre = df_pend[df_pend["bucket"] == "linea_libre"].copy()
+    df_asu = df_pend[df_pend["bucket"] == "formato_asu"].copy()
 
 # ---------------------------------------------------------------------
 # Header con métricas
@@ -1172,8 +1240,11 @@ with c2:
     total_potencial = float(df_facturables["total"].sum()) if not df_facturables.empty else 0.0
     st.metric("Total potencial", f"$ {total_potencial:,.0f} UYU".replace(",", "."))
 with c3:
-    excluidas = len(df_ya_api) + len(df_linea_libre)
-    st.metric("Excluidas", excluidas, help="Ya facturadas vía API + línea libre")
+    excluidas = len(df_ya_api) + len(df_linea_libre) + len(df_asu)
+    st.metric(
+        "Excluidas", excluidas,
+        help="Ya facturadas vía API + línea libre + formato ASU (Grupo Disco)",
+    )
 
 
 # ---------------------------------------------------------------------
@@ -1589,6 +1660,24 @@ if not df_ya_api.empty:
 # ---------------------------------------------------------------------
 # Excluidas: línea libre (no facturables vía API)
 # ---------------------------------------------------------------------
+if not df_asu.empty:
+    with st.expander(
+        f"🏬 Se facturan desde Contabilium: {len(df_asu)} órdenes con formato ASU"
+    ):
+        st.caption(
+            "Grupo Disco (Disco, Devoto, Geant). Su factura electrónica tiene "
+            "que llevar el número de orden y el GLN de entrega en el XML, y "
+            "esos datos se cargan a mano en el campo **Ref. Externa de la orden "
+            "de venta**, que la API de Contabilium no deja leer. Emitidas desde "
+            "acá saldrían sin esos datos y la cadena no las paga."
+        )
+        st.dataframe(
+            df_asu[["numero_orden", "comprador", "total"]].rename(columns={
+                "numero_orden": "Orden", "comprador": "Cliente", "total": "Total",
+            }),
+            use_container_width=True, hide_index=True,
+        )
+
 if not df_linea_libre.empty:
     with st.expander(
         f"⚠ No facturables vía API: {len(df_linea_libre)} órdenes con línea libre",

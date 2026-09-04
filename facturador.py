@@ -618,6 +618,32 @@ def _iva_del_item(item: dict, id_orden: object) -> float:
     return tasa
 
 
+# Tag que Contabilium usa para el formato de factura electrónica de las
+# cadenas del Grupo Disco. Está en la ficha del cliente (y del proveedor),
+# en "Datos complementarios > Categorías (tags)".
+TAG_FORMATO_ESPECIAL = "ASU"
+
+
+def cliente_tiene_tag(
+    session: api_loader.ApiSession,
+    id_cliente: int | str,
+    tag: str = TAG_FORMATO_ESPECIAL,
+) -> tuple[api_loader.ApiSession, bool]:
+    """¿La ficha del cliente tiene este tag?
+
+    `GET /api/clientes/?id=` devuelve `Tags: ['ASU']` (o None). Se pregunta
+    por el tag y no por una lista de razones sociales para que dar de alta
+    otra cadena no requiera tocar el código.
+    """
+    session, r = _get(session, f"/api/clientes/?id={id_cliente}")
+    if r.status_code != 200:
+        return session, False
+    tags = r.json().get("Tags") or []
+    if isinstance(tags, str):
+        tags = [tags]
+    return session, any(str(t).strip().upper() == tag.upper() for t in tags)
+
+
 def cliente_exige_adenda(comprador: str) -> str | None:
     """El nombre de la lista que matchea con el cliente, o None.
 

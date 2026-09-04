@@ -551,3 +551,66 @@ def test_el_machete_no_se_desincronizo():
     assert bloque, "no encontré OBSERVACIONES_ADENDA en pedidos_orden.py"
     literal = "".join(re.findall(r'"([^"]*)"', bloque.group(1)))
     assert literal == facturador.MACHETE_CUENTAS
+
+
+# ---------------------------------------------------------------------
+# Clientes con formato ASU (Grupo Disco)
+#
+# Su factura electrónica tiene que llevar el número de orden y el GLN de
+# entrega en el XML. Esos datos se cargan a mano en el campo "Ref. Externa"
+# de la ORDEN DE VENTA, que la API NO expone: verificado el 4/9/2026, el
+# detalle de la orden devuelve solo Comprador, Estado, EstadoWMS,
+# FechaCreacion, FechaVencimiento, ID, IDCliente, IDComprobante, IDPack,
+# Integracion, NumeroOrden, Observaciones, Total, TotalNeto e Items.
+# No se puede leer, así que no se puede trasladar.
+# ---------------------------------------------------------------------
+
+class _RespCliente:
+    def __init__(self, payload, status=200):
+        self.status_code, self._p = status, payload
+    def json(self): return self._p
+
+
+def _con_tags(monkeypatch, payload, status=200):
+    monkeypatch.setattr(
+        facturador, "_get",
+        lambda s, path: (s, _RespCliente(payload, status)),
+    )
+
+
+def test_detecta_el_tag_asu(monkeypatch):
+    _con_tags(monkeypatch, {"RazonSocial": "SUPERMERCADOS DISCO", "Tags": ["ASU"]})
+    _, es = facturador.cliente_tiene_tag(None, 146599)
+    assert es is True
+
+
+def test_cliente_sin_tags_no_es_asu(monkeypatch):
+    _con_tags(monkeypatch, {"RazonSocial": "OLSALA SRL", "Tags": None})
+    _, es = facturador.cliente_tiene_tag(None, 415839)
+    assert es is False
+
+
+def test_tag_en_minuscula_o_con_espacios_igual_cuenta(monkeypatch):
+    _con_tags(monkeypatch, {"Tags": [" asu "]})
+    _, es = facturador.cliente_tiene_tag(None, 1)
+    assert es is True
+
+
+def test_tags_como_string_suelto(monkeypatch):
+    """Por si la API devuelve un string en vez de una lista."""
+    _con_tags(monkeypatch, {"Tags": "ASU"})
+    _, es = facturador.cliente_tiene_tag(None, 1)
+    assert es is True
+
+
+def test_otro_tag_no_lo_confunde(monkeypatch):
+    _con_tags(monkeypatch, {"Tags": ["MAYORISTA", "ASUNCION"]})
+    _, es = facturador.cliente_tiene_tag(None, 1)
+    assert es is False
+
+
+def test_si_no_se_puede_leer_el_cliente_no_bloquea(monkeypatch):
+    """Fallar abierto: un 404 no puede frenar la facturación de todos."""
+    _con_tags(monkeypatch, {}, status=404)
+    _, es = facturador.cliente_tiene_tag(None, 1)
+    assert es is False
