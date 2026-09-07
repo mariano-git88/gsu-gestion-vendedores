@@ -200,12 +200,12 @@ def test_el_numero_de_orden_conserva_los_ceros():
 # La adenda en las observaciones de la factura
 # ---------------------------------------------------------------------
 
-# Las Observaciones de las órdenes de GSU arrancan siempre con este machete.
-_MACHETE = (
-    "Cuentas bancarias habilitadas para cobros: BROU 110954910-00001 || "
-    "ITAU 9818174 || BBVA 25540491 || SANTANDER Sucursal: 0073 Cuenta: "
-    "1391763. Consultas a pedidos@suprabond.com.uy o 093 900 536"
-)
+# Las Observaciones de las órdenes de GSU arrancan con este machete.
+#
+# Apunta a la constante real y no a una copia: la copia que había acá decía
+# "ITAU" sin tilde, así que no era el mismo texto y los tests podían pasar con
+# un machete que en producción no existe.
+_MACHETE = facturador.MACHETE_CUENTAS
 
 
 def test_sin_adenda_las_observaciones_quedan_igual():
@@ -614,3 +614,53 @@ def test_si_no_se_puede_leer_el_cliente_no_bloquea(monkeypatch):
     _con_tags(monkeypatch, {}, status=404)
     _, es = facturador.cliente_tiene_tag(None, 1)
     assert es is False
+
+
+# ---------------------------------------------------------------------
+# Contabilium escribe sellos internos en las Observaciones de la orden
+#
+# Al cancelar una orden desde la web, Contabilium PISA ese campo con
+# "Anulada manualmente por usuario FULANO@...". Como la factura copia las
+# Observaciones de la orden, esa leyenda salía impresa en el PDF del
+# cliente y se llevaba puesto el machete. Visto el 7/9/2026 en la orden
+# 00012322 (SODIMAC): la factura FAC A-00035656 salió con
+# "PLAZA ITALIA - OC #499107 | Anulada manualmente por usuario OPVALERIA@…".
+#
+# Y cancelar la orden es un paso NORMAL del circuito: es cómo se libera el
+# stock que la orden se reserva a sí misma.
+# ---------------------------------------------------------------------
+
+_SELLO = "Anulada manualmente por usuario OPVALERIA@SUPRABOND.COM.UY"
+
+
+def test_el_sello_de_anulacion_no_sale_en_la_factura():
+    out = facturador._observaciones_con_adenda(_SELLO, "PLAZA ITALIA - OC #499107")
+    assert "nulada" not in out
+    assert out.startswith("PLAZA ITALIA - OC #499107")
+    assert facturador.MACHETE_CUENTAS in out
+
+
+def test_orden_cancelada_sin_adenda_igual_lleva_el_machete():
+    out = facturador._observaciones_con_adenda(_SELLO, "")
+    assert out == facturador.MACHETE_CUENTAS
+
+
+def test_sello_pegado_al_machete_se_saca_y_el_machete_queda():
+    obs = f"{facturador.MACHETE_CUENTAS} | {_SELLO}"
+    out = facturador._observaciones_con_adenda(obs, "OC 123")
+    assert "nulada" not in out
+    assert facturador.MACHETE_CUENTAS in out
+    assert out.startswith("OC 123")
+
+
+def test_sello_en_otra_linea_tambien_se_saca():
+    out = facturador._observaciones_con_adenda(f"{_SELLO}\nOtra cosa", "")
+    assert "nulada" not in out
+    assert "Otra cosa" in out
+
+
+def test_un_texto_del_negocio_no_se_confunde_con_un_sello():
+    """Solo se sacan los sellos de Contabilium, no lo que escribió una persona."""
+    out = facturador._observaciones_con_adenda("Entregar por porton lateral", "")
+    assert "Entregar por porton lateral" in out
+    assert facturador.MACHETE_CUENTAS in out

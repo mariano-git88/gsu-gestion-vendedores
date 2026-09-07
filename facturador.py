@@ -544,6 +544,47 @@ MACHETE_CUENTAS = (
 )
 
 
+# Sellos que Contabilium ESCRIBE SOLO en las Observaciones de la orden.
+#
+# Al cancelar una orden desde la web, Contabilium **pisa** ese campo con
+# "Anulada manualmente por usuario FULANO@…". Como la factura copia las
+# Observaciones de la orden, esa leyenda terminaba impresa en el PDF que ve el
+# cliente, y encima se llevaba puesto el machete de cuentas bancarias.
+#
+# Visto el 7/9/2026 en la orden 00012322 de SODIMAC: la factura salió con
+# "PLAZA ITALIA - OC #499107 | Anulada manualmente por usuario OPVALERIA@…".
+# Y cancelar la orden es un paso NORMAL de nuestro circuito: es cómo se libera
+# el stock que la orden se reserva a sí misma.
+_SELLOS_INTERNOS = (
+    "anulada manualmente por usuario",
+    "anulado manualmente por usuario",
+    "cancelada manualmente por usuario",
+    "cancelado manualmente por usuario",
+)
+
+
+def limpiar_observaciones_de_la_orden(observaciones: str) -> str:
+    """Saca los sellos internos de Contabilium del texto de la orden.
+
+    Las Observaciones de la orden NO son texto confiable para imprimir en una
+    factura: además de lo que escribimos nosotros, Contabilium mete ahí sus
+    propias leyendas de auditoría.
+    """
+    texto = (observaciones or "").strip()
+    if not texto:
+        return ""
+    # El sello puede venir solo o pegado al resto con separadores.
+    partes = [
+        p.strip() for p in texto.replace("\r", "").split("\n")
+        for p in p.split(" | ")
+    ]
+    limpias = [
+        p for p in partes
+        if p and not any(sello in p.lower() for sello in _SELLOS_INTERNOS)
+    ]
+    return " | ".join(limpias).strip()
+
+
 def _observaciones_con_adenda(observaciones: str, adenda: str | None) -> str:
     """Combina la adenda de administración con las Observaciones de la orden,
     respetando el tope de caracteres.
@@ -559,13 +600,16 @@ def _observaciones_con_adenda(observaciones: str, adenda: str | None) -> str:
     la API de Contabilium. Habría que medirlo con una factura real.
     """
     adenda = (adenda or "").strip()
-    observaciones = (observaciones or "").strip()
+    observaciones = limpiar_observaciones_de_la_orden(observaciones)
 
-    # Si la orden no trae Observaciones, poner el machete igual: es texto fijo
-    # de la empresa y va en todas las facturas, no depende de cómo se creó la
-    # orden.
+    # Si la orden no trae Observaciones —o lo único que traía era un sello
+    # interno de Contabilium— poner el machete igual: es texto fijo de la
+    # empresa y va en todas las facturas, no depende de cómo se creó la orden
+    # ni de si alguien la canceló en el medio.
     if not observaciones:
         observaciones = MACHETE_CUENTAS
+    elif MACHETE_CUENTAS not in observaciones:
+        observaciones = f"{observaciones} | {MACHETE_CUENTAS}"
 
     if not adenda:
         return observaciones[:OBSERVACIONES_MAX]
