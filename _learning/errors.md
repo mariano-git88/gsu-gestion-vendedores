@@ -659,3 +659,72 @@ pasa nunca; lo destapó un test con un solo cliente.
 vaya vacío. Un DataFrame vacío sin columnas es una bomba de tiempo: el
 KeyError aparece lejos del lugar donde se originó
 (mismo espíritu que "errores que apuntan al lugar equivocado").
+
+---
+
+## 2026-09-09 — Tres trampas al exportar la facturación con detalle de items
+
+Encontradas armando `_exploracion-api-contabilium/export_ventas_12m.py`
+(12 meses, 10.805 comprobantes, 36.800 líneas de item).
+
+### `NCTK` no está en `TIPOS_NEGATIVOS` y suma en vez de restar
+
+`api_loader.TIPOS_NEGATIVOS` es `{"NCF", "NCT", "NCE"}` — los códigos de la
+tabla de referencia de Contabilium. Pero la cuenta UY **no emite `NCT`: emite
+`NCTK`** para la nota de crédito de eTicket. Los items de una NC vienen con
+`Cantidad` y `PrecioUnitario` positivos, así que sin el signo manual una NCTK
+**suma** como si fuera una venta.
+
+Magnitud medida en 12 meses: 9 líneas, **$10.293**. Chico, pero el error es
+estructural, no de escala.
+
+**Defensa mejor que la lista de tipos:** el listado
+`/api/comprobantes/search` ya trae `ImporteTotalNeto` **firmado** — negativo
+para toda NC. Tomar el signo de ahí y dejar el set de tipos como respaldo
+para el caso de un total en cero cubre cualquier tipo nuevo sin tener que
+descubrirlo. Es lo que hace el export.
+
+**Arreglado 2026-09-11** en `api_loader._signo_comprobante` y en
+`rendicion._es_nota_credito`: las dos señales, y alcanza con una — el
+`TipoFc` (ya con `NCTK` en ambas listas) **o** el total firmado. En rendición
+el bug no era de monto sino de plata: una NC de eTicket pasaba por factura
+cobrable y podía llegar a ejecutarse el cobro contra ella.
+Blindado en `tests/test_signo_nota_credito.py` (12 casos, sin API).
+Verificado contra agosto 2026: venta neta UYU $3.072.157,08, que cierra al
+centavo con el header (FAC + TIK − NCF − NCTK).
+`credito.TIPOS_NOTA_CREDITO` ya incluía `NCTK` (y `deudora` lo usa).
+El mismo fix se aplicó en `gsu-contabilidad` (app de Contabilidad/COGS).
+
+### `TipoDeCambio` viene poblado en las facturas en PESOS
+
+El campo trae la cotización del dólar del día (38-40) **también cuando
+`IDMoneda` es 794 (UYU)**. De 36.800 líneas, solo 10.491 tienen
+`TipoDeCambio = 1.0`. **No es un factor de conversión**: multiplicar por él
+para "pasar a pesos" multiplica por 40 el 71% de la facturación.
+
+Solo se usa como cotización cuando la moneda NO es el peso. En 12 meses hubo
+2 facturas en `IDMoneda = 796` (dólar, que tampoco está en
+`api_loader.MONEDA_MAP` — salían como `MONEDA_796`): USD 12.523 de una
+"MÁQUINA DE TENIS", ~$487.000 que sin convertir se contaban como si fueran
+$12.523.
+
+### `load_productos_api` filtra `Tipo == "Producto"` y deja los combos sin rubro
+
+Cruzar los items facturados contra el maestro que devuelve
+`load_productos_api` deja **11 SKU sin rubro ni sub_rubro**: son los combos
+(`COM CDB`, `COM SLT`, `COM PZA`, …), que salen por `load_combos_api` y ese
+DataFrame **no trae rubro** (solo sku, nombre, stock, precio).
+
+Son 178 líneas y **$1,13M en 12 meses** que en un análisis por marca caían
+en "sin clasificar". Para enriquecer facturación conviene armar el mapa
+`sku → rubro/sub_rubro` directamente sobre `_fetch_all_conceptos`, sin
+filtrar por `Tipo`.
+
+### De yapa: el vendedor 231 no está en `VENDEDORES`
+
+`vendedores.VENDEDORES` no lo tiene; vive aparte, en
+`ID_VENDEDOR_TELEVENTAS = 231` (OP@SUPRABOND.COM.UY). Cualquier cruce que
+use solo el dict lo muestra como `ID_231` — son 193 comprobantes en 12
+meses, y **181 de ellos son las NC del 10% de descuento** que emite el
+facturador. Es decir: el descuento comercial queda contablemente colgado de
+televentas, no del vendedor que hizo la venta.

@@ -832,13 +832,36 @@ MONEDA_MAP: dict[int, str] = {
 # cuando el `TipoFc` cae en este set.
 #
 # Tipos UY (según tabla de referencias de Contabilium):
-#   NCF = Nota de crédito eFactura
-#   NCT = Nota de crédito eTicket
-#   NCE = Nota de crédito eFactura exportación
+#   NCF  = Nota de crédito eFactura
+#   NCT  = Nota de crédito eTicket (código de la tabla de referencia)
+#   NCTK = Nota de crédito eTicket — el código que EMITE de verdad esta
+#          cuenta. Faltaba acá, así que las NC de eTicket sumaban como
+#          venta en vez de restar (9 líneas / $10.293 en 12 meses).
+#   NCE  = Nota de crédito eFactura exportación
 #
 # Las notas de DÉBITO (NDF, NDT, NDE) NO entran acá — esas suman como
 # facturas, con signo positivo.
-TIPOS_NEGATIVOS: frozenset[str] = frozenset({"NCF", "NCT", "NCE"})
+#
+# La lista es solo el RESPALDO: el signo real sale de `ImporteTotalNeto`
+# del header del search, que ya viene FIRMADO (negativo en toda NC). Así
+# un tipo nuevo que no esté acá tampoco se cuenta al revés.
+# Ver `_signo_comprobante`.
+TIPOS_NEGATIVOS: frozenset[str] = frozenset({"NCF", "NCT", "NCTK", "NCE"})
+
+
+def _signo_comprobante(header: dict, tipo: str) -> float:
+    """Signo a aplicar a los items de un comprobante.
+
+    Los `Items` del detalle vienen SIEMPRE con `Cantidad` y
+    `PrecioUnitario` positivos, también en las notas de crédito: el -1
+    lo ponemos nosotros. Dos señales, y alcanza con una: el `TipoFc`, y
+    `ImporteTotalNeto` del header, que viene FIRMADO (negativo en toda
+    NC). Así un tipo nuevo que no esté en la lista tampoco se cuenta al
+    revés.
+    """
+    if tipo in TIPOS_NEGATIVOS:
+        return -1.0
+    return -1.0 if parse_monto_uy(header.get("ImporteTotalNeto")) < 0 else 1.0
 
 
 def _fetch_all_clientes(session: ApiSession) -> tuple[ApiSession, list[dict]]:
@@ -1016,10 +1039,9 @@ def load_fc_api(
         else:
             vendedor = vmap.get(int(vid), f"ID_{vid}")
 
-        # Signo del comprobante: las NCF tienen Items con Cantidad positiva
-        # y el -1 lo tenemos que aplicar nosotros. Ver constante
-        # TIPOS_NEGATIVOS arriba para la justificación.
-        signo = -1.0 if tipo in TIPOS_NEGATIVOS else 1.0
+        # Signo del comprobante: las NC tienen Items con Cantidad positiva
+        # y el -1 lo tenemos que aplicar nosotros. Ver `_signo_comprobante`.
+        signo = _signo_comprobante(h, tipo)
 
         # Campos de cobranzas (discovery 2026-04-18). El detalle del
         # comprobante trae:

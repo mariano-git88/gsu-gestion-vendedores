@@ -54,9 +54,27 @@ TOLERANCIA_DEFAULT = 10.0    # ±$ para considerar que el cobro "cuadra"
 
 # TipoFc de Contabilium que NO son facturas cobrables sino notas de crédito
 # (reducen deuda). Si un vendedor pone uno de estos números en la columna
-# "Nro Factura", es un error: no se cobra contra una NC. Se detecta por tipo
-# (señal robusta) y se manda a REVISAR. Espejo de TIPOS_NEGATIVOS de api_loader.
-TIPOS_NOTA_CREDITO = frozenset({"NCF", "NCT", "NCE"})
+# "Nro Factura", es un error: no se cobra contra una NC. Se manda a REVISAR.
+# Espejo de TIPOS_NEGATIVOS de api_loader — incluye NCTK, que es el código
+# que esta cuenta emite de verdad para la NC de eTicket (NCT es el de la
+# tabla de referencia y no se usa).
+TIPOS_NOTA_CREDITO = frozenset({"NCF", "NCT", "NCTK", "NCE"})
+
+
+def _es_nota_credito(comp: dict | None) -> bool:
+    """True si el comprobante es una nota de crédito.
+
+    Dos señales, y alcanza con una: el `TipoFc`, y el `total`
+    (`ImporteTotalNeto` del search), que viene FIRMADO — negativo en toda
+    NC, cualquiera sea su código. Así un TipoFc nuevo que no esté en la
+    lista tampoco se cuela como factura cobrable.
+    """
+    if not comp:
+        return False
+    if str(comp.get("tipo") or "").upper() in TIPOS_NOTA_CREDITO:
+        return True
+    total = comp.get("total")
+    return isinstance(total, (int, float)) and total < 0
 
 ESTADO_OK = "OK"
 ESTADO_REVISAR = "REVISAR"
@@ -209,7 +227,7 @@ class ResultadoFila:
         comp = self.facturas_detalle[0].get("comprobante")
         if not comp:
             return False
-        return str(comp.get("tipo") or "").upper() not in TIPOS_NOTA_CREDITO
+        return not _es_nota_credito(comp)
 
     def params_ejecucion(self) -> dict | None:
         """Datos que necesita `rendicion_ejecutor` para esta fila, o None
@@ -348,7 +366,7 @@ def construir_indice_facturas(
     `comprobante` = {id, numero, total, id_cliente, razon_social, tipo}.
 
     OJO: `fuerte` mapea a una LISTA, no a un solo comprobante. En Contabilium
-    las facturas (FAC) y las notas de crédito (NCF/NCT/NCE) numeran por
+    las facturas (FAC) y las notas de crédito (NCF/NCTK/NCE) numeran por
     secuencias SEPARADAS, así que un mismo `Numero` (ej. "A-00033352") puede
     existir como factura Y como NC. Guardar ambos y elegir en `_buscar_factura`
     (que prefiere la factura) evita que una NC reciente pise a la factura vieja
@@ -391,7 +409,7 @@ def construir_indice_facturas(
 
 def _es_factura(comp: dict) -> bool:
     """True si el comprobante es una factura (no una nota de crédito)."""
-    return str(comp.get("tipo") or "").upper() not in TIPOS_NOTA_CREDITO
+    return not _es_nota_credito(comp)
 
 
 def obtener_saldo_factura(
@@ -474,7 +492,7 @@ def analizar_fila(
         else:
             # Detectar que el "número de factura" es en realidad una Nota de
             # Crédito (el vendedor se equivocó): no se cobra contra una NC.
-            if str(comp.get("tipo") or "").upper() in TIPOS_NOTA_CREDITO:
+            if _es_nota_credito(comp):
                 res.estado = ESTADO_REVISAR
                 res.motivos.append(
                     f"{num}: es una Nota de Crédito ({comp['tipo']}), no una "
