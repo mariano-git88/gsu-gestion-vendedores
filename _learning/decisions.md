@@ -2129,3 +2129,43 @@ se re-detectan y no se pagan dos veces. Correcto, pero significa que
 **recalcular M después de haberlo guardado NO reproduce el ajuste**: las
 tardías ya fueron consumidas. Si hay que rehacer una liquidación, primero hay
 que restaurar el snapshot de M-1 al estado en que se liquidó.
+
+---
+
+## 2026-10-04 — El bono trimestral sale del histórico, no de la API
+
+**Decisión:** la sección "Bono trimestral" de `comisiones_app.py` lee los 3
+meses del trimestre de la tab `historico` del Sheet y NO vuelve a pegarle a
+Contabilium.
+
+**Contexto:** el bono es un porcentaje de la comisión del trimestre. Si se
+recalculara desde la API, los volúmenes de cada mes saldrían distintos de los
+que se liquidaron (las cobranzas siguen entrando después del cierre), y el
+bono pagaría sobre una base que nadie firmó. El histórico es la base auditable:
+es exactamente lo que se pagó mes a mes.
+
+**Consecuencias:**
+
+- La venta neta del bono se deriva como `ventas / 1,22`. El histórico guarda
+  las ventas BRUTAS; los umbrales del bono son sobre la neta. No se agregó
+  columna: es la misma derivación que hace `compute_commissions` cada mes.
+- Los ajustes retroactivos NO entran al bono (ver spec §4).
+- **Gate duro:** si falta alguno de los 3 meses en el histórico, no se calcula
+  nada y se dice cuál falta. Un mes ausente leído como 0 le bajaría la
+  categoría a todo el equipo sin explicar por qué.
+- **Gate de vigencia:** los trimestres anteriores a Q3 2026 no generan bono
+  (la v1.2 rige desde la liquidación de julio 2026). Se pueden mirar como
+  simulación marcando una casilla, y el xlsx sale rotulado "SIMULACIÓN".
+
+**Alternativa descartada:** recalcular el trimestre desde la API al momento de
+pagar el bono. Más "fresco", pero el bono dejaría de ser consistente con las
+comisiones ya pagadas y cada corrida daría un número distinto.
+
+**Dónde vive:** `comisiones_bono.py` (armado y presentación) +
+`commissions.compute_bono_trimestral` (fórmula, sin cambios). Se separó en un
+módulo nuevo a propósito: `commissions.py` está bajo el invariante "las
+comisiones no pueden fallar" y acá no hay fórmula, solo armado de datos.
+Tests: `tests/test_comisiones_bono.py`.
+
+**Pendiente de decisión:** qué hacer con las licencias PARCIALES — ver
+`_learning/formula_compensacion_v1.2.md` §4.

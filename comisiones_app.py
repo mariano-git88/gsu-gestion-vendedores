@@ -17,7 +17,9 @@ Flujo:
      excluidos, etc) en un expander.
   5. Descargar liquidación en xlsx.
   6. Guardar en histórico (gate explícito anti-duplicado).
-  7. Tab "Histórico" con la tabla acumulada del Sheet.
+  7. Sección "Bono trimestral": al cierre de cada trimestre, Cat A/B
+     por pilar y el monto del bono, leyendo los 3 meses del histórico.
+  8. Tab "Histórico" con la tabla acumulada del Sheet.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import streamlit as st
 
 import api_loader
 import comisiones_ajuste
+import comisiones_bono
 import comisiones_data
 import commissions
 import gsheets
@@ -321,7 +324,7 @@ st.title(f"Liquidación de Comisiones — {_label_mes(sel_y, sel_m)}")
 # renderiza el contenido de todas las tabs y durante los reruns se ve apilado
 # (contenido de una sección aparece en otra). Con selector + `if` solo se
 # renderiza la sección activa. Ver feedback_streamlit_tabs_derrame.
-_SECCIONES = ["Calcular", "Histórico"]
+_SECCIONES = ["Calcular", "Bono trimestral", "Histórico"]
 seccion = st.segmented_control(
     "Sección", _SECCIONES, default=_SECCIONES[0],
     key="com_seccion", label_visibility="collapsed")
@@ -933,10 +936,251 @@ if seccion == _SECCIONES[0]:
 
 
 # ---------------------------------------------------------------------
+# SECCIÓN BONO TRIMESTRAL
+# ---------------------------------------------------------------------
+
+def _money(x):
+    """Formato de pantalla sin el signo $: en markdown dos `$` en la misma
+    línea se interpretan como LaTeX y el texto sale en cursiva matemática."""
+    return f"{x:,.0f}"
+
+
+if seccion == _SECCIONES[1]:
+    st.markdown("### Bono trimestral")
+    st.caption(
+        "Se paga una vez por trimestre, junto con la liquidación del último "
+        "mes. Lee los 3 meses del histórico — no vuelve a pegarle a la API, "
+        "así que usa exactamente los volúmenes con los que se liquidó cada mes."
+    )
+
+    try:
+        df_hist_b = _read_historico_cached()
+    except gsheets.CredencialesError as e:
+        st.error(f"Credenciales de Google Sheets mal configuradas: {e}")
+        df_hist_b = pd.DataFrame()
+    except gsheets.GsheetsError as e:
+        st.error(f"Error con Google Sheets: {e}")
+        df_hist_b = pd.DataFrame()
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Error inesperado: {type(e).__name__}: {e}")
+        df_hist_b = pd.DataFrame()
+
+    trimestres = comisiones_bono.trimestres_en_historico(df_hist_b)
+    if not trimestres:
+        st.info(
+            "El histórico está vacío. Liquidá y guardá los meses del "
+            "trimestre y volvé acá."
+        )
+    else:
+        # Default: el trimestre más reciente que tenga los 3 meses. Si
+        # ninguno está completo, el más reciente — y el gate avisa cuál falta.
+        # Default: el trimestre más reciente que (a) genere bono y (b) tenga
+        # los 3 meses. Nunca uno anterior a la vigencia de la v1.2 — arrancar
+        # parado en un trimestre que no se paga invita a pagarlo.
+        con_bono = [t for t in trimestres
+                    if comisiones_bono.trimestre_genera_bono(*t)]
+        completos = [
+            t for t in con_bono
+            if not comisiones_bono.periodos_faltantes(
+                df_hist_b, comisiones_bono.periodos_del_trimestre(*t))
+        ]
+        default_t = (completos or con_bono or trimestres)[0]
+        col_t, col_r = st.columns([1, 2])
+        with col_t:
+            anio_q = st.selectbox(
+                "Trimestre",
+                options=trimestres,
+                index=trimestres.index(default_t),
+                format_func=lambda t: comisiones_bono.label_trimestre(*t),
+                key="bono_trimestre",
+            )
+        periodos_q = comisiones_bono.periodos_del_trimestre(*anio_q)
+        faltantes = comisiones_bono.periodos_faltantes(df_hist_b, periodos_q)
+
+        simular_previgencia = False
+        if not comisiones_bono.trimestre_genera_bono(*anio_q):
+            pa, pq = comisiones_bono.PRIMER_TRIMESTRE_CON_BONO
+            st.error(
+                f"**{comisiones_bono.label_trimestre(*anio_q)} no genera "
+                f"bono.** El bono trimestral nació con la fórmula v1.2, "
+                f"vigente desde la liquidación de julio 2026: el primer "
+                f"trimestre que se paga es "
+                f"**{comisiones_bono.label_trimestre(pa, pq)}**. "
+                f"Lo de antes se liquidó con el esquema viejo y el pasado no "
+                f"se recalcula."
+            )
+            simular_previgencia = st.checkbox(
+                "Ver igual, como simulación (NO se paga)",
+                value=False, key="bono_simular",
+            )
+            if not simular_previgencia:
+                st.stop()
+            st.caption(
+                "⚠️ Simulación de un trimestre previo a la vigencia. Los "
+                "números de abajo no corresponden a ningún pago."
+            )
+
+        if faltantes:
+            # Gate duro. Un mes leído como 0 le borraría la Cat A a todos
+            # sin decir por qué — eso no se muestra "a modo informativo".
+            st.warning(
+                f"**No se puede calcular el bono de "
+                f"{comisiones_bono.label_trimestre(*anio_q)} todavía.** "
+                f"Falta liquidar y guardar en el histórico: "
+                f"**{', '.join(faltantes)}**.\n\n"
+                f"El bono mira los 3 meses del trimestre. Si un mes no está, "
+                f"contaría como cero y le bajaría la categoría a todo el "
+                f"mundo. Primero cerrá ese mes en la sección **Calcular**."
+            )
+        else:
+            with col_r:
+                regla = st.radio(
+                    "Regla para los meses con licencia por vacaciones",
+                    options=comisiones_bono.REGLAS_LICENCIA,
+                    format_func=lambda r: {
+                        comisiones_bono.REGLA_MES_COMPLETO:
+                            "Mes completo (literal del spec): el mes se "
+                            "reemplaza entero por el promedio de los otros dos",
+                        comisiones_bono.REGLA_PROPORCIONAL:
+                            "Proporcional: se reponen solo los días de "
+                            "licencia, al ritmo de los otros dos meses",
+                    }[r],
+                    key="bono_regla",
+                    horizontal=False,
+                )
+
+            # --- Input manual de licencia (no hay dato de RRHH en el ERP) ---
+            vendedores_q = sorted(
+                comisiones_bono.armar_datos_bono(df_hist_b, periodos_q)[0]
+            )
+            labels_mes = [
+                f"{comisiones_bono.NOMBRE_MES[int(p[5:7])]} "
+                f"({comisiones_bono.dias_del_mes(p)} d)"
+                for p in periodos_q
+            ]
+            st.markdown("#### Licencias del trimestre")
+            st.caption(
+                "Días de licencia por vacaciones en cada mes. Este dato no "
+                "está en Contabilium: se carga a mano desde la planilla de "
+                "RRHH. Si la licencia cruza de un trimestre a otro, cargá "
+                "acá solo los días que caen dentro de estos 3 meses."
+            )
+            base_lic = pd.DataFrame(
+                [[v] + [0] * 3 for v in vendedores_q],
+                columns=["vendedor"] + labels_mes,
+            )
+            lic_edit = st.data_editor(
+                base_lic,
+                key="bono_licencias",
+                hide_index=True,
+                use_container_width=True,
+                disabled=["vendedor"],
+                column_config={
+                    "vendedor": st.column_config.TextColumn("Vendedor"),
+                    **{
+                        lab: st.column_config.NumberColumn(
+                            lab, min_value=0,
+                            max_value=comisiones_bono.dias_del_mes(p),
+                            step=1, format="%d",
+                            help="Días de licencia en ese mes (0 = sin licencia)",
+                        )
+                        for lab, p in zip(labels_mes, periodos_q)
+                    },
+                },
+            )
+            licencias = comisiones_bono.licencias_desde_editor(lic_edit)
+
+            datos_q, detalle_q = comisiones_bono.armar_datos_bono(
+                df_hist_b, periodos_q, licencias, regla_licencia=regla,
+            )
+            bono_q = commissions.compute_bono_trimestral(datos_q)
+
+            sin_fila = {
+                v: d["meses_sin_fila"] for v, d in detalle_q.items()
+                if d["meses_sin_fila"]
+            }
+            if sin_fila:
+                st.warning(
+                    "Estos vendedores no tienen fila en alguno de los meses "
+                    "del trimestre y ese mes se computa como cero: "
+                    + "; ".join(f"**{v}** ({', '.join(m)})"
+                               for v, m in sin_fila.items())
+                    + ". Si se incorporó a mitad del trimestre, revisalo "
+                      "antes de pagar."
+                )
+
+            resumen_q = comisiones_bono.tabla_resumen(bono_q)
+            total_bono = int(resumen_q["bono_total"].sum())
+            n_a = int(((resumen_q["cat_venta"] == "A")
+                       | (resumen_q["cat_cobranza"] == "A")).sum())
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Bono total del trimestre (UYU)", _money(total_bono))
+            k2.metric("Vendedores", f"{len(resumen_q)}")
+            k3.metric("Con Cat A en algún pilar", f"{n_a}")
+
+            st.markdown("#### Bono por vendedor")
+            st.dataframe(
+                resumen_q.style.format({
+                    "com_venta_trim": "{:,.2f}",
+                    "com_cobranza_trim": "{:,.2f}",
+                    "bono_venta": "{:,.0f}",
+                    "bono_cobranza": "{:,.0f}",
+                    "bono_total": "{:,.0f}",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.markdown("#### Detalle mes a mes")
+            st.caption(
+                "La columna *computada* es la que clasifica y la que paga: "
+                "con licencia cargada difiere de la cruda. El ✔ marca el mes "
+                "que llegó al umbral pleno."
+            )
+            st.dataframe(
+                comisiones_bono.tabla_detalle(detalle_q, periodos_q).style.format({
+                    "dias_licencia": "{:,.0f}",
+                    "venta_neta": "{:,.2f}",
+                    "venta_computada": "{:,.2f}",
+                    "cobranza": "{:,.2f}",
+                    "cobranza_computada": "{:,.2f}",
+                }),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            with st.expander("Cómo se calcula el bono", expanded=False):
+                for linea in comisiones_bono.explicacion_bono(regla):
+                    # El `$` suelto en markdown abre modo LaTeX.
+                    st.markdown(f"- {linea.replace('$', chr(92) + '$')}")
+
+            try:
+                xlsx_bono = comisiones_bono.build_xlsx_bono(
+                    bono_q, detalle_q, periodos_q,
+                    comisiones_bono.label_trimestre(*anio_q)
+                    + (" — SIMULACIÓN, NO SE PAGA" if simular_previgencia else ""),
+                    regla,
+                )
+                st.download_button(
+                    "Descargar bono en xlsx",
+                    data=xlsx_bono,
+                    file_name=(
+                        f"bono_trimestral_{anio_q[0]}_Q{anio_q[1]}"
+                        f"{'_SIMULACION' if simular_previgencia else ''}.xlsx"
+                    ),
+                    mime=("application/vnd.openxmlformats-officedocument"
+                          ".spreadsheetml.sheet"),
+                )
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Error generando el xlsx del bono: {e}")
+
+
+
+# ---------------------------------------------------------------------
 # SECCIÓN HISTÓRICO
 # ---------------------------------------------------------------------
 
-if seccion == _SECCIONES[1]:
+if seccion == _SECCIONES[2]:
     st.markdown("### Histórico acumulado de comisiones")
     st.caption(
         "Tabla actualizada automáticamente cada vez que tocás "

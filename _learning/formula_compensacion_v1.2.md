@@ -1,7 +1,9 @@
 # Fórmula de Compensación v1.2 — Especificación
 
-**Estado**: Propuesta acordada, NO implementada todavía.
-**Fecha**: 2026-05-21
+**Estado**: IMPLEMENTADA. Comisión mensual por tramos desde 2026-07-25; bono
+trimestral enchufado a la app el 2026-10-04 (sección "Bono trimestral" de
+`comisiones_app.py`, armado en `comisiones_bono.py`).
+**Fecha**: 2026-05-21 · revisado 2026-10-04
 **Aplica a**: Vendedores GSU activos (excluye operarios y vendedor sub-umbral con tratamiento separado).
 **Motivación**: cambio normativo Uruguay — el salario mínimo se fijó en $49.855 UYU y por ley sólo el sueldo fijo cuenta para alcanzarlo (las comisiones quedan aparte). El esquema viejo ($10.000 fijo + 2,35% × venta neta + 3% × cobranza) deja de cumplir.
 
@@ -138,12 +140,45 @@ Si el vendedor tomó licencia por vacaciones durante un mes del trimestre:
 - El promedio sintético aplica **tanto para la clasificación Cat A/B como para el cálculo del monto del bono**.
 - Justificación: por normativa laboral uruguaya, las vacaciones se pagan como si hubiera trabajado.
 
+### Licencia parcial — PENDIENTE DE DECISIÓN (2026-10-04)
+
+La regla de arriba se escribió pensando en un mes entero de licencia. Las
+licencias reales son de ~10 días hábiles y caen **partidas entre dos meses**
+(Q3 2026: una arranca el 29/06 y termina el 10/07, otra arranca el 21/09 y
+termina el 02/10). Leída literal, la regla reemplaza el mes ENTERO aunque la
+licencia haya sido de 10 días, y eso puede ir para cualquier lado:
+
+- Si el mes de licencia fue flojo, lo reemplaza por el promedio → **beneficia**.
+- Si el mes de licencia fue el MEJOR del trimestre, se lo borra → **perjudica**.
+
+La app ofrece las dos lecturas (`comisiones_bono.REGLAS_LICENCIA`) y muestra
+los números de las dos antes de pagar:
+
+| Regla | Qué hace |
+|---|---|
+| `mes_completo` | Literal del spec: cualquier día de licencia reemplaza el mes entero por el promedio de los otros dos. |
+| `proporcional` | El mes se parte: los días trabajados valen lo producido y los días de licencia se imputan al ritmo de los otros dos meses — `real + (días_licencia / días_del_mes) × promedio_otros`. |
+
+Con el mes entero de licencia y sin producción propia las dos dan lo mismo,
+así que la proporcional contiene a la literal como caso límite.
+
+**Falta decidir cuál rige** y escribirlo acá como regla firme. Mientras tanto
+el default de la app es `mes_completo` (lo que dice el spec hoy).
+
+Nota operativa: solo se cargan los días que caen DENTRO del trimestre. Una
+licencia del 21/09 al 02/10 aporta 10 días a Q3 y 2 días a Q4.
+
 ### Retros (ajustes retroactivos)
 
 Los ajustes retroactivos (ventas o cobranzas que aparecen tarde y se incorporan al mes siguiente al de origen):
 
 - Se calculan con la fórmula **vigente al momento del cálculo del retro**, no con la fórmula del período original.
 - Esto evita rastrear regímenes históricos al hacer ajustes.
+- **No entran al bono.** El bono usa los volúmenes de cada mes **tal como se
+  liquidaron**. Si una cobranza tardía de julio se pagó como ajuste en agosto,
+  para el bono sigue contando en el volumen de julio tal como quedó cerrado.
+  Razón: el retro ya se pagó con su propia regla; sumarlo otra vez al bono lo
+  pagaría dos veces, y los volúmenes del histórico son la base auditable.
 
 ### Vendedor con compensación viejo por debajo del nuevo fijo
 
