@@ -1060,10 +1060,12 @@ if seccion == _SECCIONES[1]:
             ]
             st.markdown("#### Licencias del trimestre")
             st.caption(
-                "Días de licencia por vacaciones en cada mes. Este dato no "
-                "está en Contabilium: se carga a mano desde la planilla de "
-                "RRHH. Si la licencia cruza de un trimestre a otro, cargá "
-                "acá solo los días que caen dentro de estos 3 meses."
+                "Días **calendario** de licencia por vacaciones en cada mes "
+                "(no días hábiles). Este dato no está en Contabilium: se carga "
+                "a mano desde la planilla de RRHH. Si la licencia cruza de un "
+                "mes o de un trimestre a otro, cargá en cada mes solo los días "
+                "que caen adentro — una licencia del 21/09 al 02/10 son 10 "
+                "días en septiembre y 2 en el trimestre siguiente."
             )
             base_lic = pd.DataFrame(
                 [[v] + [0] * 3 for v in vendedores_q],
@@ -1071,7 +1073,9 @@ if seccion == _SECCIONES[1]:
             )
             lic_edit = st.data_editor(
                 base_lic,
-                key="bono_licencias",
+                # Key POR TRIMESTRE: con una key fija, lo tipeado para un
+                # trimestre se arrastra por posición al que se elija después.
+                key=f"bono_licencias_{anio_q[0]}_Q{anio_q[1]}",
                 hide_index=True,
                 use_container_width=True,
                 disabled=["vendedor"],
@@ -1082,7 +1086,11 @@ if seccion == _SECCIONES[1]:
                             lab, min_value=0,
                             max_value=comisiones_bono.dias_del_mes(p),
                             step=1, format="%d",
-                            help="Días de licencia en ese mes (0 = sin licencia)",
+                            help=(
+                                "Días CALENDARIO de licencia dentro de ese "
+                                "mes (0 = sin licencia). No días hábiles: el "
+                                "cálculo divide por los días del mes."
+                            ),
                         )
                         for lab, p in zip(labels_mes, periodos_q)
                     },
