@@ -2167,5 +2167,49 @@ módulo nuevo a propósito: `commissions.py` está bajo el invariante "las
 comisiones no pueden fallar" y acá no hay fórmula, solo armado de datos.
 Tests: `tests/test_comisiones_bono.py`.
 
-**Pendiente de decisión:** qué hacer con las licencias PARCIALES — ver
-`_learning/formula_compensacion_v1.2.md` §4.
+**Regla de licencia:** ver la entrada siguiente.
+
+
+---
+
+## 2026-10-04 — La protección por licencia es un PISO, no un canje
+
+**Decisión:** el mes en el que hubo licencia por vacaciones vale el **mayor**
+entre lo que el vendedor produjo de verdad y el promedio de los otros dos meses
+del trimestre. Aplica igual para clasificar Cat A/B y para el monto del bono.
+
+En una frase, que es como se le explica al vendedor: *si la licencia te bajó el
+mes, te lo reponemos; si no te lo bajó, no te tocamos nada.*
+
+**Contexto:** el spec decía "el mes de licencia se computa con el promedio de
+los otros 2", escrito pensando en un mes entero. Las licencias reales son de
+~10 días y caen partidas entre dos meses. Leído literal, el canje **corta para
+los dos lados**: si el mes de licencia fue el mejor del trimestre, el promedio
+de los otros dos es peor y la regla que existía para proteger al vendedor le
+saca plata.
+
+**El dato que lo decidió (Q3 2026):** un vendedor se tomó 10 días en julio y
+**julio le fue mejor que agosto entero** — venta neta +69.402, cobranza
++49.619. Su producción no bajó: las órdenes ya estaban puestas y las cobranzas
+entran solas. Con el canje literal cobraba menos que si nadie hubiera mirado la
+licencia.
+
+**Alternativas descartadas:**
+
+- `mes_completo` (literal del spec viejo): puede pagar MENOS que ignorar la
+  licencia. Es el caso de arriba.
+- `proporcional` (`real + días/días_del_mes × promedio_otros`): falla al revés
+  — asume que los días de licencia produjeron cero. En el caso real pagaba casi
+  el triple.
+
+Las dos fallan por lo mismo: aplican el ajuste **sin mirar si hizo falta**.
+
+**Costo honesto:** el piso nunca juega en contra del vendedor, así que paga
+siempre igual o más que la fórmula sola. Ese ya era el compromiso que la
+protección por licencia había asumido; lo que se saca es el filo invertido.
+
+**Implementación:** `comisiones_bono.REGLA_PISO` = `REGLA_VIGENTE`, default de
+todas las funciones del módulo. Las otras dos quedan disponibles en la app
+**solo para comparar**, con un aviso de que no son la vigente. Fórmula completa,
+casos borde y cómo se carga el dato: `_learning/formula_compensacion_v1.2.md`
+§4. Tests en `tests/test_comisiones_bono.py`.
