@@ -409,6 +409,84 @@ def test_licencias_desde_editor():
         datos["V1"]["ventas_netas"][2], 1_000_000)
 
 
+
+def test_piso_es_la_regla_vigente():
+    print("PISO: el mes de licencia vale el mayor entre lo real y el promedio:")
+    _is("la vigente es el piso", B.REGLA_VIGENTE, B.REGLA_PISO)
+    # El default se lee del fuente, no se infiere de un número que podría
+    # coincidir por casualidad.
+    import inspect
+    for fn in (B.armar_datos_bono, B.explicacion_bono, B.build_xlsx_bono):
+        d = inspect.signature(fn).parameters[
+            "regla_licencia" if fn is B.armar_datos_bono else "regla"].default
+        _is(f"default de {fn.__name__}", d, B.REGLA_PISO)
+
+    # Caso real de Q3 2026: julio con licencia LE FUE MEJOR que agosto entero.
+    # El piso tiene que dejarle su julio intacto.
+    bueno = _hist([("V1", "2026-07", 890_000, 752_000),
+                   ("V1", "2026-08", 805_000, 703_000),
+                   ("V1", "2026-09", 805_000, 703_000)])
+    d_piso, _ = B.armar_datos_bono(bueno, PERIODOS_Q3, {"V1": {0: 10}},
+                                   regla_licencia=B.REGLA_PISO)
+    d_ign, _ = B.armar_datos_bono(bueno, PERIODOS_Q3)
+    _eq("mes de licencia bueno → se lo queda tal cual",
+        d_piso["V1"]["ventas_netas"][0], 890_000 / C.DIVISOR_IVA)
+    _eq("y da igual que ignorar la licencia",
+        C.compute_bono_trimestral(d_piso)["V1"]["bono_total"],
+        C.compute_bono_trimestral(d_ign)["V1"]["bono_total"])
+
+    # El otro lado: si la licencia SÍ le bajó el mes, se lo repone.
+    malo = _hist([("V1", "2026-07", 200_000, 150_000),
+                  ("V1", "2026-08", 805_000, 703_000),
+                  ("V1", "2026-09", 805_000, 703_000)])
+    d_piso2, _ = B.armar_datos_bono(malo, PERIODOS_Q3, {"V1": {0: 10}},
+                                    regla_licencia=B.REGLA_PISO)
+    _eq("mes de licencia malo → se lo reponen con el promedio",
+        d_piso2["V1"]["ventas_netas"][0], 805_000 / C.DIVISOR_IVA)
+    d_ign2, _ = B.armar_datos_bono(malo, PERIODOS_Q3)
+    _is("y ahí sí paga más que ignorar la licencia",
+        C.compute_bono_trimestral(d_piso2)["V1"]["bono_total"]
+        > C.compute_bono_trimestral(d_ign2)["V1"]["bono_total"], True)
+
+
+def test_piso_nunca_perjudica():
+    print("El piso nunca paga menos que ignorar la licencia (ese es el punto):")
+    casos = [
+        ("licencia en el mejor mes", [1_500_000, 800_000, 800_000], {0: 10}),
+        ("licencia en el peor mes",  [300_000, 900_000, 900_000], {0: 15}),
+        ("licencia en el del medio", [900_000, 100_000, 900_000], {1: 31}),
+        ("dos meses con licencia",   [900_000, 400_000, 400_000], {1: 10, 2: 10}),
+        ("los tres con licencia",    [800_000, 800_000, 800_000], {0: 31, 1: 31, 2: 30}),
+    ]
+    for nombre, brutas, lic in casos:
+        h = _hist([("V1", p, vb, vb * 0.8) for p, vb in zip(PERIODOS_Q3, brutas)])
+        d_piso, _ = B.armar_datos_bono(h, PERIODOS_Q3, {"V1": lic},
+                                       regla_licencia=B.REGLA_PISO)
+        d_ign, _ = B.armar_datos_bono(h, PERIODOS_Q3)
+        b_piso = C.compute_bono_trimestral(d_piso)["V1"]["bono_total"]
+        b_ign = C.compute_bono_trimestral(d_ign)["V1"]["bono_total"]
+        _is(f"{nombre}: piso ({b_piso:,.0f}) >= ignorar ({b_ign:,.0f})",
+            b_piso >= b_ign, True)
+        # Y nunca por debajo del mes completo cuando el mes completo ayuda.
+        d_mc, _ = B.armar_datos_bono(h, PERIODOS_Q3, {"V1": lic},
+                                     regla_licencia=B.REGLA_MES_COMPLETO)
+        b_mc = C.compute_bono_trimestral(d_mc)["V1"]["bono_total"]
+        _is(f"{nombre}: piso ({b_piso:,.0f}) >= mes completo ({b_mc:,.0f})",
+            b_piso >= b_mc, True)
+
+
+def test_piso_con_tres_meses_de_licencia_no_inventa():
+    print("Los 3 meses con licencia: no hay referencia, no se inventa nada:")
+    h = _hist([("V1", p, 800_000, 600_000) for p in PERIODOS_Q3])
+    lic = {"V1": {0: 31, 1: 31, 2: 30}}
+    d_piso, _ = B.armar_datos_bono(h, PERIODOS_Q3, lic,
+                                   regla_licencia=B.REGLA_PISO)
+    d_ign, _ = B.armar_datos_bono(h, PERIODOS_Q3)
+    for i in range(3):
+        _eq(f"mes {i} queda crudo",
+            d_piso["V1"]["ventas_netas"][i], d_ign["V1"]["ventas_netas"][i])
+
+
 def main():
     for t in [
         test_trimestres, test_gate_mes_faltante, test_brutas_a_netas,
@@ -420,7 +498,9 @@ def main():
         test_proporcional_repone_solo_los_dias,
         test_proporcional_puede_bajar_la_categoria,
         test_regla_invalida_falla_fuerte, test_vigencia_del_bono,
-        test_licencias_desde_editor,
+        test_licencias_desde_editor, test_piso_es_la_regla_vigente,
+        test_piso_nunca_perjudica,
+        test_piso_con_tres_meses_de_licencia_no_inventa,
     ]:
         t()
     print()

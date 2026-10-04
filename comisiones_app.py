@@ -1038,8 +1038,12 @@ if seccion == _SECCIONES[1]:
                     "Regla para los meses con licencia por vacaciones",
                     options=comisiones_bono.REGLAS_LICENCIA,
                     format_func=lambda r: {
+                        comisiones_bono.REGLA_PISO:
+                            "Piso (VIGENTE): el mes vale el mayor entre lo "
+                            "real y el promedio de los otros dos — si la "
+                            "licencia le bajó el mes se lo reponen, si no, no",
                         comisiones_bono.REGLA_MES_COMPLETO:
-                            "Mes completo (literal del spec): el mes se "
+                            "Mes completo (literal del spec viejo): el mes se "
                             "reemplaza entero por el promedio de los otros dos",
                         comisiones_bono.REGLA_PROPORCIONAL:
                             "Proporcional: se reponen solo los días de "
@@ -1047,6 +1051,18 @@ if seccion == _SECCIONES[1]:
                     }[r],
                     key="bono_regla",
                     horizontal=False,
+                    help=(
+                        "La vigente es **Piso**. Las otras dos quedan para "
+                        "comparar: con *mes completo* un vendedor cuyo mes de "
+                        "licencia fue el mejor del trimestre cobra MENOS que "
+                        "si nadie hubiera mirado la licencia."
+                    ),
+                )
+            if regla != comisiones_bono.REGLA_VIGENTE:
+                st.warning(
+                    "Estás mirando una regla de licencia que **no es la "
+                    "vigente**. Sirve para comparar; el pago sale con "
+                    "**Piso**."
                 )
 
             # --- Input manual de licencia (no hay dato de RRHH en el ERP) ---

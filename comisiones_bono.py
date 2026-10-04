@@ -54,21 +54,36 @@ import commissions
 # fue escrito pensando en un mes entero. Las licencias reales son de ~10
 # días y caen partidas entre dos meses, así que hay dos lecturas:
 #
-#   MES_COMPLETO  — literal: si hubo aunque sea un día de licencia, el mes
-#                   se reemplaza entero por el promedio de los otros dos.
-#                   Es lo que hace `commissions._sustituir_licencia`.
+#   PISO          — VIGENTE (decidida 2026-10-04). El mes vale el MAYOR
+#                   entre lo que produjo de verdad y el promedio de los
+#                   otros dos. En una frase: si la licencia te bajó el mes
+#                   te lo reponemos, y si no te lo bajó no te tocamos nada.
+#   MES_COMPLETO  — literal del spec original: si hubo aunque sea un día de
+#                   licencia, el mes se reemplaza entero por el promedio de
+#                   los otros dos. Es `commissions._sustituir_licencia`.
 #   PROPORCIONAL  — el mes se parte en dos: los días trabajados valen lo
 #                   que el vendedor produjo, y los días de licencia se
 #                   imputan al ritmo de los otros dos meses:
 #                   computado = real + (días_licencia / días_del_mes) ×
 #                   promedio de los otros dos meses.
-#                   Con el mes ENTERO de licencia y sin producción propia
-#                   da exactamente lo mismo que MES_COMPLETO.
 #
-# Cuál se aplica es una decisión de negocio, no técnica: se elige en la app.
+# Por qué PISO y no las otras dos (caso real de Q3 2026): un vendedor se tomó
+# 10 días en julio y JULIO LE FUE MEJOR QUE AGOSTO ENTERO — la licencia no le
+# bajó la producción, porque las órdenes ya estaban puestas y las cobranzas
+# entran solas. Con MES_COMPLETO se le tiraba su mejor mes a la basura y
+# cobraba MENOS que si nadie hubiera mirado la licencia: la regla que existe
+# para no perjudicarlo lo perjudicaba. Con PROPORCIONAL cobraba casi el triple,
+# porque esa regla asume que esos días produjeron cero y los números decían que
+# no. Las dos fallan por lo mismo: aplican el ajuste sin mirar si hizo falta.
+#
+# El costo honesto del PISO: nunca juega en contra del vendedor, así que paga
+# siempre igual o más que la fórmula sola. Ese es exactamente el compromiso que
+# el spec ya había asumido, pero sin el filo que corta para el lado equivocado.
+REGLA_PISO = "piso"
 REGLA_MES_COMPLETO = "mes_completo"
 REGLA_PROPORCIONAL = "proporcional"
-REGLAS_LICENCIA = (REGLA_MES_COMPLETO, REGLA_PROPORCIONAL)
+REGLAS_LICENCIA = (REGLA_PISO, REGLA_MES_COMPLETO, REGLA_PROPORCIONAL)
+REGLA_VIGENTE = REGLA_PISO
 
 
 # =====================================================================
@@ -213,11 +228,31 @@ def sustituir_proporcional(valores_3m, licencia_dias, periodos):
     return out
 
 
+def sustituir_piso(valores_3m, licencia_dias):
+    """Regla VIGENTE. El mes con licencia vale el MAYOR entre lo que produjo
+    de verdad y el promedio de los otros dos.
+
+    La protección por licencia es un PISO, no un canje: el spec existe para
+    que tomarse vacaciones no te cueste plata, no para cambiarte un mes bueno
+    por un promedio peor. Los meses sin licencia no se tocan — para ellos
+    `_sustituir_licencia` ya devuelve el valor crudo, así que el `max` es
+    la identidad.
+
+    Si los 3 meses tienen licencia no hay promedio de referencia y
+    `_sustituir_licencia` devuelve los crudos: el `max` también es la
+    identidad. No inventa nada.
+    """
+    sustituido = commissions._sustituir_licencia(valores_3m, set(licencia_dias))
+    return [max(real, sust) for real, sust in zip(valores_3m, sustituido)]
+
+
 def _computar(valores_3m, licencia_dias, periodos, regla):
     """Aplica la regla de licencia elegida y devuelve los 3 valores que van
     a clasificar y a pagar."""
     if not licencia_dias:
         return list(valores_3m)
+    if regla == REGLA_PISO:
+        return sustituir_piso(valores_3m, licencia_dias)
     if regla == REGLA_PROPORCIONAL:
         return sustituir_proporcional(valores_3m, licencia_dias, periodos)
     return commissions._sustituir_licencia(valores_3m, set(licencia_dias))
@@ -262,7 +297,7 @@ def armar_datos_bono(
     periodos: list[str],
     licencias: dict | None = None,
     *,
-    regla_licencia: str = REGLA_MES_COMPLETO,
+    regla_licencia: str = REGLA_VIGENTE,
     excluidos: set | None = None,
 ) -> tuple[dict, dict]:
     """Arma el input de `commissions.compute_bono_trimestral`.
@@ -272,8 +307,8 @@ def armar_datos_bono(
         periodos: los 3 'AAAA-MM' del trimestre, en orden.
         licencias: vendedor -> set de índices de mes, o vendedor ->
             {indice_mes: días de licencia}. Ver `normalizar_licencias`.
-        regla_licencia: REGLA_MES_COMPLETO (literal del spec) o
-            REGLA_PROPORCIONAL (repone solo los días no trabajados).
+        regla_licencia: REGLA_PISO (vigente), REGLA_MES_COMPLETO
+            (literal del spec original) o REGLA_PROPORCIONAL.
         excluidos: vendedores a dejar afuera. Default: los operarios
             (`commissions.VENDEDORES_EXCLUIDOS_OP`), por si alguna fila
             vieja del histórico los tiene.
@@ -448,14 +483,22 @@ _EXPLICACION_BASE = [
 ]
 
 _EXPLICACION_LICENCIA = {
+    REGLA_PISO:
+        "Licencia por vacaciones (regla VIGENTE: PISO): el mes en el que hubo "
+        "licencia vale el mayor entre lo que el vendedor produjo de verdad y "
+        "el promedio de los otros dos del trimestre. Si la licencia le bajó el "
+        "mes, se lo repone; si no se lo bajó, no se le toca nada. La "
+        "protección de la Ley UY es un piso, no un canje: tomarse vacaciones "
+        "nunca puede costarle plata, pero tampoco le cambia un mes bueno por "
+        "un promedio peor.",
     REGLA_MES_COMPLETO:
-        "Licencia por vacaciones (regla: MES COMPLETO): el mes en el que hubo "
+        "Licencia por vacaciones (regla NO vigente, MES COMPLETO): el mes en el que hubo "
         "licencia se computa entero con el promedio de los otros dos del "
         "trimestre, tanto para clasificar como para el monto. Es la lectura "
         "literal del spec v1.2 §4 (Ley UY: las vacaciones se pagan como si "
         "hubiera trabajado).",
     REGLA_PROPORCIONAL:
-        "Licencia por vacaciones (regla: PROPORCIONAL): se repone solo la "
+        "Licencia por vacaciones (regla NO vigente, PROPORCIONAL): se repone solo la "
         "parte del mes que no se trabajó — al volumen real del mes se le suma "
         "(días de licencia ÷ días del mes) × el promedio de los otros dos. "
         "Si la licencia ocupa el mes entero, da el mismo resultado que la "
@@ -463,7 +506,7 @@ _EXPLICACION_LICENCIA = {
 }
 
 
-def explicacion_bono(regla: str = REGLA_MES_COMPLETO) -> list[str]:
+def explicacion_bono(regla: str = REGLA_VIGENTE) -> list[str]:
     """Las reglas del bono en texto, con la de licencia que se haya elegido.
     Una sola fuente para la app y para la hoja 'Cómo se calcula' del xlsx."""
     return _EXPLICACION_BASE + [_EXPLICACION_LICENCIA[regla]]
@@ -505,7 +548,7 @@ def _escribir_tabla(ws, df, fila_inicial, s, formatos):
 
 
 def build_xlsx_bono(bono: dict, detalle: dict, periodos: list[str],
-                    label: str, regla: str = REGLA_MES_COMPLETO) -> bytes:
+                    label: str, regla: str = REGLA_VIGENTE) -> bytes:
     """Planilla del bono para RRHH: resumen + detalle mes a mes + reglas."""
     s = _styles()
     wb = Workbook()

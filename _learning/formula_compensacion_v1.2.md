@@ -140,33 +140,56 @@ Si el vendedor tomó licencia por vacaciones durante un mes del trimestre:
 - El promedio sintético aplica **tanto para la clasificación Cat A/B como para el cálculo del monto del bono**.
 - Justificación: por normativa laboral uruguaya, las vacaciones se pagan como si hubiera trabajado.
 
-### Licencia parcial — PENDIENTE DE DECISIÓN (2026-10-04)
+### Licencia por vacaciones — REGLA VIGENTE: PISO (decidida 2026-10-04)
 
-La regla de arriba se escribió pensando en un mes entero de licencia. Las
-licencias reales son de ~10 días hábiles y caen **partidas entre dos meses**
-(Q3 2026: una arranca el 29/06 y termina el 10/07, otra arranca el 21/09 y
-termina el 02/10). Leída literal, la regla reemplaza el mes ENTERO aunque la
-licencia haya sido de 10 días, y eso puede ir para cualquier lado:
+> El mes en el que hubo licencia vale el **mayor** entre lo que el vendedor
+> produjo de verdad y el promedio de los otros dos meses del trimestre.
+>
+> En una frase: **si la licencia te bajó el mes, te lo reponemos; si no te lo
+> bajó, no te tocamos nada.** Aplica igual para clasificar Cat A/B y para el
+> monto del bono.
 
-- Si el mes de licencia fue flojo, lo reemplaza por el promedio → **beneficia**.
-- Si el mes de licencia fue el MEJOR del trimestre, se lo borra → **perjudica**.
+**Por qué se cambió la redacción original.** El texto viejo decía "el mes de
+licencia se computa con el promedio de los otros 2", escrito pensando en un mes
+entero de licencia. Las licencias reales son de ~10 días y caen partidas entre
+dos meses. Leído literal, 10 días reemplazan el mes ENTERO — y eso **corta para
+los dos lados**.
 
-La app ofrece las dos lecturas (`comisiones_bono.REGLAS_LICENCIA`) y muestra
-los números de las dos antes de pagar:
+El caso que lo destapó (Q3 2026): un vendedor se tomó 10 días en julio y
+**julio le fue mejor que agosto entero** (venta neta +69.402, cobranza +49.619).
+Su producción no bajó: las órdenes ya estaban puestas y las cobranzas entran
+solas. Con la regla literal se le tiraba su mejor mes a la basura y cobraba
+**menos que si nadie hubiera mirado la licencia** — la regla que existe para no
+perjudicarlo lo perjudicaba.
 
-| Regla | Qué hace |
-|---|---|
-| `mes_completo` | Literal del spec: cualquier día de licencia reemplaza el mes entero por el promedio de los otros dos. |
-| `proporcional` | El mes se parte: los días trabajados valen lo producido y los días de licencia se imputan al ritmo de los otros dos meses — `real + (días_licencia / días_del_mes) × promedio_otros`. |
+**Alternativas evaluadas y descartadas:**
 
-Con el mes entero de licencia y sin producción propia las dos dan lo mismo,
-así que la proporcional contiene a la literal como caso límite.
+| Regla | Qué hace | Por qué no |
+|---|---|---|
+| `mes_completo` | Literal del texto viejo: cualquier día de licencia reemplaza el mes entero por el promedio de los otros dos. | Puede pagar MENOS que ignorar la licencia, cuando el mes de licencia fue el mejor del trimestre. |
+| `proporcional` | `real + (días_licencia / días_del_mes) × promedio_otros`. | Asume que los días de licencia produjeron cero. En el caso real los números decían que no, y pagaba casi el triple. |
 
-**Falta decidir cuál rige** y escribirlo acá como regla firme. Mientras tanto
-el default de la app es `mes_completo` (lo que dice el spec hoy).
+Las dos fallan por lo mismo: **aplican el ajuste automáticamente, sin mirar si
+hizo falta.** El piso sí lo mira.
 
-Nota operativa: solo se cargan los días que caen DENTRO del trimestre. Una
-licencia del 21/09 al 02/10 aporta 10 días a Q3 y 2 días a Q4.
+**Costo honesto del piso:** nunca juega en contra del vendedor, así que paga
+siempre igual o más que la fórmula sola. Ese es exactamente el compromiso que
+la protección por licencia ya había asumido, pero sin el filo invertido.
+
+**Casos borde:**
+
+- Meses sin licencia: no se tocan (el `max` es la identidad).
+- Los 3 meses con licencia: no hay promedio de referencia, quedan los valores
+  crudos. No se inventa nada.
+
+**Implementación:** `comisiones_bono.REGLA_PISO` (= `REGLA_VIGENTE`), función
+`sustituir_piso`. Las otras dos quedan disponibles en la app **solo para
+comparar**, con un aviso de que no son la vigente y sin tocar el default.
+
+**Carga del dato:** días **calendario** de licencia dentro de cada mes, a mano
+en la pantalla — no está en Contabilium. Si la licencia cruza de mes o de
+trimestre, en cada mes van solo los días que caen adentro (una licencia del
+21/09 al 02/10 aporta 10 días a Q3 y 2 días a Q4).
 
 ### Retros (ajustes retroactivos)
 
