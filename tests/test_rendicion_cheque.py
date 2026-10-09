@@ -162,6 +162,39 @@ def test_valor_errores():
     assert rendicion_ejecutor._valor({"Errores": "x"}, "errores", "Errores") == "x"
 
 
+class _Resp:
+    """Respuesta HTTP falsa, para probar cómo clasifica `login` los errores."""
+
+    def __init__(self, status, text, ctype="application/json"):
+        self.status_code = status
+        self.text = text
+        self.headers = {"Content-Type": ctype}
+
+    def json(self):
+        import json
+        return json.loads(self.text)
+
+
+def test_login_clasifica_bloqueo_de_cloudflare():
+    """403 + HTML = bloqueo de red, NO 'revisá la contraseña' (2026-10-09, Valeria)."""
+    r = _Resp(403, "<html><body>Sorry, you have been blocked</body></html>", "text/html")
+    assert rendicion_web._parece_bloqueo(r)
+    assert "blocked" in rendicion_web._mensaje_del_server(r)
+
+
+def test_login_mensaje_del_server_json():
+    """Un 4xx con JSON muestra lo que dijo Contabilium, no un texto inventado."""
+    r = _Resp(400, '{"message": "Credenciales invalidas"}')
+    assert not rendicion_web._parece_bloqueo(r)
+    assert rendicion_web._mensaje_del_server(r) == "Credenciales invalidas"
+
+
+def test_login_400_con_html_es_bloqueo():
+    """Un 400 que contesta HTML no es la API: es el filtro de adelante."""
+    r = _Resp(400, "<!DOCTYPE html><html>nope</html>", "text/html; charset=UTF-8")
+    assert rendicion_web._parece_bloqueo(r)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     fallos = 0

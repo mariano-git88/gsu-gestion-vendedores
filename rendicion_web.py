@@ -53,6 +53,51 @@ class LoginError(WebError):
     """Falló el login (usuario/contraseña incorrectos o servicio caído)."""
 
 
+class BloqueoRed(WebError):
+    """Contabilium (Cloudflare) rechazó la conexión ANTES de mirar las
+    credenciales: el servidor desde donde corre la app está bloqueado.
+
+    Se separa de `LoginError` a propósito: mandar a re-tipear la contraseña
+    cuando el problema es el bloqueo de red manda a arreglar lo que no está
+    roto (le pasó a Valeria el 2026-10-09)."""
+
+
+def _mensaje_del_server(r) -> str:
+    """Saca el texto que devolvió Contabilium, sea JSON o HTML, acotado.
+
+    Nunca incluye lo que mandamos (la contraseña), solo la RESPUESTA."""
+    txt = (r.text or "").strip()
+    if not txt:
+        return ""
+    try:
+        j = r.json()
+    except ValueError:
+        j = None
+    if isinstance(j, dict):
+        for k in ("message", "Message", "error", "Error", "error_description",
+                  "mensaje", "Mensaje", "detail", "title"):
+            v = j.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()[:300]
+        return str(j)[:300]
+    if isinstance(j, str) and j.strip():
+        return j.strip()[:300]
+    if txt.startswith("<"):  # HTML (página de bloqueo / error)
+        plano = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", txt)).strip()
+        return plano[:300]
+    return txt[:300]
+
+
+def _parece_bloqueo(r) -> bool:
+    """¿El server ni llegó a evaluar las credenciales? (Cloudflare / WAF)"""
+    ctype = (r.headers.get("Content-Type") or "").lower()
+    es_html = "text/html" in ctype or (r.text or "").lstrip().startswith("<")
+    if r.status_code in (403, 429, 503, 520, 521, 522, 525, 1020):
+        return True
+    # Un 4xx que contesta HTML en vez de JSON no es una respuesta de la API.
+    return es_html and r.status_code != 200
+
+
 def login(email: str, password: str, country: str = "uy") -> str:
     """Se loguea en Contabilium con usuario+contraseña y devuelve el string de
     cookie de sesión listo para las llamadas del web (`Secure-1CBL` + `ASP.NET_SessionId`).
@@ -75,17 +120,30 @@ def login(email: str, password: str, country: str = "uy") -> str:
                    headers={"Content-Type": "application/json"}, timeout=TIMEOUT)
     except requests.RequestException as e:
         raise WebError(f"login: error de red: {e}") from e
+    detalle = _mensaje_del_server(r)
+    if _parece_bloqueo(r):
+        raise BloqueoRed(
+            f"Contabilium rechazó la conexión desde el servidor de la app "
+            f"(HTTP {r.status_code}) — **no es tu usuario ni tu contraseña**. "
+            "Es el filtro anti-bots (Cloudflare) de Contabilium. "
+            f"Avisale a Mariano. Respuesta: {detalle or '(sin texto)'}"
+        )
     if r.status_code != 200:
         raise LoginError(
             f"No se pudo iniciar sesión (HTTP {r.status_code}). "
-            "Revisá el usuario y la contraseña de Contabilium."
+            f"Contabilium respondió: {detalle or '(sin texto)'}"
         )
     try:
         jwt = (r.json() or {}).get("jwt")
     except ValueError:
-        raise LoginError("Respuesta inesperada del login de Contabilium.")
+        raise LoginError(
+            f"Respuesta inesperada del login de Contabilium: {detalle or '(vacía)'}"
+        )
     if not jwt:
-        raise LoginError("Usuario o contraseña incorrectos.")
+        raise LoginError(
+            "Usuario o contraseña incorrectos."
+            + (f" Contabilium respondió: {detalle}" if detalle else "")
+        )
     # El JWT es la cookie Secure-1CBL en el dominio del app; con eso, pegarle a
     # una página .aspx hace que el server devuelva el ASP.NET_SessionId.
     s.cookies.set("Secure-1CBL", jwt, domain="app.contabilium.com.uy")
@@ -126,15 +184,16 @@ def _post(cookie: str, path: str, body: dict) -> dict:
         raise WebError(f"{path}: error de red: {e}") from e
     if r.status_code in (401, 403) or 300 <= r.status_code < 400:
         raise CookieExpirada(
-            f"{path}: la cookie venció o es inválida (HTTP {r.status_code}). "
-            "Re-pegá la cookie de Contabilium."
+            f"{path}: la sesión de Contabilium venció o fue rechazada "
+            f"(HTTP {r.status_code}). Volvé a conectarte (usuario y contraseña)."
         )
     if r.status_code != 200:
         raise WebError(f"{path}: HTTP {r.status_code}: {r.text[:200]}")
     txt = (r.text or "").lstrip()
     if txt.startswith("<"):  # HTML = redirect a login ⇒ sesión caída
         raise CookieExpirada(
-            f"{path}: respondió HTML (login), la cookie venció. Re-pegala."
+            f"{path}: respondió HTML en vez de JSON — la sesión venció o "
+            "Contabilium bloqueó la conexión. Volvé a conectarte."
         )
     try:
         return r.json()

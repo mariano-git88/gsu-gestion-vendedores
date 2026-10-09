@@ -251,6 +251,16 @@ with st.sidebar:
                 st.session_state.rend_email = email_in.strip()
                 st.session_state.rend_pass = pass_in
                 st.success("Conectado a Contabilium ✓")
+            except rendicion_web.BloqueoRed as e:
+                # No es la contraseña: Contabilium bloqueó al servidor de la app.
+                st.session_state.rend_cookie = ""
+                st.warning(str(e))
+                st.caption(
+                    "Mientras tanto: las cobranzas de **pago total (sin "
+                    "descuento)** no necesitan esta conexión; las de **10%** "
+                    "hay que cargarlas a mano en Contabilium (el reporte de "
+                    "acá ya te da los montos)."
+                )
             except rendicion_web.WebError as e:
                 st.session_state.rend_cookie = ""
                 st.error(str(e))
