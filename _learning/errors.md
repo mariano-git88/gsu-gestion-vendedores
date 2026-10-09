@@ -760,3 +760,21 @@ server y no adivine.
 así que el 400 de Valeria no se pudo reproducir. El `User-Agent` ya no
 alcanza: es bloqueo por IP.
 
+### Corolario: Streamlit Cloud corrió el script nuevo con el módulo viejo
+
+Al desplegar el fix de arriba, la app murió con `AttributeError` en
+`except rendicion_web.BloqueoRed`. El `rendicion_app.py` ya era el nuevo
+(el traceback lo mostraba en la línea 254, que solo existe en la versión
+nueva) pero `rendicion_web` seguía siendo el **cacheado**, sin la clase.
+Pista para reconocerlo: el traceback muestra `login`, línea 79, y el
+fragmento de código impreso **no corresponde** a esa función — Streamlit
+lee el archivo NUEVO del disco para dibujar la línea, mientras el frame
+viene del módulo VIEJO. Si el nombre de la función y el código impreso no
+coinciden, es módulo cacheado, no un bug de lógica.
+
+**Regla:** el script principal no debe referenciar un símbolo **nuevo** de
+un módulo importado sin red (`getattr(mod, "Nuevo", ())` para un
+`isinstance`, o atrapar la clase base). Y después de agregar símbolos a un
+módulo, **Reboot app** desde Manage app: el push solo no garantiza el
+reimport.
+

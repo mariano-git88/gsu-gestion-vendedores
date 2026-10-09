@@ -251,19 +251,25 @@ with st.sidebar:
                 st.session_state.rend_email = email_in.strip()
                 st.session_state.rend_pass = pass_in
                 st.success("Conectado a Contabilium ✓")
-            except rendicion_web.BloqueoRed as e:
-                # No es la contraseña: Contabilium bloqueó al servidor de la app.
-                st.session_state.rend_cookie = ""
-                st.warning(str(e))
-                st.caption(
-                    "Mientras tanto: las cobranzas de **pago total (sin "
-                    "descuento)** no necesitan esta conexión; las de **10%** "
-                    "hay que cargarlas a mano en Contabilium (el reporte de "
-                    "acá ya te da los montos)."
-                )
             except rendicion_web.WebError as e:
                 st.session_state.rend_cookie = ""
-                st.error(str(e))
+                # `BloqueoRed` se busca con getattr a propósito: Streamlit Cloud
+                # puede quedarse con una versión CACHEADA de `rendicion_web`
+                # mientras ya corre este archivo nuevo, y un
+                # `except rendicion_web.BloqueoRed` revienta con AttributeError
+                # (pasó 2026-10-09). Con getattr, en ese caso cae al else.
+                _bloqueo = getattr(rendicion_web, "BloqueoRed", ())
+                if isinstance(e, _bloqueo):
+                    # No es la contraseña: Contabilium rechazó al servidor.
+                    st.warning(str(e))
+                    st.caption(
+                        "Mientras tanto: las cobranzas de **pago total (sin "
+                        "descuento)** no necesitan esta conexión; las de **10%** "
+                        "hay que cargarlas a mano en Contabilium (el reporte de "
+                        "acá ya te da los montos)."
+                    )
+                else:
+                    st.error(str(e))
         if st.session_state.get("rend_cookie"):
             st.caption("✅ Conectado a Contabilium.")
 
