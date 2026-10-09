@@ -123,10 +123,10 @@ def login(email: str, password: str, country: str = "uy") -> str:
     detalle = _mensaje_del_server(r)
     if _parece_bloqueo(r):
         raise BloqueoRed(
-            f"Contabilium rechazó la conexión desde el servidor de la app "
-            f"(HTTP {r.status_code}) — **no es tu usuario ni tu contraseña**. "
-            "Es el filtro anti-bots (Cloudflare) de Contabilium. "
-            f"Avisale a Mariano. Respuesta: {detalle or '(sin texto)'}"
+            f"Contabilium rechazó o no respondió la conexión desde el "
+            f"servidor de la app (HTTP {r.status_code}) — **no es tu usuario "
+            "ni tu contraseña**. Puede ser el filtro de red (Cloudflare) o el "
+            f"servicio caído. Avisale a Mariano. Respuesta: {detalle or '(sin texto)'}"
         )
     if r.status_code != 200:
         raise LoginError(

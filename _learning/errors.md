@@ -728,3 +728,35 @@ use solo el dict lo muestra como `ID_231` — son 193 comprobantes en 12
 meses, y **181 de ellos son las NC del 10% de descuento** que emite el
 facturador. Es decir: el descuento comercial queda contablemente colgado de
 televentas, no del vendedor que hizo la venta.
+
+## 2026-10-09 — Un mensaje de error que manda a arreglar lo que no está roto
+
+Valeria no podía conectarse a Contabilium en la app de Cobranzas: **HTTP
+400** y el cartel *"Revisá el usuario y la contraseña de Contabilium"*.
+Retipeó usuario y contraseña **varias veces** antes de avisar.
+
+El cartel era mentira por construcción: `rendicion_web.login()` mapeaba
+**todo** status distinto de 200 a ese mismo texto y **tiraba el cuerpo de
+la respuesta**, que es el único dato que dice qué pasó. Tres causas muy
+distintas — credenciales mal, bloqueo de red (Cloudflare), cambio del
+contrato del endpoint — salían con la misma cara, y la única de las tres
+que el usuario puede arreglar es la primera. Mismo patrón que el `except:
+pass` que vuelve 3 causas un mensaje falso.
+
+Ahora `login()` clasifica: 403/429/5xx o HTML en vez de JSON → `BloqueoRed`
+("no es tu contraseña, avisale a Mariano"); 4xx con JSON → se muestra el
+texto que devolvió Contabilium; 200 sin `jwt` → recién ahí
+"usuario o contraseña incorrectos". Siempre con el `HTTP <code>` y los
+primeros 300 caracteres de la **respuesta** (nunca del request: ahí va la
+contraseña).
+
+**Regla:** un mensaje de error que nombra una causa concreta tiene que
+poder distinguirla de las otras. Si no puede, que diga qué contestó el
+server y no adivine.
+
+**Contexto que quedó pendiente:** desde el entorno de Claude
+(IP de datacenter) **todos** los hosts de Contabilium — `app.`,
+`internalapi.` y `rest.contabilium.com.uy` — responden 403 de Cloudflare,
+así que el 400 de Valeria no se pudo reproducir. El `User-Agent` ya no
+alcanza: es bloqueo por IP.
+
