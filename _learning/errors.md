@@ -800,3 +800,39 @@ variante tiene que ser **exactamente lo que hace el código hoy** (línea de
 base) o no se puede saber si alguna mejora algo. Y que corte en la primera
 que funciona, para no golpear de más un servicio de login.
 
+### RESUELTO: Contabilium separó el login por país (2026-10-13)
+
+**La causa:** el host genérico `internalapi.contabilium.com` pasó a ser el de
+**Argentina**. Para `country=uy` devuelve `HTTP 400
+{"code":"CONNECTION_EXCEPTION","message":null}`. El de Uruguay ahora es
+**`internalapi.contabilium.com.uy`**. Un cambio de ellos, sin aviso.
+
+**Cómo se encontró, y la lección:** no se pudo diagnosticar durante días
+porque desde el entorno de desarrollo Cloudflare bloqueaba todos los hosts de
+Contabilium. Se destrabó cuando Mariano prendió una **VPN de Uruguay** en su
+máquina: la terminal sale por la red de Windows, así que de golpe se llegaba a
+Contabilium y se pudo probar en vivo. **Con eso, 3 comandos bastaron** donde
+una semana de hipótesis no había alcanzado:
+
+1. Pegarle al login con **credenciales inventadas**: mismo
+   `CONNECTION_EXCEPTION` ⇒ el endpoint ni mira las credenciales, el problema
+   es el endpoint. (Un probe con credenciales falsas descarta media hipótesis
+   sin arriesgar un bloqueo de cuenta.)
+2. Bajar el **bundle JS de la pantalla de login**
+   (`/v3/static/js/main.*.chunk.js`) y buscar los hosts: ahí estaban las
+   constantes `REACT_APP_BASE` (ar), `REACT_APP_BASE_UY`, `_CL`, `_PY`. **El
+   front de la propia app es la documentación que no existe.**
+3. Probar el host nuevo con las credenciales inventadas:
+   `{"code":"login_credentials","message":"Incorrect email or password."}` ⇒
+   ese sí evalúa.
+
+**Regla:** si una integración con un servicio multi-país deja de andar con un
+error de conexión genérico, **sospechar del host antes que de las
+credenciales**, y leer el front del proveedor para ver qué host usa hoy. El
+país ya no viaja solo en el body: también está en el dominio.
+
+**De yapa:** el bundle muestra que agregaron **MFA** al login
+(`/v3/login/login-mfa`, `loginMfaInvalidCode`, …). Si algún día habilitan el
+segundo factor en la cuenta que usa la app, el login automático se cae y no
+hay forma de automatizarlo.
+

@@ -30,7 +30,23 @@ import uuid
 import requests
 
 BASE = "https://app.contabilium.com.uy"
-INTERNALAPI = "https://internalapi.contabilium.com"
+
+# Contabilium separó el login por país (2026-10). Antes alcanzaba con el host
+# genérico `internalapi.contabilium.com` + `{"country": "uy"}`; ahora ese host
+# es el de ARGENTINA y para `country=uy` devuelve
+# `HTTP 400 {"code": "CONNECTION_EXCEPTION"}` — un error que no dice nada y que
+# nos costó una semana (parecía la contraseña de Valeria). Los hosts salen del
+# bundle de la pantalla de login (`/v3/static/js/main.*.chunk.js`,
+# constantes `REACT_APP_BASE*`). Verificado 2026-10-13: con credenciales
+# inventadas, el host UY contesta `{"code":"login_credentials"}` (o sea evalúa
+# de verdad) y el genérico sigue con CONNECTION_EXCEPTION.
+INTERNALAPI_POR_PAIS = {
+    "uy": "https://internalapi.contabilium.com.uy",
+    "ar": "https://internalapi.contabilium.com",
+    "cl": "https://internalapi.contabilium.cl",
+    "py": "https://internalapi.contabilium.com.py",
+}
+INTERNALAPI = INTERNALAPI_POR_PAIS["uy"]
 TIMEOUT = 40
 
 # Constantes de Suprabond (extraídas de recibos/cobranzas reales).
@@ -114,8 +130,9 @@ def login(email: str, password: str, country: str = "uy") -> str:
         raise LoginError("Falta usuario o contraseña.")
     s = requests.Session()
     s.headers.update({"User-Agent": _UA})
+    base = INTERNALAPI_POR_PAIS.get((country or "").lower(), INTERNALAPI)
     try:
-        r = s.post(f"{INTERNALAPI}/api/login",
+        r = s.post(f"{base}/api/login",
                    json={"email": email.strip(), "password": password, "country": country},
                    headers={"Content-Type": "application/json"}, timeout=TIMEOUT)
     except requests.RequestException as e:
@@ -129,6 +146,12 @@ def login(email: str, password: str, country: str = "uy") -> str:
             f"servicio caído. Avisale a Mariano. Respuesta: {detalle or '(sin texto)'}"
         )
     if r.status_code != 200:
+        try:
+            codigo = ((r.json() or {}).get("code") or "").lower()
+        except ValueError:
+            codigo = ""
+        if codigo == "login_credentials":
+            raise LoginError("Usuario o contraseña incorrectos.")
         raise LoginError(
             f"No se pudo iniciar sesión (HTTP {r.status_code}). "
             f"Contabilium respondió: {detalle or '(sin texto)'}"
@@ -188,9 +211,7 @@ _HEADERS_NAVEGADOR = {
 VARIANTES_LOGIN = [
     ("actual (como está hoy)", f"{INTERNALAPI}/api/login", "uy", {}),
     ("+ headers de navegador", f"{INTERNALAPI}/api/login", "uy", _HEADERS_NAVEGADOR),
-    ("country en mayúscula", f"{INTERNALAPI}/api/login", "UY", _HEADERS_NAVEGADOR),
-    ("host .com.uy", "https://internalapi.contabilium.com.uy/api/login", "uy", _HEADERS_NAVEGADOR),
-    ("path /api/v3/login", f"{INTERNALAPI}/api/v3/login", "uy", _HEADERS_NAVEGADOR),
+    ("host viejo (Argentina)", f"{INTERNALAPI_POR_PAIS['ar']}/api/login", "uy", {}),
 ]
 
 

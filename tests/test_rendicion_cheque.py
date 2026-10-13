@@ -205,6 +205,14 @@ def test_diagnostico_sin_credenciales_no_toca_red():
         raise AssertionError("tendría que haber cortado sin credenciales")
 
 
+def test_login_usa_el_host_de_uruguay():
+    """Contabilium separó el login por país (2026-10): el host genérico
+    `.com` es el de Argentina y para country=uy devuelve CONNECTION_EXCEPTION."""
+    assert rendicion_web.INTERNALAPI == "https://internalapi.contabilium.com.uy"
+    assert rendicion_web.INTERNALAPI_POR_PAIS["uy"] == rendicion_web.INTERNALAPI
+    assert rendicion_web.INTERNALAPI_POR_PAIS["ar"] == "https://internalapi.contabilium.com"
+
+
 def test_diagnostico_primera_variante_es_la_actual():
     """La línea de base tiene que ser EXACTAMENTE lo que hace login() hoy:
     si no, no se puede saber si una variante mejora algo."""
