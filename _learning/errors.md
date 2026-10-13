@@ -778,3 +778,25 @@ un módulo importado sin red (`getattr(mod, "Nuevo", ())` para un
 módulo, **Reboot app** desde Manage app: el push solo no garantiza el
 reimport.
 
+### 2026-10-13 — el error real, y por qué el diagnóstico va adentro de la app
+
+Con el mensaje ya instrumentado apareció lo que contesta Contabilium:
+`HTTP 400 {"code": "CONNECTION_EXCEPTION", "message": null}` — **y da lo
+mismo con dos cuentas distintas** (Valeria y Mariano). O sea: no son las
+credenciales, cambió algo del servicio. Que la respuesta sea **JSON de la
+API** y no HTML de Cloudflare también prueba que Streamlit Cloud **no**
+está bloqueado: el 403 en todos los hosts es solo de la IP del entorno de
+desarrollo.
+
+El problema para arreglarlo: las hipótesis (headers del navegador, host
+`.com.uy`, `country` en mayúscula, path `/api/v3/`) **no se pueden probar
+desde el entorno de desarrollo** — Cloudflare bloquea por IP — y pushear
+una por vez cuesta un Reboot y una vuelta de días con quien usa la app.
+
+**Patrón:** cuando el único lugar donde el código puede correr es
+producción, el diagnóstico va **adentro de la app**, no en el código: un
+botón que prueba las variantes de una corrida y dice cuál anda. La primera
+variante tiene que ser **exactamente lo que hace el código hoy** (línea de
+base) o no se puede saber si alguna mejora algo. Y que corte en la primera
+que funciona, para no golpear de más un servicio de login.
+

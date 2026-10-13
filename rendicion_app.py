@@ -273,6 +273,41 @@ with st.sidebar:
         if st.session_state.get("rend_cookie"):
             st.caption("✅ Conectado a Contabilium.")
 
+        # Diagnóstico: el login empezó a devolver CONNECTION_EXCEPTION para
+        # todos los usuarios (2026-10-13). Esto prueba las variantes del
+        # pedido y muestra cuál anda, sin tener que capturar el request del
+        # navegador con DevTools. Se busca con getattr por el cacheo de
+        # módulos de Streamlit Cloud (ver _learning/errors.md).
+        _diag = getattr(rendicion_web, "diagnosticar_login", None)
+        if _diag is not None:
+            with st.expander("🧪 Diagnóstico del login (si Conectar falla)"):
+                st.caption(
+                    "Prueba hasta 5 formas distintas de pedir la sesión y "
+                    "muestra qué contesta Contabilium en cada una. Corta en "
+                    "la primera que funciona. Solo registra la **respuesta**: "
+                    "la contraseña no queda en ningún lado."
+                )
+                if st.button("Probar variantes"):
+                    try:
+                        with st.spinner("Probando…"):
+                            filas = _diag(email_in, pass_in)
+                    except Exception as e:  # noqa: BLE001 — mostrar siempre algo
+                        st.error(f"{type(e).__name__}: {e}")
+                    else:
+                        ok = [f for f in filas if f["jwt"]]
+                        if ok:
+                            st.success(
+                                f"Funcionó la variante **{ok[0]['variante']}** "
+                                f"({ok[0]['url']}, country={ok[0]['country']}). "
+                                "Pasale esto a Mariano."
+                            )
+                        else:
+                            st.warning(
+                                "Ninguna variante devolvió sesión. Sacale una "
+                                "captura a la tabla y mandásela a Mariano."
+                            )
+                        st.dataframe(pd.DataFrame(filas), hide_index=True)
+
 archivo = st.file_uploader(
     "Planilla de Rendición de Cobranzas (.xlsx)", type=["xlsx"]
 )

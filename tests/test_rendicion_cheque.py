@@ -195,6 +195,26 @@ def test_login_400_con_html_es_bloqueo():
     assert rendicion_web._parece_bloqueo(r)
 
 
+def test_diagnostico_sin_credenciales_no_toca_red():
+    """Sin usuario/contraseña ni intenta: no se golpea el login al pedo."""
+    try:
+        rendicion_web.diagnosticar_login("", "")
+    except rendicion_web.LoginError:
+        pass
+    else:
+        raise AssertionError("tendría que haber cortado sin credenciales")
+
+
+def test_diagnostico_primera_variante_es_la_actual():
+    """La línea de base tiene que ser EXACTAMENTE lo que hace login() hoy:
+    si no, no se puede saber si una variante mejora algo."""
+    nombre, url, country, extra = rendicion_web.VARIANTES_LOGIN[0]
+    assert url == f"{rendicion_web.INTERNALAPI}/api/login", url
+    assert country == "uy"
+    assert extra == {}, "la baseline no lleva headers extra"
+    assert len(rendicion_web.VARIANTES_LOGIN) <= 5, "no golpear de más el login"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     fallos = 0

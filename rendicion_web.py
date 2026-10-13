@@ -158,6 +158,77 @@ def login(email: str, password: str, country: str = "uy") -> str:
     return cookie
 
 
+# ---------------------------------------------------------------------
+# Diagnóstico del login (2026-10-13)
+# ---------------------------------------------------------------------
+# El login empezó a devolver `HTTP 400 {"code": "CONNECTION_EXCEPTION",
+# "message": null}` para TODOS los usuarios (probado con dos cuentas
+# distintas), así que no son las credenciales: cambió algo del lado de
+# Contabilium. No hay captura del request que manda el navegador, y desde
+# el entorno de desarrollo Cloudflare bloquea por IP, así que no se puede
+# probar una hipótesis sin desplegar. Esto prueba las variantes plausibles
+# de una sola corrida y dice cuál devuelve el `jwt`, en vez de pushear una
+# adivinanza por vez (cada deploy cuesta un Reboot y una vuelta con quien
+# usa la app).
+#
+# Nunca registra lo que mandamos (ahí va la contraseña): solo la respuesta.
+
+_HEADERS_NAVEGADOR = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "es-ES,es;q=0.9",
+    "Origin": BASE,
+    "Referer": f"{BASE}/",
+    "Sec-Fetch-Site": "same-site",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+}
+
+# (nombre, url, country, headers extra). El primero es exactamente lo que
+# hace `login()` hoy: sirve de línea de base.
+VARIANTES_LOGIN = [
+    ("actual (como está hoy)", f"{INTERNALAPI}/api/login", "uy", {}),
+    ("+ headers de navegador", f"{INTERNALAPI}/api/login", "uy", _HEADERS_NAVEGADOR),
+    ("country en mayúscula", f"{INTERNALAPI}/api/login", "UY", _HEADERS_NAVEGADOR),
+    ("host .com.uy", "https://internalapi.contabilium.com.uy/api/login", "uy", _HEADERS_NAVEGADOR),
+    ("path /api/v3/login", f"{INTERNALAPI}/api/v3/login", "uy", _HEADERS_NAVEGADOR),
+]
+
+
+def diagnosticar_login(email: str, password: str) -> list[dict]:
+    """Prueba las variantes del login y devuelve qué contestó cada una.
+
+    Corta en la primera que devuelve `jwt` (no sigue golpeando el servicio).
+    Cada item: {variante, url, country, status, jwt (bool), respuesta}.
+    """
+    if not (email or "").strip() or not (password or ""):
+        raise LoginError("Falta usuario o contraseña.")
+    salida = []
+    for nombre, url, country, extra in VARIANTES_LOGIN:
+        h = {"User-Agent": _UA, "Content-Type": "application/json"}
+        h.update(extra)
+        item = {"variante": nombre, "url": url, "country": country,
+                "status": None, "jwt": False, "respuesta": ""}
+        try:
+            r = requests.post(url, json={"email": email.strip(),
+                                         "password": password,
+                                         "country": country},
+                              headers=h, timeout=TIMEOUT)
+        except requests.RequestException as e:
+            item["respuesta"] = f"error de red: {type(e).__name__}"
+            salida.append(item)
+            continue
+        item["status"] = r.status_code
+        item["respuesta"] = _mensaje_del_server(r) or "(sin texto)"
+        try:
+            item["jwt"] = bool((r.json() or {}).get("jwt"))
+        except (ValueError, AttributeError):
+            item["jwt"] = False
+        salida.append(item)
+        if item["jwt"]:
+            break
+    return salida
+
+
 def _headers(cookie: str) -> dict:
     return {
         "Content-Type": "application/json; charset=UTF-8",
