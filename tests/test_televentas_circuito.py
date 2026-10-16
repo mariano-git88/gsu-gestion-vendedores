@@ -153,3 +153,40 @@ def test_la_fecha_manual_vieja_se_respeta_igual():
 def test_el_dia_del_corte_ya_cuenta():
     paso = crm.siguiente_paso(_gestiones(("2026-10-16 09:00", "No atendió")))
     assert paso["fecha"] == "2026-10-17"
+
+
+# =====================================================================
+# Derivaciones al vendedor
+# =====================================================================
+
+def test_derivacion_pendiente_vencida_y_respondida():
+    pend = _gestiones(("2026-10-16 10:00", "Contactado - pide visita"))
+    d = crm.derivaciones(pend, hoy=date(2026, 10, 20))
+    assert list(d["estado"]) == ["Pendiente"]
+    assert d["vence"].iloc[0] == "2026-10-31"
+    assert d["dias_restantes"].iloc[0] == 11
+
+    d = crm.derivaciones(pend, hoy=date(2026, 11, 3))
+    assert list(d["estado"]) == ["Vencida"]
+    assert d["dias_restantes"].iloc[0] == -3
+
+    resp = _gestiones(("2026-10-16 10:00", "Sin respuesta - derivado a vendedor"),
+                      ("2026-10-21 10:00", "Vendedor respondió / lo visitó"))
+    d = crm.derivaciones(resp, hoy=date(2026, 12, 1))
+    assert list(d["estado"]) == ["Respondida"]
+    assert d["dias_respuesta"].iloc[0] == 5
+
+
+def test_una_derivacion_nueva_reemplaza_a_la_anterior_sin_respuesta():
+    act = _gestiones(("2026-10-16 10:00", "Contactado - pide visita"),
+                     ("2026-11-10 10:00", "Contactado - pide visita"),
+                     ("2026-11-12 10:00", "Vendedor respondió / lo visitó"))
+    d = crm.derivaciones(act, hoy=date(2026, 12, 1))
+    assert list(d["estado"]) == ["Reemplazada", "Respondida"]
+
+
+def test_la_respuesta_del_vendedor_sigue_con_control_y_no_cuenta_como_contacto():
+    paso = crm.siguiente_paso(_gestiones(("2026-10-20 10:00", "Vendedor respondió / lo visitó")))
+    assert "control" in paso["accion"].lower()
+    assert paso["fecha"] == "2026-11-04"
+    assert not crm.RESPUESTA_VENDEDOR.startswith("Contactado")

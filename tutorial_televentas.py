@@ -248,6 +248,7 @@ def render() -> None:
             | Mandaste WhatsApp | WhatsApp enviado | Esperar respuesta: 1, 2, 3, 1 y 1 días; si no responde, reenviar |
             | 5 WhatsApp sin respuesta | — | **Derivar por mail** al vendedor |
             | Derivaste por mail | Sin respuesta - derivado a vendedor | Control a los **15 días**: ¿el vendedor respondió? |
+            | El vendedor te contestó o lo visitó | Vendedor respondió / lo visitó | **Llamada de control a los 15 días** |
             | Atendió y pidió visita | Contactado - pide visita | Mail al vendedor + control a los 15 días |
             | Atendió (con o sin pedido) | Pedido cargado / Contactado - interesado / Contactado - no necesita ahora | **Llamada de control a los 15 días** |
             | No quiere saber nada por ahora | No reactiva - pausar | Desaparece de la lista hasta que termina la pausa y vuelve sola |
@@ -337,6 +338,24 @@ def render() -> None:
             próximo paso, WhatsApp, mail al vendedor, registrar gestión y
             cargar pedido. Cuando guardás, el cliente sale de la lista y
             vuelve solo el día que le toque.
+
+            ---
+            ### 🤝 Pestaña "Derivaciones"
+
+            Cada vez que le pasás un cliente al vendedor (registraste
+            **Contactado - pide visita** o **Sin respuesta - derivado a
+            vendedor**), el vendedor tiene **15 días** para contestarte. Esta
+            pestaña muestra:
+            - Cuántas derivaciones hay **pendientes**, cuántas **vencidas**
+              (se pasó el plazo) y cuántas **respondidas**.
+            - Una tabla **por vendedor**, para la reunión semanal.
+            - La lista, con las vencidas arriba. **Click en una fila** abre la
+              ficha del cliente.
+
+            Cuando el vendedor te conteste (o te avise que lo visitó), entrá a
+            la ficha y registrá **Vendedor respondió / lo visitó**. Eso cierra
+            la derivación. El vendedor que figura es el que el cliente tiene
+            asignado **hoy** en Contabilium.
 
             ---
             ### ➕ Pestaña "Cliente nuevo"

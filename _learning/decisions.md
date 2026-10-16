@@ -2274,3 +2274,23 @@ Mariano eligió fecha de corte: `televentas_crm.INICIO_CIRCUITO = 2026-10-16`.
 A una gestión anterior no se le calcula fecha (el próximo paso se sigue
 mostrando en Leads); la fecha cargada a mano se respeta igual que antes del
 circuito. Alternativa descartada: dejarlos y que Vale los fuera limpiando.
+
+---
+
+## 2026-10-16 — Televentas: derivaciones al vendedor con plazo
+
+**Decisión:** la respuesta del vendedor se registra como una gestión más,
+«Vendedor respondió / lo visitó», y `televentas_crm.derivaciones()` arma una
+fila por derivación (de «Contactado - pide visita» o «Sin respuesta -
+derivado a vendedor») con estado Pendiente / Vencida / Respondida /
+Reemplazada. Plazo = `DIAS_RESPUESTA_VENDEDOR` (15, el del diagrama). Sección
+nueva «🤝 Derivaciones» con el resumen por vendedor.
+
+- El resultado nuevo **no** empieza con "Contactado": no es un contacto con
+  el cliente y el tablero de Actividad cuenta los contactos por ese prefijo.
+  Su próximo paso es la llamada de control a 15 días.
+- Una derivación nueva sin respuesta a la anterior la **reemplaza**: si no,
+  el mismo cliente sumaba dos vencidas al mismo vendedor.
+- El vendedor es el asignado **hoy** en Contabilium, no el del momento de la
+  derivación (la Sheet no lo guarda). Si se reasigna el cliente, la
+  derivación se muda. Se aceptó para no cambiar el schema.

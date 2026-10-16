@@ -390,6 +390,17 @@ def _proximo_paso(lead, gest: pd.DataFrame) -> None:
         else:
             cuando = f" — el {f:%d/%m}"
     st.info(f"👉 **Próximo paso:** {paso['accion']}{cuando}")
+    der = televentas_crm.derivaciones(gest, hoy)
+    if not der.empty and der["estado"].iloc[-1] in ("Pendiente", "Vencida"):
+        d = der.iloc[-1]
+        vend = nombre_por_email(lead.get("vendedor") or "") or "el vendedor"
+        txt = (f"🤝 Derivado a **{vend}** el {date.fromisoformat(d['fecha_derivacion']):%d/%m}. ")
+        if d["estado"] == "Vencida":
+            st.warning(txt + f"**Se pasó del plazo** hace {-int(d['dias_restantes'])} día(s). "
+                       "Cuando conteste, registralo como «Vendedor respondió / lo visitó».")
+        else:
+            st.caption(txt + f"Tiene hasta el {date.fromisoformat(d['vence']):%d/%m} para "
+                       "contestar. Cuando conteste, registralo como «Vendedor respondió / lo visitó».")
 
 
 def _ficha_360(lead):
@@ -709,8 +720,13 @@ def _cargar_pedido(lead):
 # tablas con on_select) el contenido oculto se ve apilado — parecía que cada
 # sección mostraba las demás. Con un selector + `if`, solo se ejecuta y
 # renderiza la sección activa: sin derrames y además más rápido.
-_SECCIONES = ["🎯 Leads", "📋 Listas importadas", "📅 Seguimientos de hoy",
-              "➕ Cliente nuevo", "📊 Actividad"]
+# Se comparan por NOMBRE (no por posición) para poder sumar secciones sin
+# correr los índices de las demás.
+_S_LEADS, _S_LISTAS, _S_SEGUIMIENTOS = "🎯 Leads", "📋 Listas importadas", "📅 Seguimientos de hoy"
+_S_DERIVACIONES = "🤝 Derivaciones"
+_S_NUEVO, _S_ACTIVIDAD = "➕ Cliente nuevo", "📊 Actividad"
+_SECCIONES = [_S_LEADS, _S_LISTAS, _S_SEGUIMIENTOS, _S_DERIVACIONES,
+              _S_NUEVO, _S_ACTIVIDAD]
 seccion = st.segmented_control(
     "Sección", _SECCIONES, default=_SECCIONES[0],
     key="tv_seccion", label_visibility="collapsed")
@@ -724,7 +740,7 @@ _ver_tabla = st.session_state.get("tv_tabla_ver", 0)
 # =====================================================================
 # SECCIÓN 1 — Leads
 # =====================================================================
-if seccion == _SECCIONES[0]:
+if seccion == _S_LEADS:
     # Trabajar sobre una lista importada (o toda la base)
     nombres_imp = televentas_crm.nombres_importaciones(df_imp)
     lista_sel = st.selectbox(
@@ -843,7 +859,7 @@ if seccion == _SECCIONES[0]:
 # =====================================================================
 # SECCIÓN — Listas importadas
 # =====================================================================
-if seccion == _SECCIONES[1]:
+if seccion == _S_LISTAS:
     st.subheader("📋 Subir una lista de leads")
     st.caption(
         "Subí un Excel/CSV con los clientes seleccionados (ej. por Ernesto). "
@@ -993,7 +1009,7 @@ if seccion == _SECCIONES[1]:
 # =====================================================================
 # SECCIÓN 2 — Seguimientos de hoy
 # =====================================================================
-if seccion == _SECCIONES[2]:
+if seccion == _S_SEGUIMIENTOS:
     st.subheader("📅 Seguimientos para hoy (y atrasados)")
     st.caption("Sale del circuito de llamado: 2º intentos, WhatsApp por "
                "reenviar, controles a los 15 días, derivados al vendedor y "
@@ -1035,9 +1051,107 @@ if seccion == _SECCIONES[2]:
 
 
 # =====================================================================
+# SECCIÓN — Derivaciones al vendedor
+# =====================================================================
+if seccion == _S_DERIVACIONES:
+    st.subheader("🤝 Derivaciones al vendedor")
+    st.caption(
+        f"Cada vez que televentas le pasa un cliente al vendedor (pidió visita "
+        f"o no contestó nunca), el vendedor tiene "
+        f"**{televentas_crm.DIAS_RESPUESTA_VENDEDOR} días** para contestar. "
+        "Cuando contesta, se registra en la ficha como «Vendedor respondió / lo "
+        "visitó». El vendedor es el que el cliente tiene asignado hoy en "
+        "Contabilium.")
+    der = televentas_crm.derivaciones(df_act, hoy)
+    if der.empty:
+        st.info("Todavía no hay derivaciones. Aparecen cuando se registra "
+                "«Contactado - pide visita» o «Sin respuesta - derivado a vendedor».")
+    else:
+        _l = leads[["documento", "codigo", "nombre_fantasia", "razon_social",
+                    "telefono", "vendedor"]].copy()
+        _l["clave_documento"] = _l["documento"].map(televentas_data.clave_documento)
+        der = der.drop(columns=["documento", "razon_social"]).merge(
+            _l, how="left", on="clave_documento")
+        der["vendedor"] = der["vendedor"].fillna("").map(
+            lambda v: nombre_por_email(v) or "(sin vendedor)")
+        der["cliente"] = der["nombre_fantasia"].where(
+            der["nombre_fantasia"].fillna("").str.len() > 0, der["razon_social"])
+        vivas = der[der["estado"] != "Reemplazada"]
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Pendientes", int((vivas["estado"] == "Pendiente").sum()))
+        k2.metric("Vencidas", int((vivas["estado"] == "Vencida").sum()),
+                  help="Pasaron los días de plazo y el vendedor no contestó.")
+        k3.metric("Respondidas", int((vivas["estado"] == "Respondida").sum()))
+        _dr = pd.to_numeric(vivas["dias_respuesta"], errors="coerce").dropna()
+        k4.metric("Días promedio en contestar", f"{_dr.mean():.1f}" if len(_dr) else "—")
+
+        st.markdown("**Por vendedor**")
+        por_v = (vivas.assign(
+                    pendientes=vivas["estado"].eq("Pendiente"),
+                    vencidas=vivas["estado"].eq("Vencida"),
+                    respondidas=vivas["estado"].eq("Respondida"),
+                    dias=pd.to_numeric(vivas["dias_respuesta"], errors="coerce"))
+                 .groupby("vendedor")
+                 .agg(pendientes=("pendientes", "sum"), vencidas=("vencidas", "sum"),
+                      respondidas=("respondidas", "sum"), dias=("dias", "mean"))
+                 .reset_index().sort_values(["vencidas", "pendientes"], ascending=False))
+        st.dataframe(por_v, use_container_width=True, hide_index=True,
+                     column_config={
+                         "vendedor": st.column_config.TextColumn("Vendedor"),
+                         "pendientes": st.column_config.NumberColumn("Pendientes"),
+                         "vencidas": st.column_config.NumberColumn("Vencidas"),
+                         "respondidas": st.column_config.NumberColumn("Respondidas"),
+                         "dias": st.column_config.NumberColumn("Días prom. en contestar", format="%.1f"),
+                     })
+
+        f1, f2 = st.columns([2, 1])
+        f_v = f1.multiselect("Vendedor", sorted(vivas["vendedor"].unique()))
+        f_todas = f2.checkbox("Mostrar también las respondidas", value=False)
+        tabla_d = vivas if f_todas else vivas[vivas["estado"].isin(["Pendiente", "Vencida"])]
+        if f_v:
+            tabla_d = tabla_d[tabla_d["vendedor"].isin(f_v)]
+        _orden = {"Vencida": 0, "Pendiente": 1, "Respondida": 2}
+        tabla_d = (tabla_d.assign(_o=tabla_d["estado"].map(_orden))
+                   .sort_values(["_o", "vence"], kind="stable")
+                   .drop(columns="_o").reset_index(drop=True))
+        if tabla_d.empty:
+            st.success("Nada pendiente con estos filtros. 🎉")
+        else:
+            st.caption("Hacé click en una fila para abrir la ficha del cliente 👇")
+            ev_d = st.dataframe(
+                tabla_d[["estado", "vendedor", "cliente", "codigo", "motivo",
+                         "fecha_derivacion", "vence", "dias_restantes", "fecha_respuesta"]],
+                use_container_width=True, hide_index=True,
+                on_select="rerun", selection_mode="single-row",
+                key=f"tabla_derivaciones_{_ver_tabla}",
+                column_config={
+                    "estado": st.column_config.TextColumn("Estado"),
+                    "vendedor": st.column_config.TextColumn("Vendedor"),
+                    "cliente": st.column_config.TextColumn("Cliente"),
+                    "codigo": st.column_config.TextColumn("Código"),
+                    "motivo": st.column_config.TextColumn("Por qué"),
+                    "fecha_derivacion": st.column_config.TextColumn("Derivado el"),
+                    "vence": st.column_config.TextColumn("Vence"),
+                    "dias_restantes": st.column_config.NumberColumn(
+                        "Días que quedan", format="%d",
+                        help="Negativo = días de atraso."),
+                    "fecha_respuesta": st.column_config.TextColumn("Respondió el"),
+                })
+            sel_d = ev_d.selection.rows if ev_d and ev_d.selection else []
+            if sel_d:
+                _doc = tabla_d.iloc[sel_d[0]]["documento"]
+                _match = leads[leads["documento"] == _doc]
+                if _match.empty:
+                    st.warning("Este cliente no está en la base cargada de Contabilium.")
+                else:
+                    _ficha_360(_match.iloc[0])
+
+
+# =====================================================================
 # SECCIÓN 3 — Cliente nuevo
 # =====================================================================
-if seccion == _SECCIONES[3]:
+if seccion == _S_NUEVO:
     st.subheader("➕ Alta de cliente nuevo")
     st.caption("Se crea en Contabilium. Después «Resincronizar» para verlo en los leads.")
     with st.form("nuevo_cliente"):
@@ -1082,7 +1196,7 @@ if seccion == _SECCIONES[3]:
 # =====================================================================
 # SECCIÓN 4 — Actividad
 # =====================================================================
-if seccion == _SECCIONES[4]:
+if seccion == _S_ACTIVIDAD:
     st.subheader("📊 Actividad de televentas")
     if df_act.empty:
         st.info("Todavía no hay gestiones registradas.")

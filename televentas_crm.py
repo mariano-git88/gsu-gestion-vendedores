@@ -90,6 +90,7 @@ RESULTADOS = [
     "Pedido cargado",
     "Datos actualizados",
     "Sin respuesta - derivado a vendedor",
+    "Vendedor respondió / lo visitó",
     "No reactiva - pausar",
     "Número equivocado / no existe",
     "No molestar / baja",
@@ -107,6 +108,7 @@ _ESTADO_POR_RESULTADO = {
     "Pedido cargado": "Compró",
     "Datos actualizados": "En seguimiento",
     "Sin respuesta - derivado a vendedor": "Derivado a vendedor",
+    "Vendedor respondió / lo visitó": "En seguimiento",
     "No reactiva - pausar": "Pausado",
     "Número equivocado / no existe": "Datos inválidos",
     "No molestar / baja": "No contactar",
@@ -138,7 +140,11 @@ PAUSAS_DIAS = [30, 60, 90, 180]
 _CONTACTO_CON_CONTROL = {
     "Contactado - interesado", "Contactado - no necesita ahora",
     "Pedido cargado", "Datos actualizados",
+    # No es un contacto con el cliente (por eso no empieza con "Contactado"),
+    # pero el diagrama sigue igual: ver si reactiva.
+    "Vendedor respondió / lo visitó",
 }
+RESPUESTA_VENDEDOR = "Vendedor respondió / lo visitó"
 _DERIVADOS = {"Contactado - pide visita", "Sin respuesta - derivado a vendedor"}
 _SIN_PASO = {"Contactado - no interesado", "Número equivocado / no existe",
              "No molestar / baja"}
@@ -235,6 +241,71 @@ def siguiente_paso(gestiones: pd.DataFrame) -> dict:
 def fecha_pausa(dias: int, hoy: date) -> str:
     """Hasta cuándo queda pausado un cliente que no reactiva."""
     return (hoy + timedelta(days=int(dias))).isoformat()
+
+
+DERIVACIONES_COLS = [
+    "clave_documento", "documento", "razon_social", "agente", "motivo",
+    "fecha_derivacion", "vence", "estado", "dias_restantes", "fecha_respuesta",
+    "dias_respuesta",
+]
+
+
+def derivaciones(df_actividad: pd.DataFrame, hoy: date) -> pd.DataFrame:
+    """Una fila por cada vez que televentas le pasó un cliente al vendedor.
+
+    Pura. El diagrama le da al vendedor `DIAS_RESPUESTA_VENDEDOR` días para
+    contestarle a televentas. Estado de cada derivación:
+      - "Respondida": después se registró «Vendedor respondió / lo visitó».
+      - "Reemplazada": antes de la respuesta hubo otra derivación del mismo
+        cliente (cuenta la nueva, para no castigar dos veces al vendedor).
+      - "Vencida": sin respuesta y pasó el plazo.
+      - "Pendiente": sin respuesta y dentro del plazo.
+    `dias_restantes` es negativo cuando está vencida.
+    """
+    if df_actividad is None or df_actividad.empty:
+        return pd.DataFrame(columns=DERIVACIONES_COLS)
+    df = df_actividad.copy()
+    df["_ts"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df.dropna(subset=["_ts"]).sort_values("_ts", kind="stable")
+    df["_clave"] = df["documento"].map(televentas_data.clave_documento)
+
+    filas = []
+    for clave, g in df.groupby("_clave"):
+        g = g.reset_index(drop=True)
+        for i, r in g.iterrows():
+            if r["resultado"] not in _DERIVADOS:
+                continue
+            fecha = r["_ts"].date()
+            vence = fecha + timedelta(days=DIAS_RESPUESTA_VENDEDOR)
+            despues = g.iloc[i + 1:]
+            resp = despues[despues["resultado"] == RESPUESTA_VENDEDOR]
+            otra = despues[despues["resultado"].isin(_DERIVADOS)]
+            f_resp = resp["_ts"].iloc[0] if not resp.empty else None
+            f_otra = otra["_ts"].iloc[0] if not otra.empty else None
+            if f_resp is not None and (f_otra is None or f_resp <= f_otra):
+                estado = "Respondida"
+            elif f_otra is not None:
+                estado, f_resp = "Reemplazada", None
+            elif hoy > vence:
+                estado = "Vencida"
+            else:
+                estado = "Pendiente"
+            filas.append({
+                "clave_documento": clave,
+                "documento": str(r["documento"]),
+                "razon_social": str(r.get("razon_social") or ""),
+                "agente": str(r.get("agente") or ""),
+                "motivo": r["resultado"],
+                "fecha_derivacion": fecha.isoformat(),
+                "vence": vence.isoformat(),
+                "estado": estado,
+                "dias_restantes": (vence - hoy).days if estado in ("Pendiente", "Vencida") else None,
+                "fecha_respuesta": f_resp.date().isoformat() if f_resp is not None else "",
+                "dias_respuesta": (f_resp.date() - fecha).days if f_resp is not None else None,
+            })
+    if not filas:
+        return pd.DataFrame(columns=DERIVACIONES_COLS)
+    return pd.DataFrame(filas)[DERIVACIONES_COLS]
 
 
 def gestiones_de(df_actividad: pd.DataFrame, documento) -> pd.DataFrame:
