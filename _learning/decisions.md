@@ -2294,3 +2294,33 @@ nueva «🤝 Derivaciones» con el resumen por vendedor.
 - El vendedor es el asignado **hoy** en Contabilium, no el del momento de la
   derivación (la Sheet no lo guarda). Si se reasigna el cliente, la
   derivación se muda. Se aceptó para no cambiar el schema.
+
+---
+
+## 2026-10-16 — Televentas: «¿compraron después del contacto?»
+
+**Decisión:** sección «📈 Resultados» con `televentas_crm.reactivacion()`.
+Por cliente trabajado: primera gestión desde la fecha elegida (cualquier
+resultado) y si hay una FAC de Contabilium con fecha **posterior** a ese día
+y dentro de la ventana (15/30/60/90 días, default 30). Las facturas salen de
+los encabezados que la app ya carga (`compras_desde_headers`), sin llamadas
+nuevas a la API.
+
+**Lo que el número NO dice, y la pantalla lo aclara:**
+- **No atribuye la venta.** El encabezado no trae IdVendedor; la factura
+  puede ser del vendedor de calle. Lo único que se separa es "televentas
+  había cargado pedido / no".
+- **No hay grupo de control.** Las listas de Ernesto están elegidas a mano.
+  Se titula "compraron después", nunca "reactivados por televentas".
+- **Madurez:** quien todavía está dentro de la ventana es "En ventana", no
+  "No compró", y queda fuera del porcentaje.
+- **"Llevaba 90 días sin comprar"** solo se afirma si los encabezados
+  cargados cubren esos 90 días; si no, el cliente queda sin dato y se avisa
+  cuántos.
+- La factura del mismo día del contacto no cuenta (puede ser una compra que
+  ya venía).
+
+**Alternativas descartadas:** traer IdVendedor del detalle de cada factura
+(N+1 llamadas, la app ya evita el camino pesado) y un grupo de comparación
+con dormidos no llamados (el segmento "dormido" es el de hoy, así que los que
+compraron ya no figuran como dormidos: la comparación sale sesgada).

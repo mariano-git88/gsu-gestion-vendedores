@@ -380,6 +380,26 @@ def render() -> None:
             cargaste y **cuánta plata** generaste. Más dos gráficos: gestiones
             por día y por tipo de resultado. Sirve para ver tu propio ritmo y
             para que gerencia siga la operación.
+
+            ---
+            ### 📈 Pestaña "Resultados"
+
+            Responde: **de los clientes que trabajamos, ¿cuántos compraron
+            después?** Cruza tus gestiones con las facturas de Contabilium.
+            - Cada cliente cuenta desde su **primera gestión** (aunque no haya
+              atendido) y se fija si tuvo una factura en los días siguientes
+              (15, 30, 60 o 90; lo elegís arriba). La factura del mismo día no
+              cuenta.
+            - **Ya se puede medir** = pasaron esos días. Los que todavía están
+              dentro del plazo **no cuentan como «no compró»**: esperan.
+            - **¿Sirve hablar con ellos?** compara los que atendieron contra
+              los que nunca atendieron.
+            - Hay una tabla por mes y otra cliente por cliente (click abre la
+              ficha).
+
+            **Ojo:** cuenta la factura sin importar quién la vendió (Contabilium
+            no lo dice) y no sabemos cuántos habrían comprado igual sin la
+            llamada. Es **«compraron después»**, no «ventas de televentas».
             """
         )
 

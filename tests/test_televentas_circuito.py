@@ -190,3 +190,68 @@ def test_la_respuesta_del_vendedor_sigue_con_control_y_no_cuenta_como_contacto()
     assert "control" in paso["accion"].lower()
     assert paso["fecha"] == "2026-11-04"
     assert not crm.RESPUESTA_VENDEDOR.startswith("Contactado")
+
+
+# =====================================================================
+# ¿Compraron después del contacto?
+# =====================================================================
+
+def _compras(*filas, documento="212345670017"):
+    return pd.DataFrame([{"documento": documento, "fecha": pd.Timestamp(f), "monto": m}
+                         for f, m in filas])
+
+
+def _react(act, comp, hoy=date(2026, 12, 31), desde=date(2026, 1, 1), ventana=30, **kw):
+    return crm.reactivacion(act, comp, hoy=hoy, desde=desde, dias_ventana=ventana, **kw).iloc[0]
+
+
+def test_compro_dentro_de_la_ventana():
+    act = _gestiones(("2026-10-01 10:00", "No atendió"),
+                     ("2026-10-02 10:00", "Contactado - interesado"))
+    r = _react(act, _compras(("2026-10-20", 1000.0), ("2026-11-15", 500.0)))
+    assert r["estado"] == "Compró"
+    assert r["fecha_compra"] == "2026-10-20"
+    assert r["dias_hasta_compra"] == 19
+    assert r["monto_ventana"] == 1000.0          # la de noviembre cae fuera
+    assert r["intentos_hasta_contacto"] == 2
+    assert not r["pedido_televentas"]
+
+
+def test_la_compra_del_mismo_dia_no_cuenta():
+    act = _gestiones(("2026-10-01 10:00", "Contactado - interesado"))
+    r = _react(act, _compras(("2026-10-01", 1000.0)))
+    assert r["estado"] == "No compró"
+
+
+def test_si_la_ventana_no_termino_no_es_un_no():
+    act = _gestiones(("2026-10-10 10:00", "No atendió"))
+    r = _react(act, _compras(), hoy=date(2026, 10, 20))
+    assert r["estado"] == "En ventana"
+    assert not r["contacto_efectivo"]
+    assert pd.isna(r["intentos_hasta_contacto"])
+
+
+def test_cuenta_desde_la_primera_gestion_del_periodo():
+    act = _gestiones(("2026-08-01 10:00", "No atendió"),
+                     ("2026-10-01 10:00", "Pedido cargado"))
+    r = _react(act, _compras(("2026-10-05", 900.0)), desde=date(2026, 9, 1))
+    assert r["primer_contacto"] == "2026-10-01"
+    assert r["pedido_televentas"]
+    assert r["gestiones"] == 1
+
+
+def test_sin_compras_previas_solo_si_los_datos_alcanzan():
+    act = _gestiones(("2026-07-04 10:00", "No atendió"))
+    r = _react(act, _compras(), datos_desde=date(2026, 5, 1))
+    assert r["sin_compras_previas"] is None       # 90 días antes = abril: sin datos
+    act = _gestiones(("2026-10-01 10:00", "No atendió"))
+    r = _react(act, _compras(("2026-09-15", 100.0)), datos_desde=date(2026, 5, 1))
+    assert r["sin_compras_previas"] is not None and not r["sin_compras_previas"]
+    r = _react(act, _compras(("2026-05-15", 100.0)), datos_desde=date(2026, 5, 1))
+    assert r["sin_compras_previas"] is not None and bool(r["sin_compras_previas"])
+
+
+def test_cruza_compras_aunque_la_sheet_se_haya_comido_el_cero():
+    act = _gestiones(("2026-10-01 10:00", "Contactado - interesado"), documento="12345680017")
+    r = _react(act, _compras(("2026-10-03", 10.0), documento="012345680017"))
+    assert r["estado"] == "Compró"

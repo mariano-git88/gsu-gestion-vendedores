@@ -725,8 +725,9 @@ def _cargar_pedido(lead):
 _S_LEADS, _S_LISTAS, _S_SEGUIMIENTOS = "🎯 Leads", "📋 Listas importadas", "📅 Seguimientos de hoy"
 _S_DERIVACIONES = "🤝 Derivaciones"
 _S_NUEVO, _S_ACTIVIDAD = "➕ Cliente nuevo", "📊 Actividad"
+_S_RESULTADOS = "📈 Resultados"
 _SECCIONES = [_S_LEADS, _S_LISTAS, _S_SEGUIMIENTOS, _S_DERIVACIONES,
-              _S_NUEVO, _S_ACTIVIDAD]
+              _S_NUEVO, _S_ACTIVIDAD, _S_RESULTADOS]
 seccion = st.segmented_control(
     "Sección", _SECCIONES, default=_SECCIONES[0],
     key="tv_seccion", label_visibility="collapsed")
@@ -1213,3 +1214,151 @@ if seccion == _S_ACTIVIDAD:
         t[3].metric("Monto generado", _fmt_money(da["monto_pedido"].sum()))
         st.bar_chart(da.groupby("dia").size())
         st.bar_chart(da["resultado"].value_counts())
+
+
+# =====================================================================
+# SECCIÓN — Resultados: ¿compraron después del contacto?
+# =====================================================================
+if seccion == _S_RESULTADOS:
+    st.subheader("📈 ¿Compraron después del contacto?")
+    st.caption(
+        "Cruza los clientes trabajados por televentas con las **facturas de "
+        "Contabilium**. Cuenta cualquier factura posterior al primer contacto, "
+        "la haya vendido quien la haya vendido: Contabilium no dice qué "
+        "vendedor hizo cada factura. Por eso esto muestra **quiénes compraron "
+        "después**, no cuántas ventas hizo televentas. Tampoco hay contra qué "
+        "comparar: no sabemos cuántos habrían comprado igual sin la llamada.")
+    if df_act.empty:
+        st.info("Todavía no hay gestiones registradas.")
+    else:
+        _ts_act = pd.to_datetime(df_act["timestamp"], errors="coerce").dropna()
+        _primera = _ts_act.min().date() if len(_ts_act) else hoy
+        r1, r2, r3 = st.columns(3)
+        r_desde = r1.date_input("Clientes trabajados desde", value=_primera,
+                                min_value=_primera, max_value=hoy, format="DD/MM/YYYY")
+        r_vent = r2.selectbox("Comprar dentro de", [15, 30, 60, 90], index=1,
+                              format_func=lambda d: f"{d} días del contacto")
+        r_inact = r3.checkbox(
+            "Solo los que llevaban 90 días sin comprar", value=False,
+            help="Deja afuera a los que venían comprando. Los contactados "
+                 "antes de tener 90 días de facturas cargadas quedan afuera "
+                 "también: no se puede saber si compraban. Subí «Meses de "
+                 "historial» en la barra izquierda para incluirlos.")
+        compras = televentas_data.compras_desde_headers(headers, doc_by_id)
+        rx = televentas_crm.reactivacion(
+            df_act, compras, hoy=hoy, desde=r_desde, dias_ventana=r_vent,
+            datos_desde=desde)
+        if r_inact:
+            _sin_dato = int(rx["sin_compras_previas"].isna().sum())
+            rx = rx[rx["sin_compras_previas"].fillna(False).astype(bool)]
+            if _sin_dato:
+                st.caption(f"↳ {_sin_dato} cliente(s) quedaron afuera porque no hay "
+                           "facturas cargadas de los 90 días anteriores a su contacto.")
+        if rx.empty:
+            st.info("No hay clientes trabajados con estos filtros.")
+        else:
+            cumplida = rx[rx["estado"] != "En ventana"]
+            compro = cumplida[cumplida["estado"] == "Compró"]
+            pct = (len(compro) / len(cumplida) * 100) if len(cumplida) else None
+
+            m = st.columns(4)
+            m[0].metric("Clientes trabajados", len(rx))
+            m[1].metric("Hablamos con ellos", int(rx["contacto_efectivo"].sum()),
+                        help="Contactado - … o Pedido cargado, en algún momento.")
+            m[2].metric("Ya se puede medir", len(cumplida),
+                        help=f"Pasaron los {r_vent} días desde el primer contacto. "
+                             "Los demás todavía tienen tiempo de comprar y no "
+                             "cuentan como «no compró».")
+            m[3].metric("Compraron después",
+                        f"{len(compro)}" + (f" ({pct:.0f}%)" if pct is not None else ""),
+                        help=f"De los que ya se pueden medir: factura en los "
+                             f"{r_vent} días siguientes al primer contacto.")
+            n_ventana = len(rx) - len(cumplida)
+            if n_ventana:
+                st.caption(f"⏳ {n_ventana} cliente(s) todavía están dentro de los "
+                           f"{r_vent} días: se miden cuando termine su plazo.")
+            if len(compro):
+                _con_ped = int(compro["pedido_televentas"].sum())
+                # Escapado: Streamlit toma lo que va entre dos $ como LaTeX.
+                _facturado = _fmt_money(compro["monto_ventana"].sum()).replace("$", "\\$")
+                st.markdown(
+                    f"De los **{len(compro)}** que compraron, en **{_con_ped}** "
+                    f"televentas había cargado un pedido y en "
+                    f"**{len(compro) - _con_ped}** no. Facturado en la ventana: "
+                    f"**{_facturado}**.")
+
+            if len(cumplida):
+                st.markdown("**¿Sirve hablar con ellos?**")
+                _por_c = (cumplida.assign(
+                              grupo=cumplida["contacto_efectivo"].map(
+                                  {True: "Hablamos con ellos", False: "Nunca atendieron"}),
+                              compro=cumplida["estado"].eq("Compró"))
+                          .groupby("grupo")
+                          .agg(clientes=("compro", "size"), compraron=("compro", "sum"))
+                          .reset_index())
+                _por_c["pct"] = _por_c["compraron"] / _por_c["clientes"] * 100
+                st.dataframe(_por_c, use_container_width=True, hide_index=True,
+                             column_config={
+                                 "grupo": st.column_config.TextColumn(""),
+                                 "clientes": st.column_config.NumberColumn("Clientes"),
+                                 "compraron": st.column_config.NumberColumn("Compraron"),
+                                 "pct": st.column_config.NumberColumn("%", format="%.0f%%"),
+                             })
+
+                st.markdown("**Por mes del primer contacto**")
+                _mes = (cumplida.assign(mes=cumplida["primer_contacto"].str[:7],
+                                        compro=cumplida["estado"].eq("Compró"))
+                        .groupby("mes")
+                        .agg(clientes=("compro", "size"), compraron=("compro", "sum"),
+                             facturado=("monto_ventana", "sum"))
+                        .reset_index())
+                _mes["pct"] = _mes["compraron"] / _mes["clientes"] * 100
+                st.dataframe(_mes, use_container_width=True, hide_index=True,
+                             column_config={
+                                 "mes": st.column_config.TextColumn("Mes"),
+                                 "clientes": st.column_config.NumberColumn("Medibles"),
+                                 "compraron": st.column_config.NumberColumn("Compraron"),
+                                 "pct": st.column_config.NumberColumn("%", format="%.0f%%"),
+                                 "facturado": st.column_config.NumberColumn(
+                                     "Facturado", format="%.0f UYU"),
+                             })
+
+            st.markdown("**Cliente por cliente**")
+            _l = leads[["documento", "codigo", "nombre_fantasia", "razon_social", "vendedor"]].copy()
+            _l["clave_documento"] = _l["documento"].map(televentas_data.clave_documento)
+            det = rx.drop(columns=["documento"]).merge(_l, how="left", on="clave_documento")
+            det["cliente"] = det["nombre_fantasia"].where(
+                det["nombre_fantasia"].fillna("").str.len() > 0, det["razon_social"])
+            det["vendedor"] = det["vendedor"].fillna("").map(nombre_por_email)
+            _orden = {"Compró": 0, "No compró": 1, "En ventana": 2}
+            det = (det.assign(_o=det["estado"].map(_orden))
+                   .sort_values(["_o", "primer_contacto"], kind="stable")
+                   .drop(columns="_o").reset_index(drop=True))
+            ev_r = st.dataframe(
+                det[["estado", "cliente", "codigo", "vendedor", "primer_contacto",
+                     "gestiones", "contacto_efectivo", "pedido_televentas",
+                     "fecha_compra", "dias_hasta_compra", "monto_ventana"]],
+                use_container_width=True, hide_index=True,
+                on_select="rerun", selection_mode="single-row",
+                key=f"tabla_resultados_{_ver_tabla}",
+                column_config={
+                    "estado": st.column_config.TextColumn("Estado"),
+                    "cliente": st.column_config.TextColumn("Cliente"),
+                    "codigo": st.column_config.TextColumn("Código"),
+                    "vendedor": st.column_config.TextColumn("Vendedor"),
+                    "primer_contacto": st.column_config.TextColumn("1er contacto"),
+                    "gestiones": st.column_config.NumberColumn("Gestiones"),
+                    "contacto_efectivo": st.column_config.CheckboxColumn("Hablamos"),
+                    "pedido_televentas": st.column_config.CheckboxColumn("Pedido TV"),
+                    "fecha_compra": st.column_config.TextColumn("Compró el"),
+                    "dias_hasta_compra": st.column_config.NumberColumn("Días", format="%.0f"),
+                    "monto_ventana": st.column_config.NumberColumn("Facturado", format="%.0f UYU"),
+                })
+            sel_r = ev_r.selection.rows if ev_r and ev_r.selection else []
+            if sel_r:
+                _match = leads[leads["documento"].map(televentas_data.clave_documento)
+                               == det.iloc[sel_r[0]]["clave_documento"]]
+                if _match.empty:
+                    st.warning("Este cliente no está en la base cargada de Contabilium.")
+                else:
+                    _ficha_360(_match.iloc[0])

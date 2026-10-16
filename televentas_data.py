@@ -295,6 +295,26 @@ def resumen_compras_rapido(
     return pd.DataFrame(filas).set_index("documento")
 
 
+def compras_desde_headers(headers: list[dict], doc_by_id: dict[int, str]) -> pd.DataFrame:
+    """Facturas (solo FAC) por cliente, a partir de los ENCABEZADOS.
+
+    Pura. Devuelve columnas documento, fecha (Timestamp), monto. Mismo
+    criterio que `resumen_compras_rapido`: las NC no son compras.
+    """
+    filas = []
+    for h in headers or []:
+        if str(h.get("TipoFc") or "").upper() != "FAC":
+            continue
+        idc = h.get("IdCliente")
+        doc = doc_by_id.get(int(idc)) if idc is not None else None
+        fecha = api_loader.parse_fecha_iso(h.get("FechaEmision"))
+        if not doc or fecha is None:
+            continue
+        filas.append({"documento": doc, "fecha": pd.Timestamp(fecha),
+                      "monto": api_loader.parse_monto_uy(h.get("ImporteTotalNeto"))})
+    return pd.DataFrame(filas, columns=["documento", "fecha", "monto"])
+
+
 # =====================================================================
 # 3. Construcción de la lista de leads (puro)
 # =====================================================================

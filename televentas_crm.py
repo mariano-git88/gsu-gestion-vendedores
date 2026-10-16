@@ -308,6 +308,108 @@ def derivaciones(df_actividad: pd.DataFrame, hoy: date) -> pd.DataFrame:
     return pd.DataFrame(filas)[DERIVACIONES_COLS]
 
 
+# =====================================================================
+# ¿Compraron después del contacto?
+# =====================================================================
+
+REACTIVACION_COLS = [
+    "clave_documento", "documento", "primer_contacto", "gestiones",
+    "contacto_efectivo", "intentos_hasta_contacto", "pedido_televentas",
+    "estado", "fecha_compra", "dias_hasta_compra", "monto_ventana",
+    "sin_compras_previas",
+]
+
+
+def es_contacto_efectivo(resultado: str) -> bool:
+    """Hablamos con el cliente. Mismo criterio que el tablero de Actividad."""
+    r = str(resultado or "")
+    return r.startswith("Contactado") or r == "Pedido cargado"
+
+
+def reactivacion(
+    df_actividad: pd.DataFrame,
+    df_compras: pd.DataFrame,
+    hoy: date,
+    desde: date,
+    dias_ventana: int,
+    dias_inactivo: int = 90,
+    datos_desde: date | None = None,
+) -> pd.DataFrame:
+    """Por cliente trabajado: ¿compró en los días siguientes al primer contacto?
+
+    Pura. Un cliente cuenta desde su PRIMERA gestión con fecha >= `desde`
+    (cualquier resultado, también "No atendió": es cuando se lo empezó a
+    trabajar). `df_compras` son facturas (documento, fecha, monto) de
+    cualquier vendedor: el encabezado de Contabilium no dice quién vendió,
+    así que esto NO atribuye la venta a televentas.
+
+    estado:
+      - "Compró": factura con fecha POSTERIOR al día del primer contacto y
+        dentro de `dias_ventana` (el mismo día no cuenta: puede ser una
+        compra que ya venía).
+      - "En ventana": no compró todavía y la ventana no terminó. No es un
+        "no": se excluye del porcentaje.
+      - "No compró": terminó la ventana sin factura.
+    sin_compras_previas: True/False si no hubo facturas en los
+    `dias_inactivo` días anteriores al contacto; None si los datos cargados
+    (`datos_desde`) no alcanzan para saberlo.
+    """
+    if df_actividad is None or df_actividad.empty:
+        return pd.DataFrame(columns=REACTIVACION_COLS)
+    act = df_actividad.copy()
+    act["_ts"] = pd.to_datetime(act["timestamp"], errors="coerce")
+    act = act.dropna(subset=["_ts"])
+    act = act[act["_ts"].dt.date >= desde].sort_values("_ts", kind="stable")
+    if act.empty:
+        return pd.DataFrame(columns=REACTIVACION_COLS)
+    act["_clave"] = act["documento"].map(televentas_data.clave_documento)
+
+    comp = (df_compras.copy() if df_compras is not None and not df_compras.empty
+            else pd.DataFrame(columns=["documento", "fecha", "monto"]))
+    comp["_clave"] = comp["documento"].map(televentas_data.clave_documento)
+    comp["_dia"] = pd.to_datetime(comp["fecha"], errors="coerce").dt.date
+    compras_por = {k: g for k, g in comp.groupby("_clave")}
+
+    filas = []
+    for clave, g in act.groupby("_clave"):
+        primero = g["_ts"].iloc[0].date()
+        fin = primero + timedelta(days=int(dias_ventana))
+        en_ventana = g[g["_ts"].dt.date <= fin]
+        efectivos = [i for i, r in enumerate(g["resultado"]) if es_contacto_efectivo(r)]
+        c = compras_por.get(clave)
+        posteriores = (c[(c["_dia"] > primero) & (c["_dia"] <= fin)]
+                       if c is not None else pd.DataFrame())
+        if not posteriores.empty:
+            estado = "Compró"
+            f_compra = min(posteriores["_dia"])
+        elif fin >= hoy:
+            estado, f_compra = "En ventana", None
+        else:
+            estado, f_compra = "No compró", None
+        inicio_prev = primero - timedelta(days=int(dias_inactivo))
+        if datos_desde is not None and inicio_prev < datos_desde:
+            sin_prev = None
+        else:
+            sin_prev = bool(c is None or c[(c["_dia"] >= inicio_prev)
+                                           & (c["_dia"] < primero)].empty)
+        filas.append({
+            "clave_documento": clave,
+            "documento": str(g["documento"].iloc[0]),
+            "primer_contacto": primero.isoformat(),
+            "gestiones": int(len(g)),
+            "contacto_efectivo": bool(efectivos),
+            "intentos_hasta_contacto": (efectivos[0] + 1) if efectivos else None,
+            "pedido_televentas": bool((en_ventana["resultado"] == "Pedido cargado").any()),
+            "estado": estado,
+            "fecha_compra": f_compra.isoformat() if f_compra else "",
+            "dias_hasta_compra": (f_compra - primero).days if f_compra else None,
+            "monto_ventana": round(float(posteriores["monto"].sum()), 2)
+                             if not posteriores.empty else 0.0,
+            "sin_compras_previas": sin_prev,
+        })
+    return pd.DataFrame(filas)[REACTIVACION_COLS]
+
+
 def gestiones_de(df_actividad: pd.DataFrame, documento) -> pd.DataFrame:
     """Las gestiones de un cliente, cruzando por clave (tolera el cero inicial)."""
     if df_actividad is None or df_actividad.empty:
