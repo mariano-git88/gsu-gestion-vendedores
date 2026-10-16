@@ -218,6 +218,22 @@ def _link_mail(lead, gestiones: pd.DataFrame) -> tuple[str | None, str]:
     return f"mailto:{para}?{query}", nombre_por_email(para) or para
 
 
+def _tras_escribir_crm(aviso: str | None = None) -> None:
+    """Después de grabar en el CRM: releer la Sheet y soltar la fila elegida.
+
+    Las tablas de Leads y Seguimientos seleccionan por POSICIÓN de fila. Una
+    gestión puede sacar al cliente de la tabla (pasa a otra fecha, queda
+    pausado) y entonces la misma posición apunta a OTRO cliente: se abría su
+    ficha sin que nadie lo pidiera, con el riesgo de anotarle o cargarle un
+    pedido a quien no era. Cambiar la key de las tablas las arranca sin
+    selección.
+    """
+    _cargar_crm.clear()
+    st.session_state["tv_tabla_ver"] = st.session_state.get("tv_tabla_ver", 0) + 1
+    if aviso:
+        st.session_state["tv_aviso"] = aviso
+
+
 def _fmt_money(v) -> str:
     try:
         return f"$ {float(v):,.0f}".replace(",", ".")
@@ -572,10 +588,11 @@ def _registrar_gestion(lead):
                  "proximo_seguimiento": proximo},
                 timestamp=ahora.strftime("%Y-%m-%d %H:%M"),
             )
-            _cargar_crm.clear()
-            st.success("Gestión registrada ✓"
-                       + (f" — próximo seguimiento {date.fromisoformat(proximo):%d/%m}"
-                          if proximo else ""))
+            nombre = lead["nombre_fantasia"] or lead["razon_social"]
+            _tras_escribir_crm(
+                f"Gestión de **{nombre}** registrada ✓"
+                + (f" — próximo seguimiento el {date.fromisoformat(proximo):%d/%m}"
+                   if proximo else ""))
             st.rerun()
         except Exception as e:  # noqa: BLE001
             st.error(_error_sheets(e, "pudo registrar la gestión"))
@@ -680,7 +697,7 @@ def _cargar_pedido(lead):
                              "resultado": "Pedido cargado", "nota": f"Pedido por {total:,.2f} UYU",
                              "monto_pedido": total, "nro_orden": nro or ""},
                             timestamp=datetime.now().strftime("%Y-%m-%d %H:%M"))
-                        _cargar_crm.clear()
+                        _tras_escribir_crm()
                     st.session_state[key] = []
             except Exception as e:  # noqa: BLE001
                 st.error(_error_sheets(e, "pudo cargar el pedido"))
@@ -700,6 +717,9 @@ seccion = st.segmented_control(
 if not seccion:                       # single-select permite deseleccionar → default
     seccion = _SECCIONES[0]
 st.write("")  # respiro visual antes del contenido de la sección
+if st.session_state.get("tv_aviso"):
+    st.success(st.session_state.pop("tv_aviso"))
+_ver_tabla = st.session_state.get("tv_tabla_ver", 0)
 
 # =====================================================================
 # SECCIÓN 1 — Leads
@@ -800,7 +820,8 @@ if seccion == _SECCIONES[0]:
     else:
         ev = st.dataframe(
             tabla[cols_show], use_container_width=True, hide_index=True,
-            on_select="rerun", selection_mode="single-row", key="tabla_leads",
+            on_select="rerun", selection_mode="single-row",
+            key=f"tabla_leads_{_ver_tabla}",
             column_config={
                 "alerta": st.column_config.TextColumn("⚠️", width="small"),
                 "ticket_prom": st.column_config.NumberColumn("Ticket prom", format="%.2f UYU"),
@@ -977,20 +998,40 @@ if seccion == _SECCIONES[2]:
     st.caption("Sale del circuito de llamado: 2º intentos, WhatsApp por "
                "reenviar, controles a los 15 días, derivados al vendedor y "
                "pausas que terminaron.")
-    due = leads[(leads["proxima_fecha"].str.len() == 10)
-                & (leads["proxima_fecha"] <= hoy.isoformat())]
+    due = (leads[(leads["proxima_fecha"].str.len() == 10)
+                 & (leads["proxima_fecha"] <= hoy.isoformat())]
+           .sort_values(["proxima_fecha", "nombre_fantasia"], kind="stable")
+           .reset_index(drop=True))
+    due["cliente"] = due["nombre_fantasia"].where(
+        due["nombre_fantasia"].str.len() > 0, due["razon_social"])
     if due.empty:
         st.success("No hay seguimientos pendientes. 🎉")
     else:
-        st.caption(f"{len(due)} cliente(s). Buscalos en Leads para abrir la ficha.")
-        st.dataframe(due[["proxima_fecha", "proxima_accion", "codigo",
-                          "nombre_fantasia", "telefono", "ultimo_resultado",
-                          "ciudad"]].sort_values("proxima_fecha"),
-                     use_container_width=True, hide_index=True,
-                     column_config={
-                         "proxima_fecha": st.column_config.TextColumn("Para el"),
-                         "proxima_accion": st.column_config.TextColumn("Qué toca"),
-                     })
+        st.caption(f"**{len(due)}** cliente(s). Hacé click en una fila para "
+                   "abrir la ficha y seguir el circuito desde ahí 👇")
+        ev_seg = st.dataframe(
+            due[["proxima_fecha", "proxima_accion", "codigo", "cliente",
+                 "telefono", "ultimo_resultado", "ciudad"]],
+            use_container_width=True, hide_index=True,
+            on_select="rerun", selection_mode="single-row",
+            key=f"tabla_seguimientos_{_ver_tabla}",
+            column_config={
+                "proxima_fecha": st.column_config.TextColumn("Para el"),
+                "proxima_accion": st.column_config.TextColumn("Qué toca"),
+                "codigo": st.column_config.TextColumn("Código"),
+                "cliente": st.column_config.TextColumn("Cliente"),
+                "telefono": st.column_config.TextColumn("Teléfono"),
+                "ultimo_resultado": st.column_config.TextColumn("Último resultado"),
+                "ciudad": st.column_config.TextColumn("Ciudad"),
+            })
+        sel_seg = ev_seg.selection.rows if ev_seg and ev_seg.selection else []
+        if sel_seg:
+            doc_seg = due.iloc[sel_seg[0]]["documento"]
+            _ficha_360(leads[leads["documento"] == doc_seg].iloc[0])
+        else:
+            st.info("👆 Seleccioná una fila para abrir la ficha. Cuando guardes "
+                    "la gestión, el cliente sale de esta lista y vuelve el día "
+                    "que le toque.")
 
 
 # =====================================================================

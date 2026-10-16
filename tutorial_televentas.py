@@ -333,6 +333,11 @@ def render() -> None:
             Muestra **qué toca** con cada uno, su teléfono y el último
             resultado. Trabajá esta lista para no perder ningún seguimiento.
 
+            **Hacé click en una fila** y se abre la misma ficha que en Leads:
+            próximo paso, WhatsApp, mail al vendedor, registrar gestión y
+            cargar pedido. Cuando guardás, el cliente sale de la lista y
+            vuelve solo el día que le toque.
+
             ---
             ### ➕ Pestaña "Cliente nuevo"
 
