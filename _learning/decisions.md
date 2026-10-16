@@ -2213,3 +2213,56 @@ todas las funciones del módulo. Las otras dos quedan disponibles en la app
 **solo para comparar**, con un aviso de que no son la vigente. Fórmula completa,
 casos borde y cómo se carga el dato: `_learning/formula_compensacion_v1.2.md`
 §4. Tests en `tests/test_comisiones_bono.py`.
+
+---
+
+## 2026-10-16 — Televentas: el circuito de llamado a inactivos
+
+**Decisión:** el diagrama que pasaron Ernesto y Gustavo (llamada → 2º intento
+→ WhatsApp → esperas → derivación al vendedor → control a 15 días → pausa) se
+implementa como una función pura, `televentas_crm.siguiente_paso`, que lee
+las gestiones de un cliente y devuelve **qué toca y para cuándo**. No hay
+estado nuevo: todo sale de la tab `actividad_televentas`, igual que el estado
+del lead.
+
+**Cómo se leyó el diagrama** (horas → días):
+
+| Diagrama | App |
+|---|---|
+| No atiende → ¿2º intento? (24 h) | 2º "No atendió" propone llamar +1 día |
+| ¿WhatsApp? (24 h) | tras el 2º "No atendió", WhatsApp +1 día |
+| ¿Responde? 24 / 48 / 72 / 24 / 24 h | `ESPERAS_WHATSAPP = [1, 2, 3, 1, 1]` contadas desde cada "WhatsApp enviado" |
+| Respuesta dentro de 15 días a TMK (copia jefe) | derivar por mail; control +15 días |
+| Atiende → 15 días llamada a cliente | todo contacto efectivo propone control +15 días |
+| Cliente no reactiva → ¿Marcar? | resultado "No reactiva - pausar" con fecha de fin |
+
+**A confirmar con Ernesto:** que cada rombo de "¿Responde?" sea un
+**reenvío** de WhatsApp (así lo pide la app: registrar "WhatsApp enviado" en
+cada uno). La otra lectura posible es que sea solo un chequeo sin reenviar.
+También: si el mail al vendedor va con alguien en copia (`EMAIL_JEFE_VENTAS`
+está vacío) y cuánto dura la pausa por defecto (hoy lo elige quien registra:
+30/60/90/180 días, sin default).
+
+**Sin cambio de schema en la Sheet** (está en producción): los datos que el
+diagrama pide recolectar (quién atendió, última visita, cuánto compra, qué
+necesita, facturación) van concatenados en `nota`; la fecha de fin de pausa
+va en `proximo_seguimiento`; el vendedor a quien derivar sale del cliente
+(`id_vendedor`). Canal suma "Mail" y "Visita" (es texto libre).
+
+**Resultados: se agregan, no se renombran.** Las filas viejas se comparan por
+igualdad de texto. Los contactos efectivos nuevos arrancan con "Contactado"
+porque el tablero de Actividad cuenta por ese prefijo. Nuevos: "WhatsApp
+enviado", "Contactado - no necesita ahora", "Contactado - pide visita",
+"Sin respuesta - derivado a vendedor", "No reactiva - pausar". "No molestar /
+baja" sigue siendo permanente; la pausa es la versión con fecha de vuelta.
+
+**Mail por `mailto:`, no por un servicio de envío.** Mismo patrón que el
+botón de WhatsApp: sin infraestructura ni secretos, y la persona revisa antes
+de mandar. Descartado armar envío automático (Resend/SMTP) ahora: Ernesto
+avisó que Gustavo está viendo con Andrea cómo automatizar todo esto, y dos
+sistemas en paralelo es peor que ninguno.
+
+**Alternativa descartada:** una columna "paso del circuito" en la Sheet. Se
+desincroniza en cuanto alguien registra algo fuera de orden; derivarlo de las
+gestiones no puede contradecirse con ellas. Tests en
+`tests/test_televentas_circuito.py`.

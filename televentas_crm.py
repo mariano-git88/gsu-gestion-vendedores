@@ -18,6 +18,8 @@ Se apoya en los helpers genéricos de credenciales/apertura de `gsheets`
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import gspread
 import pandas as pd
 
@@ -73,13 +75,22 @@ ACTIVIDAD_COLS = [
 
 # Disposiciones posibles de una gestión. Vocabulario controlado para que
 # el tablero de actividad sea consistente.
+#
+# Se AGREGAN valores, nunca se renombran: la Sheet guarda el texto literal y
+# las filas viejas se comparan por igualdad. Y lo que es un contacto efectivo
+# tiene que empezar con "Contactado" (el tablero de Actividad los cuenta así).
 RESULTADOS = [
     "No atendió",
+    "WhatsApp enviado",
     "Volver a llamar",
     "Contactado - interesado",
+    "Contactado - no necesita ahora",
+    "Contactado - pide visita",
     "Contactado - no interesado",
     "Pedido cargado",
     "Datos actualizados",
+    "Sin respuesta - derivado a vendedor",
+    "No reactiva - pausar",
     "Número equivocado / no existe",
     "No molestar / baja",
 ]
@@ -87,14 +98,143 @@ RESULTADOS = [
 # Mapeo de la última disposición → estado del lead (para el pipeline).
 _ESTADO_POR_RESULTADO = {
     "No atendió": "Pendiente",
+    "WhatsApp enviado": "En seguimiento",
     "Volver a llamar": "En seguimiento",
     "Contactado - interesado": "En seguimiento",
+    "Contactado - no necesita ahora": "En seguimiento",
+    "Contactado - pide visita": "Derivado a vendedor",
     "Contactado - no interesado": "Descartado",
     "Pedido cargado": "Compró",
     "Datos actualizados": "En seguimiento",
+    "Sin respuesta - derivado a vendedor": "Derivado a vendedor",
+    "No reactiva - pausar": "Pausado",
     "Número equivocado / no existe": "Datos inválidos",
     "No molestar / baja": "No contactar",
 }
+
+
+# =====================================================================
+# Circuito de llamado a inactivos (diagrama de Ernesto y Gustavo, oct-2026)
+# =====================================================================
+#
+# Los plazos son los del diagrama, pasados de horas a días:
+#   - no atiende → 2º intento de llamada a las 24 h;
+#   - no atiende el 2º → WhatsApp a las 24 h;
+#   - después, cinco esperas de respuesta: 24 h, 48 h, 72 h, 24 h y 24 h;
+#   - sin respuesta a la quinta → se deriva por mail al vendedor / jefe, que
+#     tiene 15 días para contestarle a televentas;
+#   - si atendió (con o sin pedido) → llamada de control a los 15 días.
+# La lectura de las cinco esperas como "reenviar WhatsApp en cada una" está
+# anotada como a confirmar en _learning/decisions.md (2026-10-16).
+DIAS_SEGUNDO_LLAMADO = 1
+ESPERAS_WHATSAPP = [1, 2, 3, 1, 1]
+DIAS_LLAMADA_CONTROL = 15
+DIAS_RESPUESTA_VENDEDOR = 15
+
+# Opciones de pausa para "No reactiva - pausar". El diagrama dice "no tenerlo
+# en cuenta por un tiempo" sin decir cuánto: lo elige quien registra.
+PAUSAS_DIAS = [30, 60, 90, 180]
+
+_CONTACTO_CON_CONTROL = {
+    "Contactado - interesado", "Contactado - no necesita ahora",
+    "Pedido cargado", "Datos actualizados",
+}
+_DERIVADOS = {"Contactado - pide visita", "Sin respuesta - derivado a vendedor"}
+_SIN_PASO = {"Contactado - no interesado", "Número equivocado / no existe",
+             "No molestar / baja"}
+
+PASO_INICIAL = "📞 Llamar (1er intento)"
+
+
+def _a_fecha(valor) -> date | None:
+    """'YYYY-MM-DD…' / Timestamp / date → date. None si no se puede leer."""
+    if valor is None or valor == "":
+        return None
+    ts = pd.to_datetime(valor, errors="coerce")
+    if pd.isna(ts):
+        return None
+    return ts.date()
+
+
+def _racha_final(resultados: list[str], valor: str) -> int:
+    """Cuántas de las últimas gestiones seguidas tienen ese resultado."""
+    n = 0
+    for r in reversed(resultados):
+        if r != valor:
+            break
+        n += 1
+    return n
+
+
+def siguiente_paso(gestiones: pd.DataFrame) -> dict:
+    """Qué toca hacer con un cliente según el circuito, y para cuándo.
+
+    Pura. `gestiones` son las filas de actividad de UN cliente, en cualquier
+    orden. Devuelve {"accion": str, "fecha": "YYYY-MM-DD" | ""}.
+
+    La fecha que cargó a mano quien registró (`proximo_seguimiento` de la
+    última gestión) gana sobre la calculada: el circuito propone, la persona
+    decide. Un resultado que cierra el circuito (no interesado, número
+    equivocado, baja) devuelve acción vacía.
+    """
+    if gestiones is None or gestiones.empty:
+        return {"accion": PASO_INICIAL, "fecha": ""}
+
+    g = gestiones.copy()
+    g["_ts"] = pd.to_datetime(g["timestamp"], errors="coerce")
+    g = g.sort_values("_ts", kind="stable")
+    resultados = [str(r or "") for r in g["resultado"]]
+    ult = g.iloc[-1]
+    res = resultados[-1]
+    base = _a_fecha(ult["_ts"])
+    manual = _a_fecha(ult.get("proximo_seguimiento"))
+
+    def _mas(dias: int) -> str:
+        return (base + timedelta(days=dias)).isoformat() if base else ""
+
+    if res == "No atendió":
+        if _racha_final(resultados, "No atendió") == 1:
+            accion, fecha = "📞 2º intento de llamada", _mas(DIAS_SEGUNDO_LLAMADO)
+        else:
+            accion, fecha = "💬 Mandar WhatsApp", _mas(DIAS_SEGUNDO_LLAMADO)
+    elif res == "WhatsApp enviado":
+        n = _racha_final(resultados, "WhatsApp enviado")
+        espera = ESPERAS_WHATSAPP[min(n, len(ESPERAS_WHATSAPP)) - 1]
+        if n < len(ESPERAS_WHATSAPP):
+            accion = (f"💬 ¿Respondió? Si no, reenviar WhatsApp "
+                      f"({n + 1}º de {len(ESPERAS_WHATSAPP)})")
+        else:
+            accion = "✉️ Derivar por mail al vendedor / jefe (no respondió)"
+        fecha = _mas(espera)
+    elif res in _CONTACTO_CON_CONTROL:
+        accion, fecha = "📞 Llamada de control", _mas(DIAS_LLAMADA_CONTROL)
+    elif res in _DERIVADOS:
+        accion = "📞 Control: ¿el vendedor respondió / lo visitó?"
+        fecha = _mas(DIAS_RESPUESTA_VENDEDOR)
+    elif res == "No reactiva - pausar":
+        accion, fecha = "⏸️ Pausado — volver a llamar al terminar", ""
+    elif res in _SIN_PASO:
+        return {"accion": "", "fecha": ""}
+    else:  # "Volver a llamar" o un texto que no conocemos
+        accion, fecha = "📞 Volver a llamar", ""
+
+    if manual:
+        fecha = manual.isoformat()
+    return {"accion": accion, "fecha": fecha}
+
+
+def fecha_pausa(dias: int, hoy: date) -> str:
+    """Hasta cuándo queda pausado un cliente que no reactiva."""
+    return (hoy + timedelta(days=int(dias))).isoformat()
+
+
+def gestiones_de(df_actividad: pd.DataFrame, documento) -> pd.DataFrame:
+    """Las gestiones de un cliente, cruzando por clave (tolera el cero inicial)."""
+    if df_actividad is None or df_actividad.empty:
+        return pd.DataFrame(columns=ACTIVIDAD_COLS)
+    clave = televentas_data.clave_documento(documento)
+    return df_actividad[
+        df_actividad["documento"].map(televentas_data.clave_documento) == clave]
 
 
 def registrar_actividad(gsheets_section: dict, fila: dict, timestamp: str) -> None:
@@ -442,14 +582,19 @@ def notas_por_lead(df_imp: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(filas).set_index("clave_documento")[NOTAS_COLS]
 
 
-def estado_actual_por_lead(df_actividad: pd.DataFrame) -> pd.DataFrame:
+def estado_actual_por_lead(df_actividad: pd.DataFrame,
+                           hoy: date | None = None) -> pd.DataFrame:
     """Deriva el estado actual de cada lead desde su ÚLTIMA gestión.
 
     Pura: recibe el DataFrame de actividad y devuelve uno indexado por la
     CLAVE del documento (`televentas_data.clave_documento`, no el documento
     crudo) con columnas:
       estado, ultima_gestion, ultimo_resultado, proximo_seguimiento,
-      num_contactos, ultima_nota, pedidos_generados, monto_generado.
+      num_contactos, ultima_nota, pedidos_generados, monto_generado,
+      proxima_accion, proxima_fecha (ver `siguiente_paso`).
+
+    Con `hoy`, un cliente pausado cuya pausa ya terminó vuelve a "Pendiente"
+    (sin `hoy` queda "Pausado": la función no mira el reloj por su cuenta).
 
     El índice es la clave y no el documento porque las filas viejas de la
     Sheet perdieron el cero inicial: si se cruzara por el string crudo, las
@@ -459,6 +604,7 @@ def estado_actual_por_lead(df_actividad: pd.DataFrame) -> pd.DataFrame:
     cols = [
         "estado", "ultima_gestion", "ultimo_resultado", "proximo_seguimiento",
         "num_contactos", "ultima_nota", "pedidos_generados", "monto_generado",
+        "proxima_accion", "proxima_fecha",
     ]
     if df_actividad is None or df_actividad.empty:
         return pd.DataFrame(columns=cols)
@@ -474,9 +620,14 @@ def estado_actual_por_lead(df_actividad: pd.DataFrame) -> pd.DataFrame:
         resultado = str(ult.get("resultado") or "")
         pedidos = int((g["resultado"] == "Pedido cargado").sum())
         monto = float(pd.to_numeric(g["monto_pedido"], errors="coerce").fillna(0).sum())
+        paso = siguiente_paso(g)
+        estado = _ESTADO_POR_RESULTADO.get(resultado, "En seguimiento")
+        if (estado == "Pausado" and hoy is not None
+                and (_a_fecha(paso["fecha"]) or hoy) <= hoy):
+            estado = "Pendiente"
         filas.append({
             "clave_documento": clave,
-            "estado": _ESTADO_POR_RESULTADO.get(resultado, "En seguimiento"),
+            "estado": estado,
             "ultima_gestion": ult.get("_ts"),
             "ultimo_resultado": resultado,
             "proximo_seguimiento": str(ult.get("proximo_seguimiento") or ""),
@@ -484,5 +635,7 @@ def estado_actual_por_lead(df_actividad: pd.DataFrame) -> pd.DataFrame:
             "ultima_nota": str(ult.get("nota") or ""),
             "pedidos_generados": pedidos,
             "monto_generado": round(monto, 2),
+            "proxima_accion": paso["accion"],
+            "proxima_fecha": paso["fecha"],
         })
     return pd.DataFrame(filas).set_index("clave_documento")

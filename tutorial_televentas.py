@@ -156,11 +156,15 @@ def render() -> None:
               muy poco (porque probablemente su vendedor de calle ya los
               atendió — no conviene pisarlo).
             - **💰 Solo con deuda** → deja solo los que deben plata.
+            - **⏸️ Ocultar pausados** (viene prendido) → saca a los que
+              marcaste «No reactiva - pausar». Vuelven solos cuando termina la
+              pausa.
 
             #### E) La tabla de leads
             Muestra el resultado de tus filtros. Columnas: código, nombre,
             ciudad, departamento, teléfono, segmento, días sin comprar,
-            ticket promedio, **deuda**, estado de gestión y próximo seguimiento.
+            ticket promedio, **deuda**, estado de gestión, **próximo paso** y
+            para cuándo.
 
             👉 **Para abrir un cliente: hacé click en su fila.** Se abre su
             ficha completa abajo.
@@ -196,29 +200,62 @@ def render() -> None:
             - **➕ Podés sumarle** → productos **populares entre lo que ya
               compra** que todavía no lleva. Venta cruzada.
 
-            #### 4) 💬 Botón de WhatsApp
-            Abre WhatsApp con el número del cliente **y un mensaje ya escrito**
-            de presentación. Solo tenés que revisarlo y mandarlo. (Si el
-            cliente no tiene un celular válido, el botón no aparece.)
+            #### 4) 👉 Próximo paso
+            Un cartel azul te dice **qué toca con este cliente y para cuándo**,
+            según el circuito de llamado (ver más abajo). Si dice
+            **atrasado**, ese cliente se te pasó.
 
-            #### 5) 🛒 Historial de compras (desplegable)
+            #### 5) 💬 WhatsApp y ✉️ Mail al vendedor
+            - **WhatsApp** abre el chat con el cliente **y un mensaje ya
+              escrito**. La app no se entera de que lo mandaste: **después
+              registralo como «WhatsApp enviado»**, si no el circuito no
+              avanza. (Sin celular válido, el botón no aparece.)
+            - **Mail al vendedor** abre tu correo con un mail **ya escrito**
+              para el vendedor del cliente: los datos, tu última gestión y el
+              pedido de que te responda en 15 días. Lo revisás y lo mandás.
+
+            #### 6) 🛒 Historial de compras (desplegable)
             Sus **top productos**, los **subgrupos** que compra, y la lista de
             sus **comprobantes** (fecha y monto). Para saber de qué hablarle.
 
-            #### 6) 📇 Gestiones anteriores (desplegable)
+            #### 7) 📇 Gestiones anteriores (desplegable)
             Todo lo que vos u otra persona ya registró con ese cliente:
             cuándo, por qué canal, con qué resultado y qué nota. Para no
             repetir ni pisar lo hecho.
 
-            #### 7) 📝 Registrar gestión — ¡el paso más importante!
-            Después de cada llamada/WhatsApp, **anotá qué pasó**:
-            1. Elegí el **Canal** (Llamada o WhatsApp).
-            2. Elegí el **Resultado**: No atendió / Volver a llamar /
-               Contactado - interesado / Contactado - no interesado / Pedido
-               cargado / Datos actualizados / Número equivocado / No molestar.
-            3. Escribí una **Nota** (qué se habló, qué quedó pendiente).
-            4. Si hay que rellamar, poné la fecha de **Próximo seguimiento**.
-            5. **Guardar gestión.** Queda en el cuaderno y arma tu agenda.
+            #### 8) 📝 Registrar gestión — ¡el paso más importante!
+            Después de cada llamada/WhatsApp/mail, **anotá qué pasó**:
+            1. Elegí el **Canal** (Llamada, WhatsApp, Mail o Visita).
+            2. Elegí el **Resultado** (la lista completa está abajo, en el
+               circuito).
+            3. Si **atendió**, abrí **🧾 Datos a recolectar** y completá lo
+               que sepas: quién atendió, cuándo fue la última visita del
+               vendedor, cada cuánto compra y cuánto, qué necesita, datos de
+               facturación. Se guarda junto con la nota.
+            4. Escribí una **Nota** (qué se habló, qué quedó pendiente).
+            5. **Próximo seguimiento:** dejalo **vacío** y la app pone la
+               fecha que corresponde según el circuito. Poné una fecha solo si
+               el cliente te pidió otra ("llamame el jueves").
+            6. Si elegiste **No reactiva - pausar**, elegí **por cuánto**
+               (30, 60, 90 o 180 días).
+            7. **Guardar gestión.** Queda en el cuaderno y arma tu agenda.
+
+            #### El circuito de llamado (lo armaron Ernesto y Gustavo)
+            | Qué pasó | Qué registrás | Qué te propone la app |
+            |---|---|---|
+            | No atendió (1ª vez) | No atendió | 2º intento de llamada **al día siguiente** |
+            | No atendió (2ª vez) | No atendió | Mandar **WhatsApp** al día siguiente |
+            | Mandaste WhatsApp | WhatsApp enviado | Esperar respuesta: 1, 2, 3, 1 y 1 días; si no responde, reenviar |
+            | 5 WhatsApp sin respuesta | — | **Derivar por mail** al vendedor |
+            | Derivaste por mail | Sin respuesta - derivado a vendedor | Control a los **15 días**: ¿el vendedor respondió? |
+            | Atendió y pidió visita | Contactado - pide visita | Mail al vendedor + control a los 15 días |
+            | Atendió (con o sin pedido) | Pedido cargado / Contactado - interesado / Contactado - no necesita ahora | **Llamada de control a los 15 días** |
+            | No quiere saber nada por ahora | No reactiva - pausar | Desaparece de la lista hasta que termina la pausa y vuelve sola |
+            | Número mal / no quiere que lo llamen nunca | Número equivocado / No molestar | Nada: el circuito se cierra |
+
+            Si el cliente **contesta el WhatsApp**, registrá lo que respondió
+            (Contactado - …, Pedido cargado, etc.): eso corta la cadena de
+            reenvíos.
 
             > 💡 Registrar bien es lo que hace útil a la herramienta: alimenta
             > tu agenda, el tablero, y que la próxima llamada arranque sabiendo
@@ -290,10 +327,11 @@ def render() -> None:
             ---
             ### 📅 Pestaña "Seguimientos de hoy"
 
-            Tu **cola del día**: los clientes que agendaste para rellamar hoy
-            (y los **atrasados** de días anteriores). Aparece la fecha, el
-            cliente, su teléfono y cuál fue el último resultado. Trabajá esta
-            lista para no perder ningún seguimiento.
+            Tu **cola del día**: los clientes que tocan hoy según el
+            circuito (2º intentos, WhatsApp por reenviar, controles a los 15
+            días, derivados, pausas que terminaron) y los **atrasados**.
+            Muestra **qué toca** con cada uno, su teléfono y el último
+            resultado. Trabajá esta lista para no perder ningún seguimiento.
 
             ---
             ### ➕ Pestaña "Cliente nuevo"

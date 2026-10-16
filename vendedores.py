@@ -82,6 +82,11 @@ NOMBRE_VENDEDOR: dict[int, str] = {
 # eso el número se mantiene a mano acá.
 ID_VENDEDOR_TELEVENTAS: int | None = 231
 
+# Jefe en copia del mail que televentas le manda al vendedor cuando deriva un
+# cliente (circuito de inactivos, oct-2026). PENDIENTE: falta el mail; vacío
+# el mail sale igual, sin copia.
+EMAIL_JEFE_VENTAS: str = ""
+
 
 def nombre_por_email(email: str) -> str:
     """Nombre "lindo" a partir del email del vendedor ("Néstor", no "Nestor").

@@ -30,7 +30,8 @@ import televentas_crm
 import televentas_data
 import theme
 from subrubros import SUBRUBROS
-from vendedores import VENDEDORES, NOMBRE_VENDEDOR, ID_VENDEDOR_TELEVENTAS
+from vendedores import (VENDEDORES, NOMBRE_VENDEDOR, ID_VENDEDOR_TELEVENTAS,
+                        EMAIL_JEFE_VENTAS, nombre_por_email)
 
 try:
     import tutorial_televentas
@@ -184,6 +185,39 @@ def _error_sheets(e: Exception, accion: str) -> str:
     return f"No se {accion}: {e}"
 
 
+def _link_mail(lead, gestiones: pd.DataFrame) -> tuple[str | None, str]:
+    """mailto: al vendedor del cliente (con el jefe en copia) con la última gestión.
+
+    Devuelve (link, a_quien). Sin vendedor con mail conocido devuelve
+    (None, motivo): no se inventa un destinatario.
+    """
+    try:
+        vid = int(lead.get("id_vendedor"))
+    except (TypeError, ValueError):
+        vid = None
+    para = VENDEDORES.get(vid, "") if vid is not None else ""
+    if not para:
+        return None, "el cliente no tiene un vendedor con mail cargado"
+    nombre = lead["nombre_fantasia"] or lead["razon_social"]
+    lineas = [f"Cliente: {nombre} — {lead['razon_social']} "
+              f"(código {lead['codigo']}, RUT {lead['documento']})",
+              f"Teléfono: {lead['telefono'] or '—'} · "
+              f"{lead['ciudad']} ({lead['departamento']})", ""]
+    if gestiones is not None and not gestiones.empty:
+        ult = gestiones.sort_values("timestamp").iloc[-1]
+        lineas += [f"Última gestión ({ult['timestamp']}, {ult['canal']}): "
+                   f"{ult['resultado']}", f"Nota: {ult['nota'] or '—'}", ""]
+    lineas += [f"Te pido que le respondas a televentas dentro de "
+               f"{televentas_crm.DIAS_RESPUESTA_VENDEDOR} días si lo visitaste "
+               "o qué pasó.", "", f"— {st.session_state.get('tv_agente') or 'Televentas'}"]
+    params = {"subject": f"Televentas — {nombre} ({lead['codigo']})",
+              "body": "\n".join(lineas)}
+    if EMAIL_JEFE_VENTAS:
+        params["cc"] = EMAIL_JEFE_VENTAS
+    query = urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+    return f"mailto:{para}?{query}", nombre_por_email(para) or para
+
+
 def _fmt_money(v) -> str:
     try:
         return f"$ {float(v):,.0f}".replace(",", ".")
@@ -273,7 +307,7 @@ if _gs:
         else:
             st.warning(f"No se pudo leer el CRM: {e}")
 
-estado_crm = televentas_crm.estado_actual_por_lead(df_act)
+estado_crm = televentas_crm.estado_actual_por_lead(df_act, hoy=hoy)
 if not estado_crm.empty:
     # Se cruza por clave normalizada (no por el documento crudo): las filas
     # que el CRM escribió antes del fix de RAW perdieron el cero inicial del
@@ -282,10 +316,15 @@ if not estado_crm.empty:
     leads = (leads.merge(estado_crm, how="left",
                          left_on="_clave_doc", right_index=True)
              .drop(columns=["_clave_doc"]))
-for c in ("estado", "ultimo_resultado", "proximo_seguimiento"):
+for c in ("estado", "ultimo_resultado", "proximo_seguimiento",
+          "proxima_accion", "proxima_fecha"):
     if c not in leads.columns:
         leads[c] = ""
 leads["estado"] = leads["estado"].fillna("Sin gestionar")
+# Sin gestiones, el circuito arranca por la primera llamada (sin fecha: si
+# no, toda la base caería en "Seguimientos de hoy").
+leads["proxima_accion"] = leads["proxima_accion"].fillna(televentas_crm.PASO_INICIAL)
+leads["proxima_fecha"] = leads["proxima_fecha"].fillna("").astype(str)
 
 # Lo que anotó el vendedor de calle en las listas importadas (comentario y
 # marca de problema de pago). Se cruza contra TODAS las listas, no solo la
@@ -310,12 +349,33 @@ k[0].metric("Clientes", len(leads))
 k[1].metric("Con teléfono", int((leads["telefono"].str.len() > 0).sum()))
 k[2].metric("Dormidos (>90d)", int(leads["segmento"].isin(["dormido", "dormido_profundo"]).sum()))
 k[3].metric("Gestionados", int((leads["estado"] != "Sin gestionar").sum()))
-k[4].metric("Seguimientos hoy", int((leads["proximo_seguimiento"].astype(str) == hoy.isoformat()).sum()))
+_vence = leads["proxima_fecha"]
+k[4].metric("Seguimientos hoy", int(((_vence.str.len() == 10)
+                                     & (_vence <= hoy.isoformat())).sum()),
+            help="Hoy y atrasados, según el circuito de llamado.")
 
 
 # =====================================================================
 # Ficha 360° + gestión + pedido (definidas antes de usarse)
 # =====================================================================
+def _proximo_paso(lead, gest: pd.DataFrame) -> None:
+    """Cartel con lo que toca según el circuito de llamado a inactivos."""
+    paso = televentas_crm.siguiente_paso(gest)
+    if not paso["accion"]:
+        st.caption(f"Circuito cerrado: última gestión «{lead.get('ultimo_resultado')}».")
+        return
+    cuando = ""
+    if paso["fecha"]:
+        f = date.fromisoformat(paso["fecha"])
+        if f < hoy:
+            cuando = f" — **atrasado** (era para el {f:%d/%m})"
+        elif f == hoy:
+            cuando = " — **hoy**"
+        else:
+            cuando = f" — el {f:%d/%m}"
+    st.info(f"👉 **Próximo paso:** {paso['accion']}{cuando}")
+
+
 def _ficha_360(lead):
     st.divider()
     nombre = lead["nombre_fantasia"] or lead["razon_social"]
@@ -385,13 +445,27 @@ def _ficha_360(lead):
         st.caption("💡 Activá «Cargar detalle de productos» (arriba) para ver "
                    "sugerencias de qué ofrecerle.")
 
+    gest = televentas_crm.gestiones_de(df_act, lead["documento"])
+    _proximo_paso(lead, gest)
+
     msg = (f"Hola {nombre}! Te contacto de Suprabond (GSU). "
            "¿Cómo andás de stock? Tenemos novedades para tu ferretería.")
+    b_wa, b_mail = st.columns(2)
     link = _link_whatsapp(lead["telefono"], msg)
-    if link:
-        st.link_button("💬 Abrir WhatsApp con mensaje", link)
-    else:
-        st.caption("Sin celular válido para WhatsApp.")
+    with b_wa:
+        if link:
+            st.link_button("💬 Abrir WhatsApp con mensaje", link)
+            st.caption("Después de mandarlo, registralo como «WhatsApp enviado».")
+        else:
+            st.caption("Sin celular válido para WhatsApp.")
+    with b_mail:
+        link_m, a_quien = _link_mail(lead, gest)
+        if link_m:
+            st.link_button(f"✉️ Mail a {a_quien} (vendedor)", link_m)
+            st.caption("Se abre tu correo con la última gestión ya escrita."
+                       + ("" if EMAIL_JEFE_VENTAS else " Sin jefe en copia todavía."))
+        else:
+            st.caption(f"Sin mail para derivar: {a_quien}.")
 
     with st.expander("🛒 Historial de compras"):
         top = lead.get("top_skus") or []
@@ -424,7 +498,7 @@ def _ficha_360(lead):
             st.caption("💡 Para ver qué productos compra, activá «Cargar detalle de productos» arriba.")
 
     with st.expander("📇 Gestiones anteriores"):
-        g = df_act[df_act["documento"].astype(str) == lead["documento"]]
+        g = gest
         if g.empty:
             st.caption("Sin gestiones registradas.")
         else:
@@ -443,26 +517,65 @@ def _registrar_gestion(lead):
         return
     with st.form(f"gestion_{lead['documento']}"):
         g1, g2 = st.columns(2)
-        canal = g1.selectbox("Canal", ["Llamada", "WhatsApp"])
+        canal = g1.selectbox("Canal", ["Llamada", "WhatsApp", "Mail", "Visita"])
         resultado = g2.selectbox("Resultado", televentas_crm.RESULTADOS)
+        # Lo que el diagrama pide recolectar cuando atiende. Va a la nota
+        # (no a columnas nuevas) para no migrar la Sheet en producción.
+        with st.expander("🧾 Si atendió: datos a recolectar"):
+            d1, d2 = st.columns(2)
+            quien = d1.text_input("¿Quién atendió? (nombre / rol)")
+            visita = d2.text_input("¿Última visita del vendedor? ¿Cuándo?")
+            cuanto = d1.text_input("¿Cada cuánto compra y cuánto?")
+            necesita = d2.text_input("¿Qué necesita?")
+            factura = st.text_input("Facturación / otros datos de interés")
         nota = st.text_area("Nota", placeholder="Qué se habló, qué quedó pendiente…")
-        seg = st.date_input("Próximo seguimiento (opcional)", value=None, format="DD/MM/YYYY")
+        p1, p2 = st.columns(2)
+        seg = p1.date_input("Próximo seguimiento", value=None, format="DD/MM/YYYY",
+                            help="Si lo dejás vacío, la app lo calcula según el "
+                                 "circuito (2º intento a las 24 h, control a los "
+                                 "15 días, etc.).")
+        pausa = p2.selectbox(
+            "Si es «No reactiva - pausar»: ¿por cuánto?",
+            televentas_crm.PAUSAS_DIAS, index=None, placeholder="Elegí cuánto",
+            format_func=lambda d: f"{d} días")
         enviar = st.form_submit_button("Guardar gestión", type="primary")
     if enviar:
         if not st.session_state.get("tv_agente"):
             st.error("Poné tu nombre de agente en la barra izquierda.")
             return
+        if resultado == "No reactiva - pausar" and not seg and not pausa:
+            st.error("Para pausar, elegí por cuánto tiempo (o poné la fecha).")
+            return
+        datos = [(et, v.strip()) for et, v in (
+            ("Atendió", quien), ("Última visita", visita), ("Compra", cuanto),
+            ("Necesita", necesita), ("Facturación", factura)) if v.strip()]
+        nota_final = " · ".join([f"{et}: {v}" for et, v in datos]
+                                + ([nota.strip()] if nota.strip() else []))
+        ahora = datetime.now()
+        if seg:
+            proximo = seg.isoformat()
+        elif resultado == "No reactiva - pausar":
+            proximo = televentas_crm.fecha_pausa(pausa, ahora.date())
+        else:
+            # La fecha que propone el circuito, contando esta gestión.
+            nueva = pd.DataFrame([{"timestamp": ahora.strftime("%Y-%m-%d %H:%M"),
+                                   "resultado": resultado, "proximo_seguimiento": ""}])
+            hist = televentas_crm.gestiones_de(df_act, lead["documento"])
+            proximo = televentas_crm.siguiente_paso(
+                pd.concat([hist, nueva], ignore_index=True))["fecha"]
         try:
             televentas_crm.registrar_actividad(
                 dict(_gs),
                 {"documento": lead["documento"], "razon_social": lead["razon_social"],
                  "agente": st.session_state.tv_agente, "canal": canal,
-                 "resultado": resultado, "nota": nota,
-                 "proximo_seguimiento": seg.isoformat() if seg else ""},
-                timestamp=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                 "resultado": resultado, "nota": nota_final,
+                 "proximo_seguimiento": proximo},
+                timestamp=ahora.strftime("%Y-%m-%d %H:%M"),
             )
             _cargar_crm.clear()
-            st.success("Gestión registrada ✓")
+            st.success("Gestión registrada ✓"
+                       + (f" — próximo seguimiento {date.fromisoformat(proximo):%d/%m}"
+                          if proximo else ""))
             st.rerun()
         except Exception as e:  # noqa: BLE001
             st.error(_error_sheets(e, "pudo registrar la gestión"))
@@ -628,6 +741,9 @@ if seccion == _SECCIONES[0]:
         f_busq = c3.text_input("Buscar (nombre / RUT / código)")
         f_guard = c1.checkbox("🚧 Ocultar atendidos recién (no pisar al vendedor)", value=False)
         f_deuda = c2.checkbox("💰 Solo con deuda", value=False)
+        f_pausa = c3.checkbox("⏸️ Ocultar pausados (no reactivan)", value=True,
+                              help="Los que se marcaron «No reactiva - pausar» "
+                                   "vuelven solos cuando termina la pausa.")
 
     filt = televentas_data.filtrar_leads(
         leads, segmentos=seg_map.get(camp), departamentos=f_dep or None,
@@ -636,6 +752,8 @@ if seccion == _SECCIONES[0]:
         no_compro_subrubro=None if f_nocompro == "(cualquiera)" else f_nocompro,
         busqueda=f_busq or None, documentos=docs_imp,
         ocultar_atendido_reciente=f_guard, solo_con_deuda=f_deuda)
+    if f_pausa:
+        filt = filt[filt["estado"] != "Pausado"]
     st.caption(f"**{len(filt)}** leads. Hacé click en una fila para abrir la ficha 👇")
 
     # Cuando se trabaja sobre una lista importada, el número de arriba casi
@@ -674,7 +792,8 @@ if seccion == _SECCIONES[0]:
     cols_show = [c for c in ["alerta", "codigo", "nombre_fantasia", "razon_social",
                              "ciudad", "departamento", "telefono", "segmento",
                              "dias_sin_compra", "ticket_prom", "deuda_total",
-                             "estado", "proximo_seguimiento", "comentario"]
+                             "estado", "proxima_accion", "proxima_fecha",
+                             "comentario"]
                  if c in tabla.columns]
     if filt.empty:
         st.info("No hay leads con estos filtros.")
@@ -689,6 +808,8 @@ if seccion == _SECCIONES[0]:
                 "dias_sin_compra": st.column_config.NumberColumn("Días s/compra", format="%.0f"),
                 "comentario": st.column_config.TextColumn(
                     "Comentario del vendedor", width="medium"),
+                "proxima_accion": st.column_config.TextColumn("Próximo paso"),
+                "proxima_fecha": st.column_config.TextColumn("Para el"),
             })
         sel = ev.selection.rows if ev and ev.selection else []
         if sel:
@@ -853,15 +974,23 @@ if seccion == _SECCIONES[1]:
 # =====================================================================
 if seccion == _SECCIONES[2]:
     st.subheader("📅 Seguimientos para hoy (y atrasados)")
-    due = leads[(leads["proximo_seguimiento"].astype(str).str.len() == 10)
-                & (leads["proximo_seguimiento"].astype(str) <= hoy.isoformat())]
+    st.caption("Sale del circuito de llamado: 2º intentos, WhatsApp por "
+               "reenviar, controles a los 15 días, derivados al vendedor y "
+               "pausas que terminaron.")
+    due = leads[(leads["proxima_fecha"].str.len() == 10)
+                & (leads["proxima_fecha"] <= hoy.isoformat())]
     if due.empty:
         st.success("No hay seguimientos pendientes. 🎉")
     else:
-        st.caption(f"{len(due)} lead(s) para rellamar.")
-        st.dataframe(due[["proximo_seguimiento", "codigo", "nombre_fantasia", "telefono",
-                          "ultimo_resultado", "ciudad"]].sort_values("proximo_seguimiento"),
-                     use_container_width=True, hide_index=True)
+        st.caption(f"{len(due)} cliente(s). Buscalos en Leads para abrir la ficha.")
+        st.dataframe(due[["proxima_fecha", "proxima_accion", "codigo",
+                          "nombre_fantasia", "telefono", "ultimo_resultado",
+                          "ciudad"]].sort_values("proxima_fecha"),
+                     use_container_width=True, hide_index=True,
+                     column_config={
+                         "proxima_fecha": st.column_config.TextColumn("Para el"),
+                         "proxima_accion": st.column_config.TextColumn("Qué toca"),
+                     })
 
 
 # =====================================================================
