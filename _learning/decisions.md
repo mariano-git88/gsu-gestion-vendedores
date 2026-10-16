@@ -2266,3 +2266,11 @@ sistemas en paralelo es peor que ninguno.
 desincroniza en cuanto alguien registra algo fuera de orden; derivarlo de las
 gestiones no puede contradecirse con ellas. Tests en
 `tests/test_televentas_circuito.py`.
+
+**Adenda 2026-10-16 (mismo día) — fecha de corte.** Al deployar, "Seguimientos
+de hoy" mostró 75 clientes atrasados, el más viejo del 5 de julio: el
+circuito se estaba aplicando a gestiones anotadas antes de que existiera.
+Mariano eligió fecha de corte: `televentas_crm.INICIO_CIRCUITO = 2026-10-16`.
+A una gestión anterior no se le calcula fecha (el próximo paso se sigue
+mostrando en Leads); la fecha cargada a mano se respeta igual que antes del
+circuito. Alternativa descartada: dejarlos y que Vale los fuera limpiando.

@@ -145,6 +145,13 @@ _SIN_PASO = {"Contactado - no interesado", "Número equivocado / no existe",
 
 PASO_INICIAL = "📞 Llamar (1er intento)"
 
+# Desde cuándo rige el circuito. A una gestión anterior no se le calcula
+# fecha: se anotó sin saber que habría circuito, y aplicárselo para atrás
+# llenaba "Seguimientos de hoy" de atrasados de julio (75 el día del
+# lanzamiento). La fecha que alguien cargó a mano sí se respeta, como antes.
+# Decisión de Mariano, 2026-10-16.
+INICIO_CIRCUITO = date(2026, 10, 16)
+
 
 def _a_fecha(valor) -> date | None:
     """'YYYY-MM-DD…' / Timestamp / date → date. None si no se puede leer."""
@@ -220,6 +227,8 @@ def siguiente_paso(gestiones: pd.DataFrame) -> dict:
 
     if manual:
         fecha = manual.isoformat()
+    elif base is None or base < INICIO_CIRCUITO:
+        fecha = ""
     return {"accion": accion, "fecha": fecha}
 
 

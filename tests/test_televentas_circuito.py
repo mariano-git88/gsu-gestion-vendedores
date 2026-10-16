@@ -72,10 +72,10 @@ def test_las_cinco_esperas_de_whatsapp_siguen_el_diagrama():
 def test_una_respuesta_corta_la_racha_de_whatsapp():
     """Si respondió en el medio, la cuenta de reenvíos vuelve a empezar."""
     paso = crm.siguiente_paso(_gestiones(
-        ("2026-10-01 10:00", "WhatsApp enviado"),
-        ("2026-10-02 10:00", "WhatsApp enviado"),
-        ("2026-10-03 10:00", "Volver a llamar"),
-        ("2026-10-04 10:00", "WhatsApp enviado")))
+        ("2026-10-16 10:00", "WhatsApp enviado"),
+        ("2026-10-17 10:00", "WhatsApp enviado"),
+        ("2026-10-18 10:00", "Volver a llamar"),
+        ("2026-10-19 10:00", "WhatsApp enviado")))
     assert "2º de 5" in paso["accion"]
 
 
@@ -136,3 +136,20 @@ def test_todo_resultado_tiene_estado_y_los_contactos_empiezan_con_contactado():
 def test_gestiones_de_cruza_aunque_la_sheet_se_haya_comido_el_cero():
     act = _gestiones(("2026-10-16 10:00", "No atendió"), documento="12345680017")
     assert len(crm.gestiones_de(act, "012345680017")) == 1
+
+
+def test_gestiones_anteriores_al_circuito_no_quedan_atrasadas():
+    """Lanzamiento: 75 clientes de julio-octubre aparecían como atrasados."""
+    paso = crm.siguiente_paso(_gestiones(("2026-07-04 10:00", "No atendió")))
+    assert "2º intento" in paso["accion"]
+    assert paso["fecha"] == ""
+
+
+def test_la_fecha_manual_vieja_se_respeta_igual():
+    paso = crm.siguiente_paso(_gestiones(("2026-09-01 10:00", "Volver a llamar", "2026-09-10")))
+    assert paso["fecha"] == "2026-09-10"
+
+
+def test_el_dia_del_corte_ya_cuenta():
+    paso = crm.siguiente_paso(_gestiones(("2026-10-16 09:00", "No atendió")))
+    assert paso["fecha"] == "2026-10-17"
