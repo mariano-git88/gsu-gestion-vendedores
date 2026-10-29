@@ -126,7 +126,7 @@ TAB_ARMADOS = "armados"
 ARMADOS_COLUMNS = [
     "timestamp",          # ISO UTC del evento
     "fecha_local",        # YYYY-MM-DD en hora del depósito (para filtrar)
-    "evento",             # "armado" | "facturado"
+    "evento",             # "armado" | "anulado" | "facturado"
     "id_orden",           # str, ID interno de Contabilium
     "numero_orden",       # str con ceros, ej "00012036" — OJO: escribir RAW
     "fecha_orden",        # str dd/mm/aaaa como lo devuelve Contabilium
@@ -142,6 +142,10 @@ ARMADOS_COLUMNS = [
     "numero_factura",     # solo en evento "facturado"
     "cae",                # solo en evento "facturado"
     "observacion",        # adenda de la factura, o motivo
+    # Desde la v1.7.0 del picking. Al final a propósito: las filas viejas no
+    # los traen y se leen vacías (read_armados lee por nombre de columna).
+    "kilos",              # total del pedido, con punto decimal ("12.5")
+    "kilos_bultos",       # peso de cada bulto separado por ";" ("4.5;8")
 ]
 
 # Una celda de Sheets aguanta 50.000 caracteres. El detalle de items va
@@ -735,6 +739,11 @@ def append_armados(
         sh, TAB_ARMADOS,
         rows=10000, cols=len(ARMADOS_COLUMNS),
     )
+
+    # La tab pudo nacer con menos columnas que el encabezado actual (se
+    # sumaron kilos y kilos_bultos). Escribir fuera de la grilla da 400.
+    if ws.col_count < len(ARMADOS_COLUMNS):
+        ws.add_cols(len(ARMADOS_COLUMNS) - ws.col_count)
 
     existing_header = ws.row_values(1)
     if not existing_header or len(existing_header) < len(ARMADOS_COLUMNS):

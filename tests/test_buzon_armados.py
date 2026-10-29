@@ -112,6 +112,79 @@ def test_un_armado_posterior_a_la_factura_queda_marcado():
     assert bool(estado.loc["2", "rearmado_post_factura"]) is False
 
 
+def test_una_orden_anulada_sale_de_la_cola():
+    """NP 12773: el cliente canceló un pedido ya armado. Contabilium no
+    distingue esa cancelación de la que se hace para liberar stock, así que
+    la salida es un evento explícito."""
+    df = _df(
+        _evento(timestamp="2026-09-30T12:00:00Z", evento="armado", id_orden="1"),
+        _evento(timestamp="2026-09-30T13:00:00Z", evento="anulado", id_orden="1"),
+    )
+    assert facturador.armados_pendientes_de_facturar(df).empty
+    assert facturador.derivar_estado_armados(df).iloc[0]["estado"] == "anulado"
+
+
+def test_un_rearmado_despues_de_anular_vuelve_a_la_cola():
+    """El vendedor agregó ítems: se anula, se relee la orden y se arma de
+    nuevo. Tiene que volver a la cola con el armado nuevo."""
+    df = _df(
+        _evento(timestamp="2026-09-30T12:00:00Z", evento="armado",
+                id_orden="1", bultos="2"),
+        _evento(timestamp="2026-09-30T13:00:00Z", evento="anulado", id_orden="1"),
+        _evento(timestamp="2026-09-30T14:00:00Z", evento="armado",
+                id_orden="1", bultos="3"),
+    )
+    pend = facturador.armados_pendientes_de_facturar(df)
+    assert len(pend) == 1
+    assert pend.iloc[0]["bultos"] == "3"
+
+
+def test_un_reenvio_tardio_no_resucita_una_orden_anulada():
+    """El depósito reintenta un armado viejo DESPUÉS de anularlo: la fila
+    llega más tarde a la planilla, pero lleva el timestamp del armado
+    original, así que la anulación sigue ganando."""
+    df = _df(
+        _evento(timestamp="2026-09-30T12:00:00Z", evento="armado", id_orden="1"),
+        _evento(timestamp="2026-09-30T13:00:00Z", evento="anulado", id_orden="1"),
+        _evento(timestamp="2026-09-30T12:00:00Z", evento="armado", id_orden="1"),
+    )
+    assert facturador.armados_pendientes_de_facturar(df).empty
+
+
+def test_la_anulacion_del_facturador_gana_aunque_cambie_el_formato_de_fecha():
+    """Una fecha sin fracción ("...:00Z") y otra con ella ("...654321-03:00",
+    como las escribe el facturador): pandas infería
+    el formato de la primera fila y dejaba la otra en NaT sin avisar: la
+    anulación quedaba como el evento más viejo y la orden volvía a la cola."""
+    df = _df(
+        _evento(timestamp="2026-09-30T12:00:00Z", evento="armado", id_orden="1"),
+        _evento(timestamp="2026-09-30T10:30:00.654321-03:00", evento="anulado",
+                id_orden="1"),
+    )
+    assert facturador.armados_pendientes_de_facturar(df).empty
+
+
+def test_anular_despues_de_facturar_no_es_un_rearmado():
+    df = _df(
+        _evento(timestamp="2026-09-30T12:00:00Z", evento="armado", id_orden="1"),
+        _evento(timestamp="2026-09-30T13:00:00Z", evento="facturado", id_orden="1"),
+        _evento(timestamp="2026-09-30T14:00:00Z", evento="anulado", id_orden="1"),
+    )
+    estado = facturador.derivar_estado_armados(df)
+    assert estado.iloc[0]["estado"] == "facturado"
+    assert bool(estado.iloc[0]["rearmado_post_factura"]) is False
+
+
+def test_los_kilos_llegan_a_la_cola():
+    df = _df(_evento(
+        timestamp="2026-10-29T12:00:00Z", evento="armado", id_orden="1",
+        bultos="2", kilos="12.5", kilos_bultos="4.5;8",
+    ))
+    pend = facturador.armados_pendientes_de_facturar(df)
+    assert pend.iloc[0]["kilos"] == "12.5"
+    assert pend.iloc[0]["kilos_bultos"] == "4.5;8"
+
+
 def test_ordenes_distintas_no_se_pisan():
     df = _df(
         _evento(timestamp="2026-08-07T18:00:00Z", evento="armado",

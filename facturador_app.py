@@ -635,6 +635,34 @@ def _registrar_facturado_en_buzon(fila_armado, emision: dict, adenda: str) -> No
         )
 
 
+# Los mismos motivos que ofrece el picking al anular, para que la planilla
+# se lea igual venga de donde venga la anulación.
+MOTIVOS_ANULACION = [
+    "El cliente canceló el pedido",
+    "Se modificó el pedido: se vuelve a armar",
+    "Error de armado",
+    "Otro",
+]
+
+
+def _registrar_anulado_en_buzon(fila_armado, quien: str, motivo: str) -> None:
+    """Apenda el evento `anulado`: la orden sale de la cola hasta que el
+    depósito la vuelva a armar. NO toca Contabilium: si el pedido no va, la
+    orden se cancela allá aparte, como siempre. Acá no es best effort: si
+    falla, el que anula tiene que enterarse, así que la excepción sube."""
+    gsheets.append_armados(_seccion_buzon(), [{
+        "timestamp": datetime.now().astimezone().isoformat(),
+        "fecha_local": date.today().isoformat(),
+        "evento": "anulado",
+        "id_orden": str(fila_armado["id_orden"]),
+        "numero_orden": str(fila_armado["numero_orden"]),
+        "fecha_orden": str(fila_armado.get("fecha_orden") or ""),
+        "id_cliente": str(fila_armado.get("id_cliente") or ""),
+        "usuario": f"facturador: {quien}",
+        "observacion": f"Anulado: {motivo}",
+    }])
+
+
 def _cerrar_en_el_buzon_si_el_deposito_lo_armo(id_orden, numero_orden, emision) -> None:
     """Si esta orden la había armado el depósito, apendar el evento
     `facturado` para que salga de su cola.
@@ -819,10 +847,13 @@ def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> N
             etiqueta += "  ·  ⚠ preparado incompleto"
 
         with st.expander(etiqueta, expanded=len(pendientes) == 1):
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("Bultos", int(fila.get("bultos") or 0))
-            c2.metric("Líneas", int(fila.get("lineas") or 0))
-            c3.metric("Armado", str(fila.get("fecha_local") or "—"))
+            # Los armados anteriores a la v1.7.0 del picking no traen kilos.
+            kilos = str(fila.get("kilos") or "").strip()
+            c2.metric("Kilos", kilos.replace(".", ",") if kilos else "—")
+            c3.metric("Líneas", int(fila.get("lineas") or 0))
+            c4.metric("Armado", str(fila.get("fecha_local") or "—"))
             st.caption(
                 f"Armado por **{fila.get('usuario') or '—'}**. "
                 + (
@@ -848,6 +879,40 @@ def _render_deposito(condicion_venta_nombre, punto_venta_id, inventario_id) -> N
                 )
             else:
                 st.caption("El depósito no mandó el detalle de este pedido.")
+
+            # Va antes de los chequeos a propósito: un pedido bloqueado
+            # (cancelado, ASU, incompleto) también tiene que poder salir de
+            # la cola.
+            with st.popover("Anular este armado"):
+                st.caption(
+                    "Saca el pedido de esta lista. Usalo si el cliente canceló "
+                    "o si el pedido cambió y el depósito lo va a volver a "
+                    "armar: cuando lo rearme, vuelve a aparecer acá solo. "
+                    "**No cancela la orden en Contabilium**: eso se hace allá, "
+                    "como siempre."
+                )
+                motivo = st.selectbox(
+                    "Motivo", MOTIVOS_ANULACION, key=f"anular_motivo_{id_orden}"
+                )
+                detalle = st.text_input(
+                    "Detalle" + (" (obligatorio)" if motivo == "Otro" else " (opcional)"),
+                    key=f"anular_detalle_{id_orden}",
+                )
+                quien = st.text_input("Quién anula", key=f"anular_quien_{id_orden}")
+                if st.button("Anular armado", type="primary", key=f"anular_{id_orden}"):
+                    if not quien.strip():
+                        st.error("Falta quién anula.")
+                    elif motivo == "Otro" and not detalle.strip():
+                        st.error("Con \"Otro\" hay que escribir el detalle.")
+                    else:
+                        texto = motivo + (f" — {detalle.strip()}" if detalle.strip() else "")
+                        try:
+                            _registrar_anulado_en_buzon(fila, quien.strip(), texto)
+                        except Exception as exc:
+                            st.error(f"No se pudo anular ({exc}). El pedido sigue en la lista.")
+                        else:
+                            _leer_buzon.clear()
+                            st.rerun()
 
             # --- Chequeos previos a emitir ---------------------------------
             bloqueos = []

@@ -411,7 +411,7 @@ def derivar_estado_armados(df_eventos):
     es su último evento**, ordenando por timestamp.
 
     Devuelve un DataFrame con las columnas del evento representativo de cada
-    orden más `estado` ("armado" | "facturado"), `items` ya deserializado
+    orden más `estado` ("armado" | "anulado" | "facturado"), `items` ya deserializado
     (lista de dicts; lista vacía si el JSON viene roto o ausente) y
     `rearmado_post_factura`.
 
@@ -425,6 +425,15 @@ def derivar_estado_armados(df_eventos):
 
     Cuando eso pasa se marca `rearmado_post_factura` para que la pantalla lo
     pueda avisar, porque también puede ser un armado nuevo de verdad.
+
+    **`anulado` saca la orden de la cola, pero solo hasta el próximo armado.**
+    Lo escribe el depósito (supervisor) o administración cuando el cliente
+    cancela o cuando el pedido se modificó y se va a volver a armar. Entre
+    `armado` y `anulado` gana el más nuevo: si después de anularla se la
+    vuelve a armar, vuelve a la cola con el armado nuevo. Lo pidió Gabriel
+    Parodi el 30/9/2026 por la NP 12773: Contabilium no distingue "cancelada
+    por el cliente" de "cancelada para liberar el stock", así que la orden se
+    quedaba en la cola sin forma de sacarla. `facturado` sigue pisando a todo.
 
     Función pura: no toca red ni Sheets, para poder testearla.
     """
@@ -451,7 +460,14 @@ def derivar_estado_armados(df_eventos):
     # Orden estable: por timestamp, y ante empate por el orden de aparición
     # en la planilla (que es el orden en que se apendaron las filas).
     df["_orden_original"] = range(len(df))
-    df["_ts"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+    # format="ISO8601" no es decorativo: el picking escribe "...123Z" y el
+    # facturador "...123456-03:00". Sin él, pandas infiere el formato de la
+    # PRIMERA fila y convierte en NaT, sin avisar, las que no calzan. Una
+    # anulación con NaT queda ordenada como la más vieja y la orden vuelve a
+    # la cola.
+    df["_ts"] = pd.to_datetime(
+        df["timestamp"], errors="coerce", utc=True, format="ISO8601"
+    )
     df["_evento"] = df["evento"].astype(str).str.strip().str.lower()
     df["_es_factura"] = df["_evento"] == "facturado"
 
@@ -469,8 +485,9 @@ def derivar_estado_armados(df_eventos):
     ts_factura = (
         df[df["_es_factura"]].groupby("id_orden")["_ts"].max().rename("_ts_fact")
     )
+    # Solo armados: una anulación posterior a la factura no es un rearmado.
     ts_armado = (
-        df[~df["_es_factura"]].groupby("id_orden")["_ts"].max().rename("_ts_arm")
+        df[df["_evento"] == "armado"].groupby("id_orden")["_ts"].max().rename("_ts_arm")
     )
     marcas = pd.concat([ts_factura, ts_armado], axis=1)
     marcas["rearmado_post_factura"] = (
