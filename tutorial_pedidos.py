@@ -199,6 +199,11 @@ Además, abajo de la tabla aparece:
 - **Combos** (ej. `COM SLT`): se cargan como un ítem más, pero la
   **primera vez** probá uno aparte para confirmar que Contabilium lo
   procesa como esperás.
+- **Primer pedido BIZ** (trae el artículo `MKT BIZ 1ER PED UY`): le
+  corresponde **5% de descuento**. La app lo marca con 🎁 y el campo
+  «Descuento de la orden %» ya viene en 5. Si el cliente además tiene un
+  descuento fijo, cargalo por ítem o poné el total compuesto (5% y 10% →
+  14,5%).
 - **Precio**: el Excel ya trae el precio correcto (las planillas de
   interior ya incluyen el +5%). No hace falta tocarlo salvo que el
   vendedor lo pida.

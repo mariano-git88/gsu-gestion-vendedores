@@ -38,6 +38,13 @@ _FILA_ITEMS = 7  # primera fila de datos (incluye encabezados de rubro)
 # Columnas de la grilla de items.
 _COL_CODIGO, _COL_DESC, _COL_UXC, _COL_PRECIO, _COL_CANT, _COL_SUBTOT = 2, 3, 4, 5, 6, 7
 
+# Pedidos de la plataforma BIZ: llegan con dos articulos "fantasma" de
+# $0,01 que existen en Contabilium solo para marcarlos. El de 1er pedido
+# avisa que corresponde el descuento de bienvenida.
+SKU_BIZ_PRIMER_PEDIDO = "MKT BIZ 1ER PED UY"
+SKU_BIZ_CARTA = "MKT CARTA BIZ UY"
+DESCUENTO_PRIMER_PEDIDO_BIZ = 5.0  # %
+
 
 @dataclass
 class Item:
@@ -54,6 +61,10 @@ class Item:
         # Heuristica: los combos arrancan con "COM ". Se confirma en Fase 2
         # contra Contabilium; aca solo se marca para revision.
         return self.codigo.upper().startswith("COM ")
+
+    @property
+    def codigo_normalizado(self) -> str:
+        return " ".join(self.codigo.upper().split())
 
 
 @dataclass
@@ -86,6 +97,16 @@ class Pedido:
     @property
     def tiene_combos(self) -> bool:
         return any(i.es_combo for i in self.items)
+
+    @property
+    def es_primer_pedido_biz(self) -> bool:
+        return any(i.codigo_normalizado == SKU_BIZ_PRIMER_PEDIDO for i in self.items)
+
+    @property
+    def es_pedido_biz(self) -> bool:
+        return self.es_primer_pedido_biz or any(
+            i.codigo_normalizado == SKU_BIZ_CARTA for i in self.items
+        )
 
 
 def _txt(v) -> str:
@@ -193,8 +214,9 @@ def _demo(path: str) -> None:
     for p in pedidos:
         sello = "OK " if p.total_ok else "REVISAR"
         combo = "  [tiene combo]" if p.tiene_combos else ""
+        biz = "  [1er pedido BIZ]" if p.es_primer_pedido_biz else ""
         print(f"== {p.hoja} | {p.cliente} (Nro {p.nro_cliente}) | "
-              f"vend {p.nro_vendedor} | pedido {p.nro_pedido}{combo}")
+              f"vend {p.nro_vendedor} | pedido {p.nro_pedido}{combo}{biz}")
         if p.cond_pago:
             print(f"   Cond. de pago: {p.cond_pago}")
         for i in p.items:

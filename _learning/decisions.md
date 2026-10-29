@@ -2324,3 +2324,32 @@ nuevas a la API.
 (N+1 llamadas, la app ya evita el camino pesado) y un grupo de comparación
 con dormidos no llamados (el segmento "dormido" es el de hoy, así que los que
 compraron ya no figuran como dormidos: la comparación sale sesgada).
+
+---
+
+## 2026-10-28 — Carga de pedidos: primer pedido BIZ con 5% precargado
+
+**Pedido:** Jesica (mail del 27/10, idea de Valeria) quiere una señal visible,
+como la de combos, para los primeros pedidos BIZ, que llevan 5% de descuento.
+
+**Cómo se reconocen:** los pedidos de la plataforma BIZ traen dos artículos
+fantasma de $0,01 que existen en Contabilium solo para marcarlos:
+`MKT CARTA BIZ UY` (vino por BIZ) y `MKT BIZ 1ER PED UY` (es el primero). Se
+detectan por código entre los ítems con cantidad, no por una celda fija.
+
+**Por qué no alcanzaba un cartel:** entre el 20 y el 26/10 hubo 6 órdenes con
+esos artículos, 5 cargadas con esta herramienta. Los dos primeros pedidos
+reales salieron sin el 5%: a uno hubo que cancelarle la orden y recargarla,
+y al otro corregirlo después a mano en Contabilium.
+
+**Decisión (Mariano):** cartel 🎁 en Fase 1 y Fase 2 + «Descuento de la orden %»
+precargado en `pedidos.DESCUENTO_PRIMER_PEDIDO_BIZ` (5), editable. Si la
+operadora lo baja, aparece un cartel rojo; no bloquea la carga.
+Descartadas: solo el cartel (lo pedido literalmente) y un tilde de aprobación
+extra.
+
+**De yapa:** los campos por pedido se guardan por nombre de hoja ("Pedido 3"),
+que se repite entre archivos. Ahora se borran al subir otro Excel; antes un
+cliente asignado, un descuento o una aprobación pasaban al pedido de igual
+nombre del archivo siguiente, y con el 5% precargado eso habría sido plata.
+Tests: `tests/test_pedidos_biz.py`.

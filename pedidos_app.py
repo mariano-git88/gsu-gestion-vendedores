@@ -288,6 +288,18 @@ if archivo is None:
     st.info("Subí el archivo `NOTA DE PEDIDO G.S.U.` para empezar.")
     st.stop()
 
+# Los campos de cada pedido se guardan por nombre de hoja ("Pedido 3"), que
+# se repite entre archivos. Al cambiar de archivo se borran, para que un
+# cliente asignado, un descuento o una aprobación no pase al "Pedido 3" del
+# Excel siguiente.
+_PREFIJOS_POR_PEDIDO = ("aprdeuda_", "aprprecio_", "cant_", "cliov_",
+                        "desc_", "descorden_", "incluir_", "precio_")
+if st.session_state.get("pedidos_archivo_id") != archivo.file_id:
+    for k in [k for k in st.session_state
+              if str(k).startswith(_PREFIJOS_POR_PEDIDO)]:
+        del st.session_state[k]
+    st.session_state["pedidos_archivo_id"] = archivo.file_id
+
 try:
     lista = pedidos.leer_pedidos(io.BytesIO(archivo.getvalue()))
 except Exception as e:  # noqa: BLE001 — queremos mostrar el error, no romper
@@ -327,12 +339,20 @@ st.markdown("---")
 for p in lista:
     sello = "🟢 Control OK" if p.total_ok else "🔴 REVISAR totales"
     combo = " · ⚠️ contiene combo" if p.tiene_combos else ""
+    biz = " · 🎁 1er PEDIDO BIZ (5%)" if p.es_primer_pedido_biz else ""
     encabezado = (
         f"{p.hoja} — {p.cliente} (Nro. Cliente {p.nro_cliente}) · "
         f"{len(p.items)} ítems · {_fmt_uyu(p.total_con_iva_declarado or 0)} · "
-        f"{sello}{combo}"
+        f"{sello}{combo}{biz}"
     )
     with st.expander(encabezado, expanded=not p.total_ok):
+        if p.es_primer_pedido_biz:
+            st.warning(
+                "🎁 **Primer pedido BIZ: corresponde "
+                f"{pedidos.DESCUENTO_PRIMER_PEDIDO_BIZ:g}% de descuento.** "
+                "En la carga (Fase 2) ya viene puesto en «Descuento de la "
+                "orden %»."
+            )
         meta = f"Vendedor {p.nro_vendedor} · Pedido del vendedor #{p.nro_pedido}"
         if p.fecha:
             meta += f" · Fecha {p.fecha:%d/%m/%Y}"
@@ -608,6 +628,12 @@ else:
         d = _deuda.get(rut)
         deuda_vencida = bool(d and d["vencida"] >= UMBRAL_VENCIDA_UYU)
         tiene_comentario = bool((p.cond_pago or "").strip())
+        if p.es_primer_pedido_biz:
+            # Precargado, editable. Si el cliente además tiene un descuento
+            # fijo, la operadora lo cambia (o lo pone por ítem: se componen).
+            st.session_state.setdefault(
+                f"descorden_{p.hoja}", pedidos.DESCUENTO_PRIMER_PEDIDO_BIZ
+            )
 
         descuentos, precios, cantidades = {}, {}, {}
         for it in p.items:
@@ -637,10 +663,12 @@ else:
             + ("  ·  🔴 deuda vencida" if deuda_vencida else "")
             + ("  ·  📝 comentario" if tiene_comentario else "")
             + ("  ·  ⚠️ cliente sin asignar" if cli is None else "")
+            + ("  ·  🎁 1er PEDIDO BIZ" if p.es_primer_pedido_biz else "")
         )
         with st.expander(
             titulo,
-            expanded=deuda_vencida or tiene_comentario or cli is None,
+            expanded=(deuda_vencida or tiene_comentario or cli is None
+                      or p.es_primer_pedido_biz),
         ):
             # --- Cliente: asignación manual si no se identificó ---
             if cli is None:
@@ -662,6 +690,22 @@ else:
                 )
 
             # --- Descuento de la orden completa ---
+            if p.es_primer_pedido_biz:
+                _pct_biz = pedidos.DESCUENTO_PRIMER_PEDIDO_BIZ
+                if desc_orden < _pct_biz:
+                    st.error(
+                        f"🎁 **Primer pedido BIZ: le corresponde {_pct_biz:g}% "
+                        f"y la orden tiene {desc_orden:g}%.** Si no se "
+                        "corrige, sale sin el descuento de bienvenida."
+                    )
+                else:
+                    st.warning(
+                        f"🎁 **Primer pedido BIZ — {_pct_biz:g}% de "
+                        "descuento de bienvenida**, ya puesto abajo. Si el "
+                        "cliente tiene además un descuento fijo, cargalo por "
+                        "ítem (se compone con este) o poné acá el total "
+                        "compuesto: 5% y 10% → 14,5%."
+                    )
             st.number_input(
                 "Descuento de la orden %  (se aplica a todos los ítems)",
                 min_value=0.0, max_value=99.0, step=1.0, format="%g",
@@ -777,6 +821,8 @@ else:
                 "Listo para cargar · "
                 f"{_fmt_uyu(p.total_con_iva_declarado or 0)}"
                 + ("  ·  ⚠️ contiene combo" if armado.tiene_combo else "")
+                + (f"  ·  🎁 1er pedido BIZ, orden {desc_orden:g}%"
+                   if p.es_primer_pedido_biz else "")
             )
             resumen_rows.append({
                 "Pedido": p.hoja,
