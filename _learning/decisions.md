@@ -2353,3 +2353,39 @@ que se repite entre archivos. Ahora se borran al subir otro Excel; antes un
 cliente asignado, un descuento o una aprobación pasaban al pedido de igual
 nombre del archivo siguiente, y con el 5% precargado eso habría sido plata.
 Tests: `tests/test_pedidos_biz.py`.
+
+---
+
+## 2026-11-02 — Comisiones: cobranza con RUT inexistente → "Sin asignar" (ya no va a MARIO)
+
+**Decisión (Mariano):** una cobranza cuyo RUT no está en el maestro de
+clientes de Contabilium queda **Sin asignar**: no comisiona a nadie, ni en el
+mes corriente ni como tardía del ajuste retroactivo. Reemplaza la regla del
+2026-04-09 ("código inexistente → MARIO").
+
+**Qué lo disparó:** en la liquidación de octubre 2026, dos tardías de
+septiembre de SODIMAC (~$762k) no estaban en el maestro y caían enteras a un
+solo vendedor como ajuste retroactivo; en el mes corriente pasaba lo mismo
+con Disco, Mosca Hnos y Barraca La Fe. Se verificó que esos RUT **no están**
+en `load_clientes_api` (no es un problema de formato del RUT).
+
+**Implementación:**
+- `comisiones_data.cargar_cobranzas_desde_api`, `commissions.load_cobranzas`,
+  `commissions.compute_retroactive_adjustment` y
+  `comisiones_ajuste.calcular_ajuste`: la huérfana no entra a `por_vend` ni a
+  `delta_importe`. Se lista aparte (`huerfanas_sin_asignar`,
+  `tardias_sin_asignar`).
+- `commissions.SIN_ASIGNAR` es solo un rótulo. **No usarlo como clave de
+  vendedor**: `compute_commissions` le inventaría una fila con sueldo fijo.
+- El snapshot de cobranzas guarda las huérfanas con `vendedor=""` (igual que
+  las descartadas) para que no reaparezcan como tardías y para que una
+  anulación posterior no ajuste a nadie.
+- Test: `test_rut_inexistente_sin_asignar` en `tests/test_comisiones_v12.py`
+  (API mes, API tardía, xlsx mes, xlsx retro).
+
+**No es retroactivo:** los snapshots ya guardados tienen las huérfanas viejas
+con el vendedor que se les asignó entonces; eso es lo que se pagó y queda así.
+
+**Pendiente de fondo:** si esos clientes tienen vendedor en la realidad, el
+arreglo es darlos de alta (o corregir el RUT) en Contabilium; ahí empiezan a
+comisionar solos.

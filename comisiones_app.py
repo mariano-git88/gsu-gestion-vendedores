@@ -13,7 +13,7 @@ Flujo:
   1. Login con password.
   2. Selector de mes (default mes anterior cerrado).
   3. Botón "Calcular comisiones" → pull API + cálculo + tabla resultado.
-  4. Sección de casos especiales (huérfanas a MARIO, vendedores
+  4. Sección de casos especiales (cobranzas sin asignar, vendedores
      excluidos, etc) en un expander.
   5. Descargar liquidación en xlsx.
   6. Guardar en histórico (gate explícito anti-duplicado).
@@ -660,11 +660,15 @@ if seccion == _SECCIONES[0]:
                     st.write(f"  - `{v}`: ${m:,.2f}")
 
             # Cobranzas huérfanas
-            huer = cobranzas["huerfanas_a_mario"]
-            st.markdown(f"**Cobranzas con RUT inexistente → MARIO ({len(huer)})**")
+            huer = cobranzas["huerfanas_sin_asignar"]
+            st.markdown(
+                f"**Cobranzas con RUT inexistente → Sin asignar, no comisionan "
+                f"({len(huer)})**"
+            )
             if huer:
                 df_huer = pd.DataFrame(
-                    huer, columns=["RUT", "Razón social", "Número", "Importe"]
+                    huer,
+                    columns=["RUT", "Razón social", "Número", "Importe", "Fecha"],
                 )
                 st.dataframe(
                     df_huer.style.format({"Importe": "{:,.2f}"}),
@@ -744,11 +748,11 @@ if seccion == _SECCIONES[0]:
                     st.info("Sin cambios — todas las cobranzas de M-1 están al día.")
 
                 # Tardías huérfanas
-                hue_tar = ajuste.get("tardias_huerfanas_a_mario", [])
+                hue_tar = ajuste.get("tardias_sin_asignar", [])
                 if hue_tar:
                     st.markdown(
-                        f"**Tardías que cayeron a MARIO por RUT inexistente "
-                        f"({len(hue_tar)})**"
+                        f"**Tardías sin asignar por RUT inexistente — no "
+                        f"comisionan ({len(hue_tar)})**"
                     )
                     df_h = pd.DataFrame(hue_tar)
                     st.dataframe(df_h, use_container_width=True, hide_index=True)

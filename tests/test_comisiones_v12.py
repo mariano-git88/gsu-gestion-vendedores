@@ -227,6 +227,65 @@ def test_ajuste_api_sin_base_no_inventa():
     _eq("base 0 + 100k -> bajo umbral -> 0", aj["V1"], 0)
 
 
+def test_rut_inexistente_sin_asignar():
+    """RUT/código que no está en el maestro de clientes → "Sin asignar":
+    no comisiona a nadie, ni en el mes ni como tardía. Hasta nov-2026 se le
+    asignaba a MARIO (dos tardías de SODIMAC por 761k le daban 30k de ajuste)."""
+    print("RUT inexistente → Sin asignar (no paga a nadie):")
+    import api_loader
+    import comisiones_data as D
+
+    # --- Camino API, mes corriente ---
+    items = [
+        {"Numero": "N1", "NroDocumento": "R1", "RazonSocial": "Cli",
+         "ImporteTotal": "800.000,00", "Fecha": "05/10/2026", "Moneda": "UYU"},
+        {"Numero": "N2", "NroDocumento": "FANTASMA", "RazonSocial": "Otro",
+         "ImporteTotal": "150.000,00", "Fecha": "06/10/2026", "Moneda": "UYU"},
+    ]
+    orig_get, orig_ref = api_loader.api_get, api_loader._refrescar_si_expirado
+    api_loader.api_get = lambda s, path: (None, {"Items": items if "2026-10-05" in path else []})
+    api_loader._refrescar_si_expirado = lambda s: s
+    try:
+        _, cob = D.cargar_cobranzas_desde_api(None, "2026-10-05", "2026-10-06", {"R1": "V1"})
+    finally:
+        api_loader.api_get, api_loader._refrescar_si_expirado = orig_get, orig_ref
+    _is("por_vend solo tiene al vendedor real", sorted(cob["por_vend"]), ["V1"])
+    _eq("V1 cobra solo lo suyo", cob["por_vend"]["V1"], 800_000)
+    _is("la huérfana queda listada", [h[2] for h in cob["huerfanas_sin_asignar"]], ["N2"])
+    filas = A.cobranzas_para_persistir(cob)
+    snap = {f["numero"]: f["vendedor"] for f in filas}
+    _is("el snapshot la guarda sin vendedor", snap.get("N2"), "")
+
+    # --- Camino API, tardía ---
+    sheet = _sheet([("S1", "V1", "R1", 1_600_000)])
+    api = [
+        {"Numero": "S1", "NroDocumento": "R1", "RazonSocial": "Cli",
+         "ImporteTotal": "1.600.000,00", "Fecha": "01/09/2026"},
+        {"Numero": "T1", "NroDocumento": "FANTASMA", "RazonSocial": "Otro",
+         "ImporteTotal": "700.000,00", "Fecha": "21/09/2026"},
+    ]
+    dif = A.detectar_diferencias(api, sheet)
+    aj = A.calcular_ajuste(dif, {"R1": "V1"},
+                           base_cobranzas_por_vendedor=A.base_cobranzas_desde_sheet(sheet))
+    _is("la tardía no ajusta a nadie", aj["ajuste_comision_por_vendedor"], {})
+    _is("la tardía queda listada", len(aj["tardias_sin_asignar"]), 1)
+
+    # --- Camino xlsx legacy ---
+    f = _mk_cobranzas([
+        ["N1", "C1", "Cli", 800_000, "2026-10-05", "UYU"],
+        ["N2", "XX", "Otro", 150_000, "2026-10-06", "UYU"],
+    ])
+    cob_x = C.load_cobranzas(f, {"C1": "V1"})
+    _is("legacy: por_vend sin huérfana", cob_x["por_vend"], {"V1": 800_000.0})
+    orig = _mk_cobranzas([["N1", "C1", "Cli", 800_000, "2026-09-05", "UYU"]])
+    upd = _mk_cobranzas([
+        ["N1", "C1", "Cli", 800_000, "2026-09-05", "UYU"],
+        ["N3", "XX", "Otro", 500_000, "2026-09-20", "UYU"],
+    ])
+    r = C.compute_retroactive_adjustment(orig, upd, {"C1": "V1"})
+    _is("legacy: tardía huérfana no ajusta", r["ajuste_comision_por_vendedor"], {})
+
+
 def main():
     for t in [
         test_tramos_venta, test_tramos_cobranza, test_dual_run_v1,
@@ -234,6 +293,7 @@ def main():
         test_ajuste_api_por_tramos, test_ajuste_api_cruza_umbral_y_anuladas,
         test_ajuste_api_sin_base_no_inventa,
         test_compute_commissions_fijo_total, test_retro_tramos,
+        test_rut_inexistente_sin_asignar,
     ]:
         t()
     print()

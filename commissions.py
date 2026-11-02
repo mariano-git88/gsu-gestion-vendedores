@@ -18,7 +18,8 @@ _learning/formula_compensacion_v1.2.md):
   - Vendedores excluidos siempre: OPJESICA, OPVALERIA
   - Estado excluido: Cancelada
   - Vendedor sin clientes vinculados → se excluye completo (ni venta ni cobranza)
-  - Cobranza con código inexistente en clientes.xlsx → se asigna a MARIO
+  - Cobranza con código inexistente en clientes.xlsx → queda "Sin asignar"
+    (no comisiona a nadie; se lista aparte para revisar)
   - Cobranza de cliente existente sin Vendedor Asignado → se descarta
   - Toda operación se asume en UYU
 """
@@ -71,7 +72,12 @@ VENDEDORES_EXCLUIDOS_OP = {
     "OPVALERIA@SUPRABOND.COM.UY",
 }
 ESTADOS_EXCLUIDOS = {"Cancelada"}
-VENDEDOR_HUERFANAS = "MARIO@SUPRABOND.COM.UY"
+# Cobranzas cuyo RUT/código no está en el maestro de clientes. Hasta
+# nov-2026 se asignaban a MARIO; desde entonces no comisionan a nadie
+# (decisión 2026-11-02). Es solo un rótulo para pantallas y reportes:
+# NUNCA usarlo como clave de vendedor en por_vend / delta_importe, o
+# compute_commissions le inventa una fila con sueldo fijo.
+SIN_ASIGNAR = "Sin asignar"
 
 
 # ------------------------- FÓRMULA DE COMISIÓN -------------------------
@@ -237,7 +243,7 @@ def load_cobranzas(file_or_path, mapa_clientes):
 
     por_vend = defaultdict(float)
     detalle = defaultdict(list)
-    huerfanas_a_mario = []
+    huerfanas_sin_asignar = []
     descartadas_sin_vendedor = []
     monedas_no_uyu = []
 
@@ -254,13 +260,7 @@ def load_cobranzas(file_or_path, mapa_clientes):
             continue
 
         if cod not in mapa_clientes:
-            por_vend[VENDEDOR_HUERFANAS] += imp
-            detalle[VENDEDOR_HUERFANAS].append({
-                "codigo": cod, "razon": razon, "numero": nro,
-                "fecha": str(fecha) if fecha else "", "importe": imp,
-                "asignacion": "huerfana_a_mario",
-            })
-            huerfanas_a_mario.append((cod, razon, nro, imp))
+            huerfanas_sin_asignar.append((cod, razon, nro, imp))
         elif mapa_clientes[cod] is None:
             descartadas_sin_vendedor.append((cod, razon, nro, imp))
         else:
@@ -275,7 +275,7 @@ def load_cobranzas(file_or_path, mapa_clientes):
     return {
         "por_vend": dict(por_vend),
         "detalle": dict(detalle),
-        "huerfanas_a_mario": huerfanas_a_mario,
+        "huerfanas_sin_asignar": huerfanas_sin_asignar,
         "descartadas_sin_vendedor": descartadas_sin_vendedor,
         "monedas_no_uyu": monedas_no_uyu,
     }
@@ -326,12 +326,12 @@ def _index_cobranzas_por_numero(ws):
 def _total_cobranza_por_vendedor(idx, mapa_clientes):
     """Suma el importe de cobranza por vendedor sobre TODAS las filas de un
     índice {numero: {...}}, con las mismas reglas de asignación del mes
-    corriente (código inexistente → MARIO; cliente sin vendedor → descarta)."""
+    corriente (código inexistente o cliente sin vendedor → no suma a nadie)."""
     tot = defaultdict(float)
     for row in idx.values():
         cod = row["codigo"]
         if cod not in mapa_clientes:
-            tot[VENDEDOR_HUERFANAS] += row["importe"]
+            continue  # sin asignar: código inexistente en clientes.xlsx
         elif mapa_clientes[cod] is None:
             continue  # descartada: cliente existente sin Vendedor Asignado
         else:
@@ -363,7 +363,8 @@ def compute_retroactive_adjustment(
         - delta_importe_por_vendedor: dict vendedor -> delta total de importe
         - ajuste_comision_por_vendedor: dict vendedor -> delta_importe × 3%
         - vendedores_con_ajuste_negativo: dict vendedor -> ajuste negativo
-        - huerfanas_a_mario: cambios cuyo código no está en clientes.xlsx
+        - huerfanas_sin_asignar: cambios cuyo código no está en clientes.xlsx
+          (no ajustan a nadie)
         - descartadas_sin_vendedor: cambios cuyo cliente no tiene Vendedor Asignado
         - duplicados_orig / duplicados_updated: número de cobranzas duplicadas
           (deberían ser 0; si > 0 es un dato sucio que vale la pena reportar)
@@ -427,15 +428,14 @@ def compute_retroactive_adjustment(
 
     # Asignar cada cambio a un vendedor con las MISMAS reglas del mes corriente
     delta_importe_vend = defaultdict(float)
-    huerfanas_a_mario = []
+    huerfanas_sin_asignar = []
     descartadas = []
 
     for c in cambios:
         cod = c["codigo"]
         if cod not in mapa_clientes:
-            delta_importe_vend[VENDEDOR_HUERFANAS] += c["delta_importe"]
-            c["asignacion"] = f"huerfana_a_{VENDEDOR_HUERFANAS}"
-            huerfanas_a_mario.append(c)
+            c["asignacion"] = SIN_ASIGNAR
+            huerfanas_sin_asignar.append(c)
         elif mapa_clientes[cod] is None:
             c["asignacion"] = "descartada_sin_vendedor"
             descartadas.append(c)
@@ -466,7 +466,7 @@ def compute_retroactive_adjustment(
         "delta_importe_por_vendedor": dict(delta_importe_vend),
         "ajuste_comision_por_vendedor": ajuste_comision_vend,
         "vendedores_con_ajuste_negativo": vendedores_con_ajuste_negativo,
-        "huerfanas_a_mario": huerfanas_a_mario,
+        "huerfanas_sin_asignar": huerfanas_sin_asignar,
         "descartadas_sin_vendedor": descartadas,
         "duplicados_original": dup_o,
         "duplicados_actualizada": dup_u,
@@ -799,7 +799,7 @@ def build_xlsx_bytes(resumen, ventas, cobranzas, periodo_label, ajuste=None):
     ws_n["A1"] = "Notas de la corrida"
     ws_n["A1"].font = Font(bold=True, size=14)
 
-    huerfanas = cobranzas["huerfanas_a_mario"]
+    huerfanas = cobranzas["huerfanas_sin_asignar"]
     descartadas = cobranzas["descartadas_sin_vendedor"]
     bruto_inv = ventas["bruto_excluido_invalido"]
 
@@ -827,9 +827,9 @@ def build_xlsx_bytes(resumen, ventas, cobranzas, periodo_label, ajuste=None):
     notas += [
         "",
         "REASIGNACIONES Y DESCARTES EN COBRANZAS",
-        f"  · {len(huerfanas)} cobranzas con código inexistente en clientes.xlsx → reasignadas a {VENDEDOR_HUERFANAS}:",
+        f"  · {len(huerfanas)} cobranzas con código inexistente en clientes.xlsx → {SIN_ASIGNAR} (no comisionan):",
     ]
-    for cod, razon, nro, imp in huerfanas:
+    for cod, razon, nro, imp, *_ in huerfanas:
         notas.append(f"      - {cod}  {razon}  Nº {nro}  ${imp:,.2f}")
     notas += [f"  · {len(descartadas)} cobranzas descartadas (cliente existe pero sin Vendedor Asignado):"]
     for cod, razon, nro, imp in descartadas:
@@ -1023,7 +1023,7 @@ def build_md(resumen, ventas, cobranzas, periodo_label, ajuste=None):
     top = sorted_r[0] if sorted_r else None
     bottom = sorted_r[-1] if sorted_r and len(sorted_r) > 1 else None
 
-    huerfanas = cobranzas["huerfanas_a_mario"]
+    huerfanas = cobranzas["huerfanas_sin_asignar"]
     descartadas = cobranzas["descartadas_sin_vendedor"]
     bruto_inv = ventas["bruto_excluido_invalido"]
 
@@ -1098,11 +1098,11 @@ def build_md(resumen, ventas, cobranzas, periodo_label, ajuste=None):
             lines.append(f"- **{v}**: ${m:,.2f} brutos no contabilizados.")
         lines.append("")
     if huerfanas:
-        lines.append(f"### Cobranzas con código inexistente — reasignadas a {VENDEDOR_HUERFANAS}")
+        lines.append(f"### Cobranzas con código inexistente — {SIN_ASIGNAR} (no comisionan)")
         lines.append("")
         lines.append("| Código | Razón Social | Nº | Importe |")
         lines.append("|---|---|---|---:|")
-        for cod, razon, nro, imp in huerfanas:
+        for cod, razon, nro, imp, *_ in huerfanas:
             lines.append(f"| {cod} | {razon} | {nro} | ${imp:,.2f} |")
         lines.append(f"| **Total** | | | **${sum(x[3] for x in huerfanas):,.2f}** |")
         lines.append("")

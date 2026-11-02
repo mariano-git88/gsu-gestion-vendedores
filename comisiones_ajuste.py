@@ -9,7 +9,7 @@ en el pago del mes M.
 Tipos de diferencia:
   - Tardía: cobranza en API pero no en Sheet → ajuste positivo (sumar
     al pago del mes corriente). Se asigna con la cartera ACTUAL
-    (huérfana → MARIO, sin vendedor → descartada, normal → vendedor
+    (RUT inexistente → sin asignar, sin vendedor → descartada, normal → vendedor
     asignado).
   - Anulada: cobranza en Sheet pero no en API → ajuste negativo
     (alerta, NO se descuenta — regla del legacy 2026-04-09).
@@ -48,7 +48,7 @@ from commissions import (
     ESQUEMA_VIGENTE,
     UMBRAL_COBRANZA_PLENO,
     UMBRAL_COBRANZA_TIER_ALTO,
-    VENDEDOR_HUERFANAS,
+    SIN_ASIGNAR,
     comision_cobranza,
 )
 
@@ -245,7 +245,8 @@ def calcular_ajuste(
           - cambios: lista de filas detalladas para el reporte.
           - total_orig: total de cobranzas en Sheet M-1.
           - total_actualizada: total de cobranzas en API M-1.
-          - tardias_huerfanas_a_mario: lista de tardías que cayeron a MARIO.
+          - tardias_sin_asignar: tardías con RUT inexistente en el maestro
+            de clientes. No ajustan a nadie.
           - tardias_descartadas: lista de tardías sin vendedor en cartera.
     """
     delta_importe: dict[str, float] = defaultdict(float)
@@ -258,17 +259,17 @@ def calcular_ajuste(
         rut = t["rut"]
         importe = t["importe"]
         if rut not in mapa_clientes_actual:
-            delta_importe[VENDEDOR_HUERFANAS] += importe
+            # Sin asignar: NO suma a ningún vendedor (antes iba a MARIO).
             huerfanas_tardias.append(t)
             cambios.append({
-                "tipo": "tardía huérfana",
+                "tipo": "tardía sin asignar",
                 "numero": t["numero"],
                 "codigo": rut,
                 "razon": t["razon"],
                 "importe_original": 0.0,
                 "importe_nuevo": importe,
                 "delta_importe": importe,
-                "asignacion": f"→ {VENDEDOR_HUERFANAS}",
+                "asignacion": SIN_ASIGNAR,
             })
         elif mapa_clientes_actual[rut] is None:
             descartadas_tardias.append(t)
@@ -360,7 +361,7 @@ def calcular_ajuste(
         "base_cobranzas_por_vendedor": {
             v: round(base.get(v, 0.0), 2) for v in ajuste_por_vendedor
         },
-        "tardias_huerfanas_a_mario": huerfanas_tardias,
+        "tardias_sin_asignar": huerfanas_tardias,
         "tardias_descartadas": descartadas_tardias,
     }
 
@@ -386,12 +387,24 @@ def cobranzas_para_persistir(
         for c in lista:
             out.append({
                 "numero": c.get("numero", ""),
-                "vendedor": v,  # MARIO si era huérfana, vendedor real si era directa
+                "vendedor": v,
                 "rut_cliente": c.get("codigo", ""),  # legado usa "codigo" pero contiene el RUT
                 "razon_social": c.get("razon", ""),
                 "fecha_cobranza": c.get("fecha", ""),
                 "importe": float(c.get("importe", 0.0)),
             })
+    # Sin asignar (RUT inexistente) — vendedor="" igual que las descartadas:
+    # se registran para que no reaparezcan como tardías, y como no tienen
+    # vendedor una anulación posterior tampoco ajusta a nadie.
+    for rut, razon, nro, imp, fecha in cobranzas_dict.get("huerfanas_sin_asignar", []):
+        out.append({
+            "numero": nro,
+            "vendedor": "",
+            "rut_cliente": rut,
+            "razon_social": razon,
+            "fecha_cobranza": fecha,
+            "importe": float(imp),
+        })
     # Descartadas (cliente sin vendedor) — registrar con vendedor=""
     for rut, razon, nro, imp in cobranzas_dict.get("descartadas_sin_vendedor", []):
         out.append({

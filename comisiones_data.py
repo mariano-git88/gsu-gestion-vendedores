@@ -17,7 +17,7 @@ Cambio respecto al schema legacy del xlsx:
     cliente. La API de cobranzas NO expone ese campo, solo
     `NroDocumento` (RUT). El mapa de clientes ahora se construye
     con **RUT como llave**. La regla "cobranza con código inexistente
-    → MARIO" sigue aplicando, evaluada contra RUT.
+    → Sin asignar" se evalúa contra RUT.
   - `Importe Total Neto` del xlsx → `ImporteTotal` de la API (mismo
     valor según confirmación de Mariano 2026-05-01: usar directo,
     sin dividir por 1.22).
@@ -37,7 +37,6 @@ import api_loader
 from commissions import (
     DIVISOR_IVA,
     ESTADOS_EXCLUIDOS,
-    VENDEDOR_HUERFANAS,
     VENDEDORES_EXCLUIDOS_OP,
 )
 from vendedores import VENDEDORES
@@ -274,14 +273,15 @@ def cargar_cobranzas_desde_api(
     función levanta `ApiError` con mensaje útil.
 
     Llave de match para asignar vendedor: `NroDocumento` (RUT). Si el
-    RUT no está en `mapa_clientes` → cobranza huérfana → MARIO. Si
-    está pero el cliente no tiene vendedor → se descarta.
+    RUT no está en `mapa_clientes` → cobranza huérfana → Sin asignar
+    (no comisiona a nadie; hasta nov-2026 iba a MARIO). Si está pero el
+    cliente no tiene vendedor → se descarta.
 
     Returns:
         Dict con keys:
           - por_vend: {vendedor: total cobrado}
           - detalle:  {vendedor: [filas...]}
-          - huerfanas_a_mario: [(rut, razon, numero, importe)]
+          - huerfanas_sin_asignar: [(rut, razon, numero, importe, fecha)]
           - descartadas_sin_vendedor: [(rut, razon, numero, importe)]
           - monedas_no_uyu: [(numero, moneda)]
 
@@ -336,7 +336,7 @@ def cargar_cobranzas_desde_api(
 
     por_vend: dict = defaultdict(float)
     detalle: dict = defaultdict(list)
-    huerfanas_a_mario: list = []
+    huerfanas_sin_asignar: list = []
     descartadas_sin_vendedor: list = []
     monedas_no_uyu: list = []
 
@@ -353,19 +353,9 @@ def cargar_cobranzas_desde_api(
             continue
 
         if rut not in mapa_clientes:
-            # Cobranza huérfana → MARIO (decisión 2026-04-09)
-            por_vend[VENDEDOR_HUERFANAS] += imp
-            detalle[VENDEDOR_HUERFANAS].append(
-                {
-                    "codigo": rut,
-                    "razon": razon,
-                    "numero": nro,
-                    "fecha": fecha,
-                    "importe": imp,
-                    "asignacion": "huerfana_a_mario",
-                }
-            )
-            huerfanas_a_mario.append((rut, razon, nro, imp))
+            # RUT inexistente en el maestro → Sin asignar: no suma a
+            # ningún vendedor (decisión 2026-11-02; antes iba a MARIO).
+            huerfanas_sin_asignar.append((rut, razon, nro, imp, fecha))
         elif mapa_clientes[rut] is None:
             descartadas_sin_vendedor.append((rut, razon, nro, imp))
         else:
@@ -385,7 +375,7 @@ def cargar_cobranzas_desde_api(
     return session, {
         "por_vend": dict(por_vend),
         "detalle": dict(detalle),
-        "huerfanas_a_mario": huerfanas_a_mario,
+        "huerfanas_sin_asignar": huerfanas_sin_asignar,
         "descartadas_sin_vendedor": descartadas_sin_vendedor,
         "monedas_no_uyu": monedas_no_uyu,
     }

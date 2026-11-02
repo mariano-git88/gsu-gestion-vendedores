@@ -164,10 +164,10 @@ def main() -> int:
 
     cobranzas = commissions.load_cobranzas(cobranzas_xlsx, mapa_clientes)
     n_cobranzas = sum(len(v) for v in cobranzas["detalle"].values())
-    n_huerfanas = len(cobranzas["huerfanas_a_mario"])
+    n_huerfanas = len(cobranzas["huerfanas_sin_asignar"])
     n_descartadas = len(cobranzas["descartadas_sin_vendedor"])
     print(f"  Cobranzas: {n_cobranzas} asignadas + "
-          f"{n_huerfanas} huérfanas a MARIO + "
+          f"{n_huerfanas} sin asignar + "
           f"{n_descartadas} descartadas")
 
     print("\n--- Calculando resumen ---")
