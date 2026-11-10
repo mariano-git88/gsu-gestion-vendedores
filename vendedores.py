@@ -51,13 +51,16 @@ VENDEDORES: dict[int, str] = {
     366: "MARCELO@SUPRABOND.COM.UY",
     506: "DAVID@SUPRABOND.COM.UY",
     666: "NESTOR@SUPRABOND.COM.UY",
+    # Dayana reemplaza a Jésica (nov-2026). ID dado por Mariano el 10/11/2026
+    # (desplegable de vendedores del panel); la API no expone usuarios.
+    810: "OPDAYANA@SUPRABOND.COM.UY",
 }
 
 # IDs de cuentas operativas/administrativas cuyas filas NO se
 # contabilizan en NINGUNA métrica del dashboard.
 # Equivalente por-ID del conjunto histórico
 # {'OPJESICA@SUPRABOND.COM.UY', 'OPVALERIA@SUPRABOND.COM.UY'}.
-VENDEDORES_OP_EXCLUIDOS: frozenset[int] = frozenset({232, 260})
+VENDEDORES_OP_EXCLUIDOS: frozenset[int] = frozenset({232, 260, 810})
 
 
 # =====================================================================
@@ -81,6 +84,17 @@ NOMBRE_VENDEDOR: dict[int, str] = {
 # 2026-07-05). Contabilium no expone un maestro de usuarios por API, por
 # eso el número se mantiene a mano acá.
 ID_VENDEDOR_TELEVENTAS: int | None = 231
+
+# Cuentas que se dieron de baja y cuyas órdenes pendientes se facturan a
+# nombre de quien las reemplazó. Al facturar una orden de OPJESICA, el
+# facturador pone de vendedor a OPDAYANA. Hace falta porque el 9/11/2026
+# tres facturas de órdenes de OPJESICA salieron SIN vendedor (las del 6/11
+# sí habían salido con 232): todo indica que el usuario de Jésica ya no
+# acepta facturas a su nombre.
+VENDEDOR_REEMPLAZO: dict[str, str] = {
+    "OPJESICA@SUPRABOND.COM.UY": "OPDAYANA@SUPRABOND.COM.UY",
+}
+
 
 # Jefe en copia del mail que televentas le manda al vendedor cuando deriva un
 # cliente (circuito de inactivos, oct-2026). PENDIENTE: falta el mail; vacío

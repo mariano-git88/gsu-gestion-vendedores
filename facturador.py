@@ -37,7 +37,7 @@ from datetime import date, timedelta
 import requests
 
 import api_loader
-from vendedores import VENDEDORES
+from vendedores import VENDEDORES, VENDEDOR_REEMPLAZO
 
 # Lookup invertido: {email_uppercase: id_vendedor}. Se usa para resolver
 # el `IDVendedor` que va al body de POST /api/comprobantes/crear, dado
@@ -872,6 +872,7 @@ def mapear_orden_a_body_crear(
         or orden.get("Vendedor")
         or ""
     ).strip().upper()
+    vendedor_email = VENDEDOR_REEMPLAZO.get(vendedor_email, vendedor_email)
     id_vendedor = _VENDEDOR_EMAIL_A_ID.get(vendedor_email)
 
     body = {

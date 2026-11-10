@@ -2417,3 +2417,16 @@ TRALE S.A.
 **Abierto:** las órdenes de SODIMAC del 9/11 decían OPJESICA, igual que las del
 6/11. Las del 6/11 salieron con IDVendedor 232 y las del 9/11 sin vendedor.
 Hipótesis: dieron de baja el usuario de Jésica en el medio. A verificar.
+
+### 2026-11-10 — OPDAYANA = 810, y las órdenes de OPJESICA se facturan a su nombre
+
+- `vendedores.VENDEDORES[810] = "OPDAYANA@SUPRABOND.COM.UY"`, y 810 entra en
+  `VENDEDORES_OP_EXCLUIDOS`. El número lo dio Mariano desde el panel; la API no
+  expone usuarios.
+- `vendedores.VENDEDOR_REEMPLAZO` (OPJESICA → OPDAYANA) se aplica en
+  `facturador.mapear_orden_a_body_crear`: las órdenes pendientes cargadas por
+  Jésica salen con IDVendedor 810 en vez de 232, que el 9/11 dejó facturas sin
+  vendedor. Para un reemplazo futuro alcanza con agregar una línea al dict.
+- No hay clientes con vendedor 232 en el maestro (verificado: 0 en clientes y
+  proveedores). Lo "de Jésica" venía de quién cargaba la orden, así que no hay
+  ninguna ficha que reasignar.
