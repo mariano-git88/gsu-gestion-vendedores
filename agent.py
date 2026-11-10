@@ -58,7 +58,7 @@ Rango de datos sincronizados: **{rango_datos}**
 
 Contexto importante:
 - Todos los datos son de Suprabond (UY). Moneda UYU. IVA básico 22%.
-- Hay vendedores comerciales (los que aparecen en facturación) y "OP" (operativos como OPJESICA, OPVALERIA) que se excluyen del análisis.
+- Hay vendedores comerciales (los que aparecen en facturación) y "OP" (operativos como OPJESICA, OPDAYANA, OPVALERIA) que se excluyen del análisis.
 - Los SKUs se clasifican por `sub_rubro` (categoría chica) y `familia` (agrupación más grande). Algunos pueden ser COMBOS.
 - "Cliente activo" = compró al menos una vez en los últimos N meses.
 
@@ -495,7 +495,7 @@ def get_ventas_por_vendedor(args: dict, ctx: dict) -> dict:
         return {"error": "No hay ventas en el período."}
 
     # OP excluidos ya vienen filtrados de prepare_facturacion, pero por las dudas:
-    excluidos = {"OPJESICA@SUPRABOND.COM.UY", "OPVALERIA@SUPRABOND.COM.UY"}
+    excluidos = {"OPJESICA@SUPRABOND.COM.UY", "OPDAYANA@SUPRABOND.COM.UY", "OPVALERIA@SUPRABOND.COM.UY"}
     df = df[~df["vendedor"].astype(str).str.upper().isin(excluidos)]
 
     agg = df.groupby("vendedor", as_index=False).agg(

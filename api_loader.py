@@ -971,6 +971,24 @@ def load_fc_api(
         # Rango sin comprobantes. Devolvemos DF vacío con el schema correcto.
         return session, _empty_fc_df(), []
 
+    # --- Clientes que facturan pero no salen en /api/clientes/search ---
+    # Contabilium deja afuera del search a las fichas clasificadas como
+    # proveedor, aunque se les facture (SODIMAC, Disco, Mosca Hnos…; ver
+    # `credito_api.bajar_clientes`). Sin esto sus facturas quedan sin
+    # documento. Se piden de a una por id: son pocas y así no se mete en el
+    # maestro a los ~400 proveedores de verdad (ANTEL, BPS…).
+    faltantes = sorted({
+        int(h["IdCliente"]) for h in headers
+        if h.get("IdCliente") and int(h["IdCliente"]) not in doc_by_id_cli
+    })
+    for id_cli in faltantes:
+        try:
+            session, ficha = api_get(session, f"/api/clientes/?id={id_cli}")
+        except Exception:  # noqa: BLE001 — sin la ficha, la factura sigue sin documento
+            continue
+        if isinstance(ficha, dict):
+            doc_by_id_cli[id_cli] = str(ficha.get("NroDoc") or "").strip()
+
     # --- N+1 de GetById en paralelo ---
     details: dict[int, dict] = {}
     errors: list[tuple[int, str]] = []

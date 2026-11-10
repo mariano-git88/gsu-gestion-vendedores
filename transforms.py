@@ -50,6 +50,7 @@ ORIGEN_SIN_ASIGNAR = "sin_asignar"
 # actualizar esta lista.
 VENDEDORES_OP_EXCLUIDOS = frozenset({
     "OPJESICA@SUPRABOND.COM.UY",
+    "OPDAYANA@SUPRABOND.COM.UY",  # reemplaza a Jésica desde nov-2026
     "OPVALERIA@SUPRABOND.COM.UY",
 })
 
@@ -186,11 +187,18 @@ def join_facturacion_clientes(
     duplicados, el merge va a duplicar filas de fc — usar
     `check_clientes_duplicados()` antes para detectarlos.
     """
-    # Borrar la razón social que viene de fc (vamos a usar la canónica)
-    df = df_fc.drop(columns=["razon_social"]).copy()
+    # La razón social de fc se guarda aparte: si el cliente no está en el
+    # maestro, se usa esa en vez de dejar el nombre vacío.
+    rs_fc = df_fc["razon_social"].reset_index(drop=True)
+    df = df_fc.drop(columns=["razon_social"]).copy().reset_index(drop=True)
 
-    # Subset de clientes solo con la info que vamos a traer
-    df_clientes_subset = df_clientes[["documento", "razon_social"]]
+    # Subset de clientes solo con la info que vamos a traer. Los clientes
+    # con documento vacío quedan afuera: si no, una factura sin documento
+    # se "cruza" con cada uno de ellos y se multiplica (9/11/2026: 3
+    # facturas de SODIMAC contadas ×3 porque había 3 clientes sin RUT).
+    df_clientes_subset = df_clientes.loc[
+        ~df_clientes["documento"].apply(_is_blank), ["documento", "razon_social"]
+    ]
 
     df_joined = df.merge(
         df_clientes_subset,
@@ -209,6 +217,12 @@ def join_facturacion_clientes(
     status[doc_blank] = STATUS_DOC_FALTANTE
 
     df_joined["status_cliente"] = status
+    # El merge es left y el subset no tiene documentos vacíos ni (si el
+    # maestro está sano) repetidos, así que el orden de filas se conserva.
+    if len(df_joined) == len(rs_fc):
+        df_joined["razon_social"] = df_joined["razon_social"].where(
+            df_joined["razon_social"].notna(), rs_fc
+        )
     df_joined = df_joined.drop(columns=["_merge"]).reset_index(drop=True)
     return df_joined
 

@@ -2389,3 +2389,31 @@ con el vendedor que se les asignó entonces; eso es lo que se pagó y queda así
 **Pendiente de fondo:** si esos clientes tienen vendedor en la realidad, el
 arreglo es darlos de alta (o corregir el RUT) en Contabilium; ahí empiezan a
 comisionar solos.
+
+## 2026-11-09 — Dashboard: facturas sin RUT, clientes "proveedor" y OPDAYANA
+
+**Qué pasó:** Ernesto vio una fila sin vendedor con 131.666 en el mes. Eran 3
+facturas a SODIMAC del 9/11 (43.819 sin IVA) contadas **tres veces**, más 211 de
+TRALE S.A.
+
+**Causas y decisiones:**
+1. **SODIMAC no sale en `/api/clientes/search`** porque en Contabilium está
+   clasificado como proveedor (igual que Disco, Mosca Hnos, Barraca La Fe, Bantey,
+   Mario Fleitas). `credito_api.bajar_clientes` ya lo resolvía desde el 31/8, pero
+   el dashboard no. Decisión: `load_fc_api` pide por `GET /api/clientes/?id=` cada
+   IdCliente facturado que no está en el listado. Se descartó sumar
+   `/api/proveedores/search` entero al maestro: son ~395 fichas y la mayoría son
+   proveedores de verdad (ANTEL, BPS…), que inflarían la cobertura "sin vendedor".
+2. **Un documento vacío no es una clave.** Había 3 clientes del maestro sin RUT, y
+   el join por documento cruzaba cada factura sin RUT con los 3 (×3). Decisión:
+   `transforms.join_facturacion_clientes` y la cartera de `metrics`
+   (`_con_documento`) ignoran los clientes con documento vacío. Si el cliente no
+   matchea, la razón social sale de la factura en vez de quedar vacía.
+3. **OPDAYANA** (reemplaza a Jésica) se suma a las cuentas operativas excluidas en
+   `transforms`, `commissions` y `agent`. PENDIENTE: su IdUsuarioAdicional para
+   `vendedores.VENDEDORES` y `VENDEDORES_OP_EXCLUIDOS`. Sin ese número sus
+   facturas llegan como "ID_<n>" y la exclusión por email no se aplica.
+
+**Abierto:** las órdenes de SODIMAC del 9/11 decían OPJESICA, igual que las del
+6/11. Las del 6/11 salieron con IDVendedor 232 y las del 9/11 sin vendedor.
+Hipótesis: dieron de baja el usuario de Jésica en el medio. A verificar.

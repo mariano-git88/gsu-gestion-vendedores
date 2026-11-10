@@ -39,6 +39,20 @@ TIPO_FAC = "FAC"
 # Helpers internos
 # =====================================================================
 
+def _con_documento(df_clientes: pd.DataFrame) -> pd.DataFrame:
+    """
+    Filas del maestro con vendedor y documento utilizables: sin nulos y
+    sin documento vacío.
+
+    Un cliente sin RUT no se puede cruzar con ninguna venta. Si se lo
+    deja, el RUT vacío funciona como un cliente más y se "cruza" con
+    toda factura que también venga sin RUT. Pasó el 9/11/2026: 3
+    facturas de SODIMAC sin RUT quedaron como venta a esos clientes.
+    """
+    df = df_clientes.dropna(subset=["vendedor", "documento"])
+    return df[df["documento"].astype(str).str.strip() != ""]
+
+
 def _cartera_unica(df_clientes: pd.DataFrame) -> pd.DataFrame:
     """
     Devuelve los pares únicos `(vendedor, documento)` del maestro de
@@ -47,7 +61,7 @@ def _cartera_unica(df_clientes: pd.DataFrame) -> pd.DataFrame:
     """
     return (
         df_clientes[["vendedor", "documento"]]
-        .dropna()
+        .pipe(_con_documento)
         .drop_duplicates()
         .reset_index(drop=True)
     )
@@ -59,7 +73,7 @@ def _clientes_asignados_por_vendedor(df_clientes: pd.DataFrame) -> pd.DataFrame:
     Devuelve DataFrame con columnas: vendedor, clientes_asignados.
     """
     return (
-        df_clientes.dropna(subset=["vendedor", "documento"])
+        df_clientes.pipe(_con_documento)
         .groupby("vendedor")["documento"]
         .nunique()
         .reset_index(name="clientes_asignados")
@@ -247,7 +261,7 @@ def clientes_dormidos(
     # Cartera única con razón social
     cartera = (
         df_clientes[["vendedor", "documento", "razon_social"]]
-        .dropna(subset=["vendedor", "documento"])
+        .pipe(_con_documento)
         .drop_duplicates(subset=["vendedor", "documento"])
     )
 
@@ -329,7 +343,7 @@ def clientes_nuevos(
 
     cartera = (
         df_clientes[["vendedor", "documento", "razon_social"]]
-        .dropna(subset=["vendedor", "documento"])
+        .pipe(_con_documento)
         .drop_duplicates(subset=["vendedor", "documento"])
     )
 
@@ -579,7 +593,7 @@ def frecuencia_compra_por_cliente(
     # Razón social
     cartera = (
         df_clientes[["vendedor", "documento", "razon_social"]]
-        .dropna(subset=["vendedor", "documento"])
+        .pipe(_con_documento)
         .drop_duplicates(subset=["vendedor", "documento"])
     )
     result = result.merge(cartera, on=["vendedor", "documento"], how="left")
@@ -1799,7 +1813,7 @@ def clientes_sin_compra_sku(
     # Cartera única por (vendedor, documento), trayendo razón social
     cartera = (
         df_clientes[["vendedor", "documento", "razon_social"]]
-        .dropna(subset=["vendedor", "documento"])
+        .pipe(_con_documento)
         .drop_duplicates(subset=["vendedor", "documento"])
     )
 
@@ -2143,7 +2157,7 @@ def pareto_clientes(
     """
     df_fac = df_fc[df_fc["tipo"] == TIPO_FAC]
     cartera_idx = (
-        df_clientes.dropna(subset=["vendedor", "documento"])
+        df_clientes.pipe(_con_documento)
         .drop_duplicates(subset=["vendedor", "documento"])
     )
     rs_map = (
