@@ -430,4 +430,77 @@ def crear_recibo_con_nc(
     pasos.append(f"guardar OK: recibo {nro} (id {id_recibo})")
     if not id_recibo:
         raise WebError(f"guardar no devolvió id de recibo: {g}")
-    return {"ok": True, "id_recibo": id_recibo, "nro_recibo": nro, "pasos": pasos}
+    return {"ok": True, "id_recibo": id_recibo, "nro_recibo": nro, "pasos": pasos,
+            "session_id": sid, "fecha": fecha_ddmmyyyy, "id_persona": int(id_persona)}
+
+
+# =====================================================================
+# Envío del recibo por mail al cliente
+# =====================================================================
+#
+# El web NO manda el recibo dentro de `guardar`: lo hace el navegador después,
+# en dos pasos más (`/js/views/cobranzas.js`, leído 2026-11-20):
+#   guardar → generarPDF (devuelve el nombre del PDF)
+#           → si el input oculto `hdnEnvioCR` vale "1" (la opción "envío
+#             automático de recibos" de la cuenta): EnviarCobranzaAutomaticamente
+#             {idCobranza, nombre: <ese PDF>}.
+# Hasta el 2026-11-20 la app cortaba en `guardar`, así que los recibos con NC
+# que creaba nunca le llegaban al cliente — mientras la NC (creada por la API
+# pública) sí. Lo reportó Valeria por un cliente de Mario.
+
+_RE_ENVIO_CR = re.compile(r"<input[^>]*hdnEnvioCR[^>]*>", re.I)
+_RE_VALUE = re.compile(r"""value\s*=\s*["']([^"']*)["']""", re.I)
+
+
+def envio_automatico_activado(cookie: str) -> bool | None:
+    """Lee si la cuenta tiene activado el envío automático de recibos, igual que
+    el navegador: el `hdnEnvioCR` de `cobranzase.aspx`. Devuelve True/False, o
+    None si no se pudo leer (no se adivina)."""
+    try:
+        r = requests.get(f"{BASE}/cobranzase.aspx", headers=_headers(cookie),
+                         timeout=TIMEOUT, allow_redirects=False)
+    except requests.RequestException as e:
+        raise WebError(f"cobranzase.aspx: error de red: {e}") from e
+    if r.status_code != 200:
+        raise CookieExpirada(f"cobranzase.aspx: HTTP {r.status_code} (sesión vencida?)")
+    tag = _RE_ENVIO_CR.search(r.text or "")
+    if not tag:
+        return None
+    val = _RE_VALUE.search(tag.group(0))
+    if not val:
+        return None
+    return val.group(1).strip() == "1"
+
+
+def enviar_recibo_por_mail(
+    cookie: str,
+    *,
+    session_id: str,
+    id_recibo,
+    id_persona,
+    fecha_ddmmyyyy: str,
+    nro_recibo: str,
+) -> list[str]:
+    """Replica lo que hace el navegador después de `guardar`: genera el PDF del
+    recibo y le pide a Contabilium que lo mande por mail al cliente. Reusa el
+    `sessionId` del recibo recién guardado (no hace un clearInFo nuevo).
+
+    Devuelve los pasos. Lanza WebError si falla algún paso. OJO: el endpoint de
+    envío contesta `{"d": null}` aunque ande, así que esto confirma que el
+    pedido se hizo, no que el mail llegó.
+    """
+    pasos: list[str] = []
+    pdf = _post(cookie, "/cobranzase.aspx/generarPDF", {
+        "sessionId": session_id, "id": int(id_recibo), "idPersona": int(id_persona),
+        "tipo": "RC", "fecha": fecha_ddmmyyyy, "idPuntoVenta": IDPUNTOVENTA,
+        "modo": "T", "nroComprobante": nro_recibo, "obs": "",
+        "idMoneda": IDMONEDA_UYU,
+    })
+    nombre = pdf.get("d")
+    if not nombre:
+        raise WebError(f"generarPDF no devolvió el nombre del PDF: {pdf}")
+    pasos.append(f"PDF del recibo generado ({nombre})")
+    _post(cookie, "/cobranzase.aspx/EnviarCobranzaAutomaticamente",
+          {"idCobranza": int(id_recibo), "nombre": str(nombre)})
+    pasos.append("Envío por mail al cliente pedido a Contabilium")
+    return pasos

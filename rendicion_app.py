@@ -625,6 +625,7 @@ else:
                 "numero_nc": resultado.numero_nc,
                 "numero_recibo": resultado.numero_recibo,
                 "numero_factura": plan.numero_factura,
+                "aviso_mail": resultado.aviso_mail,
             }
             st.rerun()
     else:
@@ -640,9 +641,11 @@ if _ejecutadas:
             + (f" · NC {r.get('numero_nc')}" if r.get("numero_nc") else "")
             + (f" · Recibo {r.get('numero_recibo')}" if r.get("numero_recibo") else "")
         )
-        with st.expander(titulo, expanded=not r.get("ok")):
+        with st.expander(titulo, expanded=not r.get("ok") or bool(r.get("aviso_mail"))):
             for paso in r.get("pasos", []):
                 st.write("•", paso)
+            if r.get("aviso_mail"):
+                st.warning(r["aviso_mail"])
             if r.get("error"):
                 st.error(r["error"])
 

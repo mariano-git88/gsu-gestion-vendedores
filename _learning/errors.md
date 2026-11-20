@@ -836,3 +836,30 @@ país ya no viaja solo en el body: también está en el dominio.
 segundo factor en la cuenta que usa la app, el login automático se cae y no
 hay forma de automatizarlo.
 
+
+## 2026-11-20 — Los recibos con NC no le llegaban al cliente (la NC sí)
+
+**Síntoma (Valeria, cliente de Mario):** al cliente le llega por mail la Nota
+de Crédito del 10% pero no el recibo.
+
+**Causa:** en el web de Contabilium el mail del recibo NO sale de `guardar`.
+Lo dispara el navegador después (`/js/views/cobranzas.js`):
+`guardar → generarPDF → (si hdnEnvioCR == "1") EnviarCobranzaAutomaticamente
+{idCobranza, nombre: <pdf>}`. `rendicion_web.crear_recibo_con_nc` replicaba el
+flujo hasta `guardar` y ahí cortaba: el recibo quedaba bien imputado pero
+nunca se mandaba. La NC, creada por la API pública, sí sale sola.
+
+**Fix:** `rendicion_web.enviar_recibo_por_mail` (mismo sessionId) +
+`envio_automatico_activado` (lee `hdnEnvioCR`). Lo llama `rendicion_ejecutor`
+SOLO después de verificar saldos en 0; si falla, `aviso_mail` y la cobranza
+sigue OK (reenviar a mano, no re-ejecutar). Tests: `tests/test_rendicion_mail.py`.
+
+**Sin verificar:** (1) que el mail realmente llegue — el endpoint contesta
+`{"d": null}` aunque ande; lo confirma la primera cobranza con NC. (2) Si los
+recibos de pago total (`/api/comprobantes/cobrar`, API pública) se mandan
+solos: no se tocó ese camino. (3) Los recibos con NC hechos antes de hoy
+nunca se mandaron.
+
+**Lección:** al replicar un flujo del web, leer el JS de la pantalla, no solo
+el HAR: los pasos que el navegador hace "después del OK" no se ven como parte
+de la operación.

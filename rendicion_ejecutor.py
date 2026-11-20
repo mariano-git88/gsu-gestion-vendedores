@@ -261,6 +261,9 @@ class ResultadoEjecucion:
     error: str | None = None
     resp_nc: dict | None = None
     resp_cobro: dict | None = None
+    # Si el recibo quedó bien pero NO se pudo pedir el mail al cliente. No
+    # vuelve `ok` False: la cobranza está hecha; solo hay que reenviarlo a mano.
+    aviso_mail: str | None = None
 
 
 def _crear_nc(
@@ -330,6 +333,48 @@ def _saldo(session, id_comprobante) -> tuple[api_loader.ApiSession, float]:
         return session, api_loader.parse_monto_uy(r.json().get("Saldo"))
     except Exception:  # noqa: BLE001
         return session, float("nan")
+
+
+def _leer_envio_automatico(cookie: str) -> bool | None:
+    """Lee la opción de envío automático ANTES de crear el recibo (el navegador
+    la tiene desde que abre la pantalla). None si no se pudo leer."""
+    try:
+        return rendicion_web.envio_automatico_activado(cookie)
+    except rendicion_web.WebError:
+        return None
+
+
+def _pedir_envio_mail(
+    cookie: str, recibo: dict, res: ResultadoEjecucion, activado: bool | None
+) -> None:
+    """Pide el envío del recibo por mail. Nunca toca `res.ok` ni `res.error`:
+    el recibo ya existe y está bien; si esto falla, queda un aviso para
+    reenviarlo a mano (y NO se debe reintentar la cobranza)."""
+    nro = res.numero_recibo
+    try:
+        if activado is False:
+            res.pasos.append(
+                "Mail: la cuenta de Contabilium tiene apagado el envío automático "
+                "de recibos, así que no se mandó (igual que desde la web).")
+            return
+        if activado is None:
+            res.aviso_mail = (
+                f"No se pudo leer si está activado el envío automático de recibos; "
+                f"el recibo {nro} NO se mandó por mail. Reenviarlo a mano desde "
+                "Contabilium.")
+            res.pasos.append(f"⚠️ {res.aviso_mail}")
+            return
+        res.pasos.extend(rendicion_web.enviar_recibo_por_mail(
+            cookie, session_id=recibo["session_id"], id_recibo=recibo["id_recibo"],
+            id_persona=recibo["id_persona"], fecha_ddmmyyyy=recibo["fecha"],
+            nro_recibo=recibo["nro_recibo"],
+        ))
+    except rendicion_web.WebError as e:
+        res.aviso_mail = (
+            f"El recibo {nro} está creado y bien imputado, pero no se pudo pedir "
+            f"el mail al cliente ({e}). Reenviarlo a mano desde Contabilium; NO "
+            "volver a ejecutar la cobranza.")
+        res.pasos.append(f"⚠️ {res.aviso_mail}")
 
 
 def ejecutar(
@@ -449,6 +494,7 @@ def ejecutar(
             imp_efectivo = round(neto - imp_cheque, 2)
 
             # 3) Crear el recibo por los endpoints internos del web.
+            envio_auto = _leer_envio_automatico(cookie)
             r = rendicion_web.crear_recibo_con_nc(
                 cookie,
                 id_persona=plan.id_cliente,
@@ -481,6 +527,10 @@ def ejecutar(
                 res.pasos.append(f"⚠️ {res.error}")
                 return session, res
             res.ok = True
+
+            # 5) Mandar el recibo por mail, como el web (solo si quedó bien
+            #    imputado: un recibo mal hecho no se le manda al cliente).
+            _pedir_envio_mail(cookie, r, res, envio_auto)
             return session, res
 
         # ===== SIN NC: cobro total por la API pública (funciona) =====
